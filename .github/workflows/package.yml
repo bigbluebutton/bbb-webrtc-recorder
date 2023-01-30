@@ -27,7 +27,9 @@ jobs:
       - name: Build package
         run: |
           rm -rf ./build
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt update
+          sudo apt install nfpm
           mkdir -p ./build ./release
           go mod tidy
           go build -o ./build/bbb-webrtc-recorder ./cmd/bbb-webrtc-recorder
