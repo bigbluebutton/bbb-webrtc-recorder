@@ -26,6 +26,8 @@ jobs:
           cache: true
       - name: Build package
         run: |
+          apt update
+          apt install ca-certificates
           rm -rf ./build
           echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | tee /etc/apt/sources.list.d/goreleaser.list
           apt update
