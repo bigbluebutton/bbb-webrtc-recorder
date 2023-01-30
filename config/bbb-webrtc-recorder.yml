@@ -1,0 +1,23 @@
+debug: true
+
+recorder:
+  directory: /var/lib/bbb-webrtc-recorder
+
+pubsub:
+  channel: bbb-webrtc-recorder
+  adapter: redis
+  adapters:
+    redis:
+      address: :6379
+      network: tcp
+
+webrtc:
+  iceServers:
+    - urls:
+        - stun:stun.l.google.com:19302
+      username:
+      credential:
+
+http:
+  port: 8080
+  enable: false

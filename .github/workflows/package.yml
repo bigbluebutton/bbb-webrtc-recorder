@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2002 BigBlueButton Inc. and by respective authors
+#
+# SPDX-License-Identifier: LGPL-3.0-or-later
+
+name: Package build
+on: push
+
+jobs:
+  ubuntu:
+    strategy:
+      matrix:
+        UBUNTU_VERSION: [ "20.04" ]
+        include:
+          - UBUNTU_VERSION: "20.04"
+            UBUNTU_CODENAME: focal
+    runs-on: ubuntu-latest
+    container: ubuntu:${{ matrix.UBUNTU_VERSION }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '>=1.19.0'
+          cache: true
+      - name: Build package
+        run: |
+          rm -rf ./build
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          mkdir -p ./build ./release
+          go mod tidy
+          go build -o ./build/bbb-webrtc-recorder ./cmd/bbb-webrtc-recorder
+          cp ./packaging/env ./build/
+          cp ./packaging/systemd.service ./build/
+          VERSION=0.1 RELEASE=0 nfpm pkg -p deb -f ./packaging/nfpm.yml -t ./release
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ubuntu-${{ matrix.UBUNTU_VERSION }}
+          path: "release/*.deb"

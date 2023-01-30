@@ -1,0 +1,14 @@
+[Unit]
+Description=BBB WebRTC Recorder
+After=network.target
+
+[Service]
+EnvironmentFile=-/etc/default/bbb-webrtc-recorder
+ExecStart=/usr/bin/bbb-webrtc-recorder $ARGS
+KillMode=mixed
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target
+

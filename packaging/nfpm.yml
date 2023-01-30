@@ -1,0 +1,48 @@
+name: bbb-webrtc-recorder
+arch: ${GOARCH}
+platform: linux
+version: ${VERSION}
+release: ${RELEASE}
+version_schema: none
+section: default
+priority: "extra"
+provides:
+  - bbb-webrtc-recorder
+depends:
+  - redis
+maintainer: "<mail@bigbluebutton.com>"
+description: |
+  BBB WebRTC Recorder
+vendor: Blindside Networks
+homepage: https://bigbluebutton.org/
+license: GPL-3.0
+
+contents:
+  - src: ./build/bbb-webrtc-recorder
+    dst: /usr/bin/bbb-webrtc-recorder
+
+  - src: ./build/env
+    dst: /etc/default/bbb-webrtc-recorder
+    type: config|noreplace
+
+  - src: ./config/bbb-webrtc-recorder.yml
+    dst: /etc/bbb-webrtc-recorder/bbb-webrtc-recorder.yml
+    type: config|noreplace
+
+  - src: ./build/systemd.service
+    dst: /lib/systemd/system/bbb-webrtc-recorder.service
+
+  - src: ./README.md
+    dst: /usr/share/doc/bbb-webrtc-recorder/README.md
+
+  - src: ./LICENSE
+    dst: /usr/share/licenses/bbb-webrtc-recorder/LICENSE
+
+  - dst: /var/lib/bbb-webrtc-recorder
+    type: dir
+    file_info:
+      mode: 0755
+
+scripts:
+  postinstall: ./packaging/after-all.sh
+  postremove: ./packaging/after-all.sh

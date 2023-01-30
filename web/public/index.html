@@ -1,0 +1,125 @@
+<style>
+    video {
+        border: 1px solid #333;
+        background: transparent url(/images/BigBlueButton_icon.svg) 50% 50% no-repeat;
+    }
+</style>
+
+<!--<video id="video1" poster="/images/BigBlueButton_icon.svg" width="640" height="480" autoplay muted></video>-->
+<video id="video1" width="640" height="480" autoplay muted></video>
+<br /><br />
+<button id="start" onclick="window.startRecording()"> Start Recording </button>
+<button id="stop" onclick="window.stopRecording()" disabled> Stop Recording </button>
+
+<div id="logs"></div>
+
+<script>
+    var log = msg => {
+        document.getElementById('logs').innerHTML += msg + '<br>'
+    }
+
+    async function getTextFromStream(readableStream) {
+        let reader = readableStream.getReader();
+        let utf8Decoder = new TextDecoder();
+        let nextChunk;
+
+        let resultStr = '';
+
+        while (!(nextChunk = await reader.read()).done) {
+            let partialData = nextChunk.value;
+            resultStr += utf8Decoder.decode(partialData);
+        }
+
+        return resultStr;
+    }
+
+    window.startRecording = () => {
+        document.getElementById('start').disabled = true
+        document.getElementById('stop').disabled = false
+
+        let pc = new RTCPeerConnection({
+            iceServers: [
+                {
+                    urls: 'stun:stun.l.google.com:19302'
+                }
+            ]
+        })
+
+        // pc.oniceconnectionstatechange = e => {
+        //     log(pc.iceConnectionState)
+        //     if (pc.iceConnectionState == "connected"){
+        //         const senders = pc.getSenders();
+        //         console.log(pc.getSenders())
+        //         // const params = senders[1].getParameters();
+        //         // console.log(params)
+        //         // params.encodings[0].maxBitrate = 9000000;
+        //         // senders[1].setParameters(params);
+        //     }
+        // }
+        pc.onicecandidate = event => {
+            if (event.candidate === null) {
+                fetch('/sdp', {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'text/plain',
+                        'Content-Type': 'text/plain'
+                    },
+                    body: btoa(JSON.stringify(pc.localDescription))
+                })
+                    .then(async response => {
+                        let responseText = await getTextFromStream(response.body);
+                        console.log(responseText)
+                        let r = JSON.parse(atob(responseText))
+                        await pc.setRemoteDescription(r)
+                        log(JSON.stringify(r))
+                        console.log(JSON.stringify(r))
+                    })
+                    .catch(error => {
+                        log(error)
+                        console.log(error)
+                    });
+            }
+        }
+
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        // navigator.mediaDevices.getUserMedia({ video: {width: {exact: 1280}}, audio: true })
+        // navigator.mediaDevices.getUserMedia({ video: {
+        //         width:1280,
+        //         height:720,
+        //         frameRate:{ideal:60, min:30}
+        //     }, audio: true })
+            .then(stream => {
+                document.getElementById('video1').srcObject = stream
+                // stream.getTracks().forEach(track => pc.addTrack(track, stream))
+                stream.getTracks().forEach(track => {
+                    console.log(track.getSettings())
+                    pc.addTrack(track, stream)
+                })
+                pc.createOffer().then(d => pc.setLocalDescription(d))
+                    .catch(log)
+            })
+            // .then(stream => {
+            //     const senders = pc.getSenders();
+            //     console.log(pc.getSenders())
+            //     const params = senders[1].getParameters();
+            //     console.log(params)
+            //     params.encodings[0].maxBitrate = 9000000;
+            //     senders[1].setParameters(params);
+            // })
+            .catch(log)
+
+        window.pc = pc
+    }
+
+    window.stopRecording = () => {
+        window.pc.close()
+        window.pc = null
+        document.getElementById('video1').srcObject = null
+        document.getElementById('logs').innerHTML = ""
+
+        document.getElementById('start').disabled = false
+        document.getElementById('stop').disabled = true
+
+    }
+
+</script>
