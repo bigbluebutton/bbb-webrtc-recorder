@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"github.com/gomodule/redigo/redis"
+	log "github.com/sirupsen/logrus"
 	"time"
 )
 
@@ -121,6 +122,7 @@ func (p *PubSub) Publish(channel string, message []byte) error {
 		return err
 	}
 	defer c.Close()
+	log.Debugf("publishing to channel %s: %s", channel, string(message))
 	if _, err = c.Do("PUBLISH", channel, message); err != nil {
 		return err
 	}

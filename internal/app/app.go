@@ -14,12 +14,7 @@ import (
 )
 
 var (
-	app struct {
-		Name     string
-		Version  string
-		GitHash  string
-		LongName string
-	}
+	app config.App
 
 	flags struct {
 		debug   bool
@@ -36,9 +31,10 @@ func init() {
 	app.Version = internal.AppVersion
 	app.LongName = fmt.Sprintf("%s %s", app.Name, app.Version)
 
-	flag.BoolVarP(&flags.help, "help", "h", flags.help, "print help")
-	flag.BoolVarP(&flags.debug, "debug", "d", flags.debug, "enable debug log")
 	flag.StringVarP(&flags.config, "config", "c", flags.config, "load configuration file")
+	flag.BoolVarP(&flags.debug, "debug", "d", flags.debug, "enable debug log")
+	flag.BoolVarP(&flags.help, "help", "h", flags.help, "print help")
+	flag.BoolVarP(&flags.version, "version", "v", flags.version, "print version")
 	flag.Parse()
 
 	if flags.help {
@@ -48,7 +44,7 @@ func init() {
 	}
 
 	if flags.version {
-		//fmt.Println(app.LongName)
+		fmt.Println(app.LongName)
 		os.Exit(0)
 	}
 
@@ -66,20 +62,23 @@ func Init() {
 }
 
 func Run() {
-
-	go http()
+	if cfg.HTTP.Enable {
+		ps := pubsub.NewPubSub(cfg.PubSub)
+		h := server.NewHTTPServer(cfg, ps)
+		h.Serve()
+	}
 	ps := pubsub.NewPubSub(cfg.PubSub)
 	s := server.NewServer(cfg, ps)
-	ps.Subscribe(cfg.PubSub.Channel, s.HandlePubSub)
+	ps.Subscribe(cfg.PubSub.Channels.Subscribe, s.HandlePubSub)
 }
 
 func initConfig() *config.Config {
-	return (&config.Config{Debug: flags.debug}).GetDefaults(app.Name)
+	return (&config.Config{App: app, Debug: flags.debug}).GetDefaults()
 }
 
 func loadConfig() {
 	newCfg := initConfig()
-	newCfg.Load(app.Name, flags.config)
+	newCfg.Load(app, flags.config)
 	*cfg = *newCfg
 	configureLog()
 }
@@ -91,7 +90,7 @@ func sighupHandler() {
 		for {
 			select {
 			case <-sighup:
-				log.Debug("Reloading config...")
+				log.Debug("reloading config...")
 				loadConfig()
 			}
 		}

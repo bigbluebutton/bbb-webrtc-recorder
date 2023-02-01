@@ -10,7 +10,8 @@
 <br /><br />
 <button id="start" onclick="window.startRecording()"> Start Recording </button>
 <button id="stop" onclick="window.stopRecording()" disabled> Stop Recording </button>
-
+[ <a href="/media" target="_blank">All Recordings</a> ]
+<br /><br />
 <div id="logs"></div>
 
 <script>
@@ -45,17 +46,6 @@
             ]
         })
 
-        // pc.oniceconnectionstatechange = e => {
-        //     log(pc.iceConnectionState)
-        //     if (pc.iceConnectionState == "connected"){
-        //         const senders = pc.getSenders();
-        //         console.log(pc.getSenders())
-        //         // const params = senders[1].getParameters();
-        //         // console.log(params)
-        //         // params.encodings[0].maxBitrate = 9000000;
-        //         // senders[1].setParameters(params);
-        //     }
-        // }
         pc.onicecandidate = event => {
             if (event.candidate === null) {
                 fetch('/sdp', {
@@ -82,12 +72,6 @@
         }
 
         navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-        // navigator.mediaDevices.getUserMedia({ video: {width: {exact: 1280}}, audio: true })
-        // navigator.mediaDevices.getUserMedia({ video: {
-        //         width:1280,
-        //         height:720,
-        //         frameRate:{ideal:60, min:30}
-        //     }, audio: true })
             .then(stream => {
                 document.getElementById('video1').srcObject = stream
                 // stream.getTracks().forEach(track => pc.addTrack(track, stream))
@@ -98,14 +82,6 @@
                 pc.createOffer().then(d => pc.setLocalDescription(d))
                     .catch(log)
             })
-            // .then(stream => {
-            //     const senders = pc.getSenders();
-            //     console.log(pc.getSenders())
-            //     const params = senders[1].getParameters();
-            //     console.log(params)
-            //     params.encodings[0].maxBitrate = 9000000;
-            //     senders[1].setParameters(params);
-            // })
             .catch(log)
 
         window.pc = pc

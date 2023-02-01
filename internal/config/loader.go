@@ -9,10 +9,10 @@ import (
 	"strings"
 )
 
-func (cfg *Config) Load(app, configFile string) {
+func (cfg *Config) Load(app App, configFile string) {
 	// Load from file(s)
 	if configFile == "" {
-		configFile = app + ".yml"
+		configFile = app.Name + ".yml"
 	} else {
 		configFile = path.Clean(configFile)
 	}
@@ -20,9 +20,9 @@ func (cfg *Config) Load(app, configFile string) {
 		Filename: configFile,
 		Finder: gonfig.Finder{
 			BasePaths: []string{
-				fmt.Sprintf("/etc/%s/%s", app, app),
-				fmt.Sprintf("$HOME/.config/%s", app),
-				fmt.Sprintf("./%s", app),
+				fmt.Sprintf("/etc/%s/%s", app.Name, app.Name),
+				fmt.Sprintf("$HOME/.config/%s", app.Name),
+				fmt.Sprintf("./%s", app.Name),
 			},
 			Extensions: []string{"yaml", "yml"},
 		},
@@ -36,17 +36,19 @@ func (cfg *Config) Load(app, configFile string) {
 	}
 
 	// Load from environment variables
-	envPrefix := strings.ReplaceAll(app, " ", "_")
-	envPrefix = strings.ToUpper(strings.ReplaceAll(envPrefix, "-", "_")) + "_"
+	envPrefix := strings.ReplaceAll(app.Name, " ", "_")
+	envPrefix = strings.ReplaceAll(envPrefix, "-", "_")
+	envPrefix = strings.ToUpper(envPrefix) + "_"
 	envLoader := gonfig.NewEnvLoader(gonfig.EnvLoaderConfig{
 		Prefix: envPrefix,
 	})
 	if found, err := envLoader.Load(cfg); err != nil {
-		log.Fatal(errors.Wrap(err, "Failed to decode configuration from environment variables"))
+		log.Fatal(errors.Wrap(err, "failed to decode configuration from environment variables"))
 	} else if !found {
-		log.Debugf("No %s* environment variables defined", envPrefix)
+		log.Debugf("no %s* environment variables defined", envPrefix)
 	} else {
 		log.Printf("Configuration loaded from %d environment variables\n", len(envLoader.GetVars()))
 	}
 
+	cfg.App = app
 }

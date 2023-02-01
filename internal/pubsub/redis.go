@@ -17,10 +17,10 @@ type Redis struct {
 }
 
 func (r *Redis) Subscribe(channel string, handler PubSubHandler) {
+	log.Printf("subscribing to pubsub %s on redis %s", channel, r.config.Address)
 	r.pubsub.ListenChannels(r.ctx, func() error { return nil },
 		func(channel string, message []byte) error {
 			//log.Debugf("channel: %s, message: %s\n", channel, message)
-
 			handler(r.ctx, message)
 			return nil
 		},

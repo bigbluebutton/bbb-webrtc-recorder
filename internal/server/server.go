@@ -23,8 +23,7 @@ type Server struct {
 var sessions = make(map[string]*session.Session)
 
 func NewServer(cfg *config.Config, pubsub pubsub.PubSub) *Server {
-	s := &Server{cfg: cfg, pubsub: pubsub}
-	return s
+	return &Server{cfg: cfg, pubsub: pubsub}
 }
 
 func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
@@ -38,6 +37,8 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 			Id:                 "startRecordingResponse",
 			RecordingSessionId: e.RecordingSessionId,
 		}
+
+		ctx = context.WithValue(ctx, "session", e.RecordingSessionId)
 
 		if _, ok := sessions[e.RecordingSessionId]; ok {
 			err := fmt.Errorf("session %s already exists", e.RecordingSessionId)
@@ -61,18 +62,34 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 		}
 
 		var sdp string
-		if rec, err := recorder.NewRecorder(s.cfg.Recorder, e.FileName, flowCallbackFn()); err != nil {
+		if rec, err := recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName, flowCallbackFn()); err != nil {
 			log.Error(err)
 			response.Status = "failed"
 			response.Error = pointer.ToString(err.Error())
 		} else {
-			wrtc := webrtc.NewWebRTC(s.cfg.WebRTC)
-			sess := session.NewSession(wrtc, rec)
-			sessions[e.RecordingSessionId] = sess
-			sdp = sess.StartRecording(e)
-			response.Status = "ok"
-			response.SDP = &sdp
-			log.Debug(sdp)
+			var err error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err = fmt.Errorf("%v", r)
+					}
+				}()
+
+				wrtc := webrtc.NewWebRTC(ctx, s.cfg.WebRTC)
+				sess := session.NewSession(wrtc, rec)
+				sessions[e.RecordingSessionId] = sess
+				sdp = sess.StartRecording(e)
+				response.Status = "ok"
+				response.SDP = &sdp
+				log.WithField("session", ctx.Value("session")).
+					Debug(sdp)
+			}()
+			if err != nil {
+				log.WithField("session", ctx.Value("session")).
+					Error(err)
+				response.Status = "failed"
+				response.Error = pointer.ToString(err.Error())
+			}
 		}
 		s.PublishPubSub(response)
 	case "stopRecording":
@@ -94,5 +111,5 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 
 func (s *Server) PublishPubSub(msg interface{}) {
 	j, _ := json.Marshal(msg)
-	s.pubsub.Publish(s.cfg.PubSub.Channel, j)
+	s.pubsub.Publish(s.cfg.PubSub.Channels.Publish, j)
 }

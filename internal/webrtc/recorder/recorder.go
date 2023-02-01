@@ -1,6 +1,7 @@
 package recorder
 
 import (
+	"context"
 	"fmt"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/pion/rtp"
@@ -16,10 +17,11 @@ type FlowCallbackFn func(isFlowing bool, keyframeSequence int64, videoTimestamp 
 
 type Recorder interface {
 	Push(rtp *rtp.Packet, track *webrtc.TrackRemote)
+	SetContext(ctx context.Context)
 	Close()
 }
 
-func NewRecorder(cfg config.Recorder, file string, fn FlowCallbackFn) (Recorder, error) {
+func NewRecorder(ctx context.Context, cfg config.Recorder, file string, fn FlowCallbackFn) (Recorder, error) {
 	ext := filepath.Ext(file)
 	dir := path.Clean(cfg.Directory)
 
@@ -39,6 +41,7 @@ func NewRecorder(cfg config.Recorder, file string, fn FlowCallbackFn) (Recorder,
 	switch ext {
 	case ".webm":
 		r = NewWebmRecorder(file, fn)
+		r.SetContext(ctx)
 	default:
 		err = fmt.Errorf("unsupported format '%s'", ext)
 	}

@@ -1,1 +1,1 @@
-systemctl daemon-reload
+systemctl daemon-reload || true

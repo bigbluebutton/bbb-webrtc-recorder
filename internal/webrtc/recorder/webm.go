@@ -1,6 +1,7 @@
 package recorder
 
 import (
+	"context"
 	"github.com/at-wat/ebml-go/mkvcore"
 	"github.com/at-wat/ebml-go/webm"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
@@ -17,6 +18,7 @@ import (
 var _ Recorder = (*WebmRecorder)(nil)
 
 type WebmRecorder struct {
+	ctx  context.Context
 	file string
 
 	audioWriter, videoWriter       webm.BlockWriteCloser
@@ -26,6 +28,7 @@ type WebmRecorder struct {
 	jitterBuffer *utils.JitterBuffer
 	seqUnwrapper *utils.SequenceUnwrapper
 
+	started bool
 	flowing bool
 	closed  bool
 
@@ -38,6 +41,7 @@ type WebmRecorder struct {
 
 func NewWebmRecorder(file string, fn FlowCallbackFn) *WebmRecorder {
 	r := &WebmRecorder{
+		ctx:            context.Background(),
 		file:           file,
 		audioBuilder:   samplebuilder.New(10, &codecs.OpusPacket{}, 48000),
 		videoBuilder:   samplebuilder.New(10, &codecs.VP8Packet{}, 90000),
@@ -55,7 +59,6 @@ func NewWebmRecorder(file string, fn FlowCallbackFn) *WebmRecorder {
 			case <-r.statusTickerChan:
 				return
 			case <-r.statusTicker.C:
-				//if !r.flowing || ts == r.videoTimestamp {
 				if ts == r.videoTimestamp {
 					r.flowing = false
 					r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp)
@@ -68,72 +71,81 @@ func NewWebmRecorder(file string, fn FlowCallbackFn) *WebmRecorder {
 	return r
 }
 
-func (s *WebmRecorder) Push(r *rtp.Packet, track *webrtc.TrackRemote) {
-	if s.closed {
+func (r *WebmRecorder) SetContext(ctx context.Context) {
+	r.ctx = ctx
+}
+
+func (r *WebmRecorder) Push(p *rtp.Packet, track *webrtc.TrackRemote) {
+	if r.closed {
 		return
 	}
 
-	seq := s.seqUnwrapper.Unwrap(uint64(r.SequenceNumber))
-	if !s.jitterBuffer.Add(seq, r) {
+	seq := r.seqUnwrapper.Unwrap(uint64(p.SequenceNumber))
+	if !r.jitterBuffer.Add(seq, p) {
 		return
 	}
 
-	// jitterBuffer.SetNextPacketsStart() can be called in case of a keyframe, so the buffer content is dropped up until the keyframe
-
-	for _, r := range s.jitterBuffer.NextPackets() {
+	for _, p := range r.jitterBuffer.NextPackets() {
 		switch track.Kind() {
 		case webrtc.RTPCodecTypeAudio:
-			s.PushOpus(r)
+			r.pushOpus(p)
 		case webrtc.RTPCodecTypeVideo:
-			s.PushVP8(r)
+			r.pushVP8(p)
 		}
 	}
 }
 
-func (s *WebmRecorder) Close() {
-	if s.closed {
+func (r *WebmRecorder) Close() {
+	if r.closed {
 		return
 	}
-	s.flowing = false
-	s.closed = true
-	s.statusTicker.Stop()
-	s.statusTickerChan <- true
-	if s.audioWriter != nil {
-		if err := s.audioWriter.Close(); err != nil {
+	r.flowing = false
+	r.closed = true
+	r.statusTicker.Stop()
+	r.statusTickerChan <- true
+
+	if r.audioWriter != nil {
+		if err := r.audioWriter.Close(); err != nil {
 			panic(err)
 		}
 	}
-	if s.videoWriter != nil {
-		if err := s.videoWriter.Close(); err != nil {
+	if r.videoWriter != nil {
+		if err := r.videoWriter.Close(); err != nil {
 			panic(err)
 		}
 	}
-	log.Printf("Closing %s", s.file)
+	if r.started {
+		log.WithField("session", r.ctx.Value("session")).
+			Printf("webm writer closed: %s", r.file)
+	} else {
+		log.WithField("session", r.ctx.Value("session")).
+			Print("webm writer closed without starting")
+	}
 }
 
-func (s *WebmRecorder) PushOpus(rtpPacket *rtp.Packet) {
-	s.audioBuilder.Push(rtpPacket)
+func (r *WebmRecorder) pushOpus(rtpPacket *rtp.Packet) {
+	r.audioBuilder.Push(rtpPacket)
 
 	for {
-		sample := s.audioBuilder.Pop()
+		sample := r.audioBuilder.Pop()
 		if sample == nil {
 			return
 		}
-		if s.audioWriter != nil {
-			s.audioTimestamp += sample.Duration
-			if _, err := s.audioWriter.Write(true, int64(s.audioTimestamp/time.Millisecond), sample.Data); err != nil {
+		if r.audioWriter != nil {
+			r.audioTimestamp += sample.Duration
+			if _, err := r.audioWriter.Write(true, int64(r.audioTimestamp/time.Millisecond), sample.Data); err != nil {
 				panic(err)
 			}
 		}
 	}
 }
 
-func (s *WebmRecorder) PushVP8(rtpPacket *rtp.Packet) {
-	s.videoBuilder.Push(rtpPacket)
+func (r *WebmRecorder) pushVP8(rtpPacket *rtp.Packet) {
+	r.videoBuilder.Push(rtpPacket)
 
 	var ts time.Duration
 	for {
-		sample := s.videoBuilder.Pop()
+		sample := r.videoBuilder.Pop()
 		if sample == nil {
 			return
 		}
@@ -141,9 +153,9 @@ func (s *WebmRecorder) PushVP8(rtpPacket *rtp.Packet) {
 		videoKeyframe := sample.Data[0]&0x1 == 0
 		if videoKeyframe {
 			// jitter buffer content will be dropped up until the keyframe
-			seq := s.seqUnwrapper.Unwrap(uint64(rtpPacket.SequenceNumber))
-			s.jitterBuffer.SetNextPacketsStart(seq)
-			s.keyframeSequence = seq
+			seq := r.seqUnwrapper.Unwrap(uint64(rtpPacket.SequenceNumber))
+			r.jitterBuffer.SetNextPacketsStart(seq)
+			r.keyframeSequence = seq
 
 			//log.Debug("keyframe #", seq)
 
@@ -152,34 +164,34 @@ func (s *WebmRecorder) PushVP8(rtpPacket *rtp.Packet) {
 			width := int(raw & 0x3FFF)
 			height := int((raw >> 16) & 0x3FFF)
 
-			if s.videoWriter == nil || s.audioWriter == nil {
+			if r.videoWriter == nil || r.audioWriter == nil {
 				//Initialize WebM saver using received frame size.
-				s.InitWriter(width, height)
+				r.initWriter(width, height)
 			}
 		}
-		if s.videoWriter != nil {
-			s.videoTimestamp += sample.Duration
-			if s.closed {
+		if r.videoWriter != nil {
+			r.videoTimestamp += sample.Duration
+			if r.closed {
 				break
 			}
-			if _, err := s.videoWriter.Write(videoKeyframe, int64(s.videoTimestamp/time.Millisecond), sample.Data); err != nil {
-				log.Error(err)
-				return
+			if _, err := r.videoWriter.Write(videoKeyframe, int64(r.videoTimestamp/time.Millisecond), sample.Data); err != nil {
+				panic(err)
 			}
 		}
-		if ts == s.videoTimestamp {
-			s.flowing = false
+		if ts == r.videoTimestamp {
+			r.flowing = false
 		} else {
-			ts = s.videoTimestamp
+			ts = r.videoTimestamp
 		}
-		if !s.flowing || videoKeyframe {
-			s.flowCallbackFn(s.flowing, s.keyframeSequence, s.videoTimestamp)
+		if !r.flowing || videoKeyframe {
+			r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp)
 		}
 
 	}
 }
-func (s *WebmRecorder) InitWriter(width, height int) {
-	w, err := os.OpenFile(s.file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+
+func (r *WebmRecorder) initWriter(width, height int) {
+	w, err := os.OpenFile(r.file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		panic(err)
 	}
@@ -219,9 +231,11 @@ func (s *WebmRecorder) InitWriter(width, height int) {
 	if err != nil {
 		panic(err)
 	}
-	log.Printf("WebM saver has started with video width=%d, height=%d\n", width, height)
-	s.audioWriter = ws[0]
-	s.videoWriter = ws[1]
+	log.WithField("session", r.ctx.Value("session")).
+		Printf("webm writer started with %dx%d video: %s", width, height, r.file)
+	r.audioWriter = ws[0]
+	r.videoWriter = ws[1]
+	r.started = true
 
-	s.flowing = true
+	r.flowing = true
 }

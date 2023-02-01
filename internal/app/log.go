@@ -30,11 +30,11 @@ func configureLog() {
 		if log.GetLevel() != log.DebugLevel {
 			log.SetReportCaller(true)
 			log.SetLevel(log.DebugLevel)
-			log.Debug("Debug log enabled")
+			log.Debug("debug log enabled")
 		}
 	} else {
 		if log.GetLevel() == log.DebugLevel {
-			log.Debug("Debug log disabled")
+			log.Debug("debug log disabled")
 		}
 		log.SetReportCaller(false)
 		log.SetLevel(log.InfoLevel)

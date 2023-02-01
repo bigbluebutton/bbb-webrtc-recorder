@@ -24,20 +24,29 @@ jobs:
         with:
           go-version: '>=1.19.0'
           cache: true
-      - name: Build package
+      - name: Install dependencies
         run: |
           apt update
           apt install -y ca-certificates
-          rm -rf ./build
           echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | tee /etc/apt/sources.list.d/goreleaser.list
           apt update
           apt install -y nfpm
+      - name: Build package
+        run: |
+          rm -rf ./build ./release
           mkdir -p ./build ./release
+          export V=($(cat ./VERSION)) GOMOD=$(go list -m)
+          echo $GOMOD ${V[@]}
           go mod tidy
-          go build -o ./build/bbb-webrtc-recorder ./cmd/bbb-webrtc-recorder
+          go build -o ./build/bbb-webrtc-recorder \
+            -ldflags="-X '$GOMOD/internal.AppVersion=v${V[0]}-${V[1]} (${GITHUB_SHA::7})'" \
+            ./cmd/bbb-webrtc-recorder
           cp ./packaging/env ./build/
           cp ./packaging/systemd.service ./build/
-          VERSION=0.1 RELEASE=0 nfpm pkg -p deb -f ./packaging/nfpm.yml -t ./release
+          VERSION=${V[0]}+${GITHUB_SHA::7} RELEASE=${V[1]} \
+            nfpm pkg -p deb -f ./packaging/nfpm.yml -t ./release
+          apt reinstall -y --allow-downgrades ./release/*.deb
+          bbb-webrtc-recorder -v
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:

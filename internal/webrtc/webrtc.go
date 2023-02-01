@@ -1,6 +1,7 @@
 package webrtc
 
 import (
+	"context"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
@@ -13,15 +14,16 @@ import (
 )
 
 type WebRTC struct {
+	ctx context.Context
 	cfg config.WebRTC
 	pc  *webrtc.PeerConnection
 }
 
-func NewWebRTC(cfg config.WebRTC) *WebRTC {
-	return &WebRTC{cfg: cfg}
+func NewWebRTC(ctx context.Context, cfg config.WebRTC) *WebRTC {
+	return &WebRTC{ctx: ctx, cfg: cfg}
 }
 
-func (w WebRTC) Init(offer webrtc.SessionDescription, saver recorder.Recorder) webrtc.SessionDescription {
+func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder) webrtc.SessionDescription {
 	// Prepare the configuration
 	cfg := webrtc.Configuration{
 		ICEServers:   w.cfg.ICEServers,
@@ -65,7 +67,7 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, saver recorder.Recorder) w
 	// replaces the SSRC and sends them back
 	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
-		ticker := time.NewTicker(time.Second * 1)
+		ticker := time.NewTicker(time.Second * 3)
 		done1 := make(chan bool)
 		trackDone = append(trackDone, done1)
 		go func() {
@@ -75,9 +77,14 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, saver recorder.Recorder) w
 					ticker.Stop()
 					return
 				case <-ticker.C:
-					errSend := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}})
+					errSend := peerConnection.WriteRTCP([]rtcp.Packet{
+						&rtcp.PictureLossIndication{
+							MediaSSRC: uint32(track.SSRC()),
+						},
+					})
 					if errSend != nil {
-						log.Error(errSend)
+						log.WithField("session", w.ctx.Value("session")).
+							Error(errSend)
 					}
 				}
 			}
@@ -106,58 +113,45 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, saver recorder.Recorder) w
 					}
 					errSend := peerConnection.WriteRTCP([]rtcp.Packet{nack})
 					if errSend != nil {
-						log.Error(errSend)
+						log.WithField("session", w.ctx.Value("session")).
+							Error(errSend)
 					}
 				}
 			}
-			//for range ticker.C {
-			//	missing := receiveLog.MissingSeqNumbers(10)
-			//	nack := &rtcp.TransportLayerNack{
-			//		SenderSSRC: senderSSRC,
-			//		MediaSSRC:  uint32(track.SSRC()),
-			//		Nacks:      utils.NackPairs(missing),
-			//	}
-			//	errSend := peerConnection.WriteRTCP([]rtcp.Packet{nack})
-			//	if errSend != nil {
-			//		fmt.Println(errSend)
-			//	}
-			//}
 		}()
 
-		log.Infof("track has started, of type %d: %s", track.PayloadType(), track.Codec().RTPCodecCapability.MimeType)
+		log.WithField("session", w.ctx.Value("session")).
+			Infof("%s (%d) track started", track.Codec().RTPCodecCapability.MimeType, track.PayloadType())
 		for {
 			// Read RTP packets being sent to Pion
 			rtp, _, readErr := track.ReadRTP()
 			if readErr != nil {
 				if readErr == io.EOF {
-					log.Infof("track has stopped, of type %s", track.Codec().RTPCodecCapability.MimeType)
+					log.WithField("session", w.ctx.Value("session")).
+						Infof("%s track stopped", track.Codec().RTPCodecCapability.MimeType)
 					return
 				}
-				log.Error(readErr)
+				log.WithField("session", w.ctx.Value("session")).
+					Error(readErr)
 				return
 			}
 
-			//switch track.Kind() {
-			//case webrtc.RTPCodecTypeAudio:
-			//	saver.PushOpus(rtp)
-			//case webrtc.RTPCodecTypeVideo:
-			//	saver.PushVP8(rtp)
-			//}
-
 			receiveLog.Add(rtp.SequenceNumber)
 
-			saver.Push(rtp, track)
+			r.Push(rtp, track)
 		}
 	})
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		log.Infof("connection state has changed: %s", connectionState.String())
+		log.WithField("session", w.ctx.Value("session")).
+			Infof("webrtc connection state changed: %s", connectionState.String())
 		if connectionState > webrtc.ICEConnectionStateConnected {
 			if err := peerConnection.Close(); err != nil {
-				log.Error(err)
+				log.WithField("session", w.ctx.Value("session")).
+					Error(err)
 			}
-			saver.Close()
+			r.Close()
 
 			for _, done := range trackDone {
 				done <- true
@@ -169,14 +163,16 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, saver recorder.Recorder) w
 	// Set the remote SessionDescription
 	err = peerConnection.SetRemoteDescription(offer)
 	if err != nil {
-		log.Error(err)
+		log.WithField("session", w.ctx.Value("session")).
+			Error(err)
 		return webrtc.SessionDescription{}
 	}
 
 	// Create an answer
 	answer, err := peerConnection.CreateAnswer(nil)
 	if err != nil {
-		log.Error(err)
+		log.WithField("session", w.ctx.Value("session")).
+			Error(err)
 		return webrtc.SessionDescription{}
 	}
 

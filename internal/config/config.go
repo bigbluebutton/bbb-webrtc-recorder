@@ -6,7 +6,15 @@ import (
 	"os"
 )
 
+type App struct {
+	Name     string
+	Version  string
+	GitHash  string
+	LongName string
+}
+
 type Config struct {
+	App      App      `yaml:"-"`
 	Debug    bool     `yaml:"debug"`
 	Recorder Recorder `yaml:"recorder,omitempty"`
 	PubSub   PubSub   `yaml:"pubsub,omitempty"`
@@ -14,21 +22,25 @@ type Config struct {
 	HTTP     HTTP     `yaml:"http,omitempty"`
 }
 
-func (cfg *Config) GetDefaults(app string) *Config {
-	cfg.SetDefaults(app)
+func (cfg *Config) GetDefaults() *Config {
+	cfg.SetDefaults()
 	return cfg
 }
 
 // SetDefaults sets the default values
-func (cfg *Config) SetDefaults(app string) {
-	if app == "" {
+func (cfg *Config) SetDefaults() {
+	if cfg.App.Name == "" {
 		var err error
-		if app, err = os.Executable(); err != nil {
+		if cfg.App.Name, err = os.Executable(); err != nil {
 			log.Error(err)
-			app = "unknown"
+			cfg.App.Name = "unknown"
 		}
 	}
-	cfg.PubSub.Channel, _ = os.Executable()
+
+	cfg.PubSub.Channels = Channels{
+		Subscribe: "to-" + cfg.App.Name,
+		Publish:   "from-" + cfg.App.Name,
+	}
 	cfg.PubSub.Adapter = "redis"
 	cfg.PubSub.Adapters = make(map[string]interface{})
 	cfg.PubSub.Adapters["redis"] = &Redis{
@@ -54,9 +66,14 @@ type Redis struct {
 }
 
 type PubSub struct {
-	Channel  string `yaml:"channel,omitempty"`
-	Adapter  string `yaml:"adapter,omitempty"`
+	Channels Channels `yaml:"channels,omitempty"`
+	Adapter  string   `yaml:"adapter,omitempty"`
 	Adapters map[string]interface{}
+}
+
+type Channels struct {
+	Subscribe string `yaml:"subscribe,omitempty"`
+	Publish   string `yaml:"publish,omitempty"`
 }
 
 type WebRTC struct {
