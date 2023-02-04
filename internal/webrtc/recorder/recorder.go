@@ -13,12 +13,12 @@ import (
 	"time"
 )
 
-type FlowCallbackFn func(isFlowing bool, keyframeSequence int64, videoTimestamp time.Duration)
+type FlowCallbackFn func(isFlowing bool, keyframeSequence int64, videoTimestamp time.Duration, closed bool)
 
 type Recorder interface {
 	Push(rtp *rtp.Packet, track *webrtc.TrackRemote)
 	SetContext(ctx context.Context)
-	Close()
+	Close() time.Duration
 }
 
 func NewRecorder(ctx context.Context, cfg config.Recorder, file string, fn FlowCallbackFn) (Recorder, error) {
@@ -26,13 +26,15 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string, fn FlowC
 	dir := path.Clean(cfg.Directory)
 
 	if stat, err := os.Stat(dir); os.IsNotExist(err) {
-		log.Debug(stat)
+		log.WithField("session", ctx.Value("session")).
+			Debug(stat)
 		return nil, fmt.Errorf("directory does not exist %s", cfg.Directory)
 	}
 
 	file = path.Clean(dir + string(os.PathSeparator) + file)
 	if stat, err := os.Stat(file); !os.IsNotExist(err) {
-		log.Debug(stat)
+		log.WithField("session", ctx.Value("session")).
+			Debug(stat)
 		return nil, fmt.Errorf("file already exists %s", file)
 	}
 

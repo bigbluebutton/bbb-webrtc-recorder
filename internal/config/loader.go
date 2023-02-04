@@ -47,7 +47,7 @@ func (cfg *Config) Load(app App, configFile string) {
 	} else if !found {
 		log.Debugf("no %s* environment variables defined", envPrefix)
 	} else {
-		log.Printf("Configuration loaded from %d environment variables\n", len(envLoader.GetVars()))
+		log.Printf("configuration loaded from %d environment variables", len(envLoader.GetVars()))
 	}
 
 	cfg.App = app

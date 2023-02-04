@@ -1,6 +1,39 @@
 package events
 
-import "time"
+import (
+	"github.com/AlekSi/pointer"
+	"time"
+)
+
+type Event struct {
+	Id   string
+	Data interface{}
+}
+
+func (e *Event) IsValid() bool {
+	return e.Id != ""
+}
+
+func (e *Event) StartRecording() *StartRecording {
+	if ev, ok := e.Data.(*StartRecording); ok {
+		return ev
+	}
+	return nil
+}
+
+func (e *Event) StartRecordingResponse() *StartRecordingResponse {
+	if ev, ok := e.Data.(*StartRecordingResponse); ok {
+		return ev
+	}
+	return nil
+}
+
+func (e *Event) StopRecording() *StopRecording {
+	if ev, ok := e.Data.(*StopRecording); ok {
+		return ev
+	}
+	return nil
+}
 
 /*
 startRecording (SFU -> Recorder)
@@ -14,18 +47,32 @@ startRecording (SFU -> Recorder)
 ```
 */
 
-//type StartRecording struct {
-//	Id                 string  `json:",omitempty"`
-//	RecordingSessionId string  `json:",omitempty"`
-//	SDP                *string `json:",omitempty"`
-//	FileName           string  `json:",omitempty"`
-//}
-
 type StartRecording struct {
-	Id                 string `json:"id,omitempty"`
-	RecordingSessionId string `json:"recordingSessionId,omitempty"`
-	SDP                string `json:"sdp,omitempty"`
-	FileName           string `json:"fileName,omitempty"`
+	Id        string `json:"id,omitempty"`
+	SessionId string `json:"recordingSessionId,omitempty"`
+	SDP       string `json:"sdp,omitempty"`
+	FileName  string `json:"fileName,omitempty"`
+}
+
+func (e *StartRecording) Fail(err error) *StartRecordingResponse {
+	r := StartRecordingResponse{
+		Id:        "startRecordingResponse",
+		SessionId: e.SessionId,
+		Status:    "failed",
+		Error:     pointer.ToString(err.Error()),
+	}
+	return &r
+}
+
+func (e *StartRecording) Success(sdp string) *StartRecordingResponse {
+	r := StartRecordingResponse{
+		Id:        "startRecordingResponse",
+		SessionId: e.SessionId,
+		Status:    "ok",
+		Error:     nil,
+		SDP:       pointer.ToString(sdp),
+	}
+	return &r
 }
 
 /*
@@ -42,11 +89,11 @@ startRecordingResponse (Recorder -> SFU)
 */
 
 type StartRecordingResponse struct {
-	Id                 string  `json:"id,omitempty"`
-	RecordingSessionId string  `json:"recordingSessionId,omitempty"`
-	Status             string  `json:"status,omitempty"`
-	Error              *string `json:"error,omitempty"`
-	SDP                *string `json:"sdp,omitempty"`
+	Id        string  `json:"id,omitempty"`
+	SessionId string  `json:"recordingSessionId,omitempty"`
+	Status    string  `json:"status,omitempty"`
+	Error     *string `json:"error,omitempty"`
+	SDP       *string `json:"sdp,omitempty"`
 }
 
 /*
@@ -63,14 +110,24 @@ recordingRtpStatusChanged (Recorder -> SFU)
 */
 
 type RecordingRtpStatusChanged struct {
-	Id                 string        `json:"id,omitempty"`
-	RecordingSessionId string        `json:"recordingSessionId,omitempty"`
-	Status             string        `json:"status,omitempty"`
-	TimestampUTC       time.Time     `json:"timestampUTC"`
-	TimestampHR        time.Duration `json:"timestampHR"`
+	Id           string        `json:"id,omitempty"`
+	SessionId    string        `json:"recordingSessionId,omitempty"`
+	Status       string        `json:"status,omitempty"`
+	TimestampUTC time.Time     `json:"timestampUTC"`
+	TimestampHR  time.Duration `json:"timestampHR"`
 }
 
-var FlowingStatus = map[bool]string{true: "flowing", false: "not_flowing"}
+var flowingStatus = map[bool]string{true: "flowing", false: "not_flowing"}
+
+func NewRecordingRtpStatusChanged(id string, status bool, ts time.Duration) *RecordingRtpStatusChanged {
+	return &RecordingRtpStatusChanged{
+		Id:           "recordingRtpStatusChanged",
+		SessionId:    id,
+		Status:       flowingStatus[status],
+		TimestampUTC: time.Now().UTC(),
+		TimestampHR:  ts,
+	}
+}
 
 /*
 stopRecording (SFU -> Recorder)
@@ -83,8 +140,18 @@ stopRecording (SFU -> Recorder)
 */
 
 type StopRecording struct {
-	Id                 string `json:"id,omitempty"`
-	RecordingSessionId string `json:"recordingSessionId,omitempty"`
+	Id        string `json:"id,omitempty"`
+	SessionId string `json:"recordingSessionId,omitempty"`
+}
+
+func (e *StopRecording) Stopped(reason string, ts time.Duration) *RecordingStopped {
+	return &RecordingStopped{
+		Id:           "recordingStopped",
+		SessionId:    e.SessionId,
+		Reason:       reason,
+		TimestampUTC: time.Now().UTC(),
+		TimestampHR:  ts,
+	}
 }
 
 /*
@@ -101,9 +168,19 @@ recordingStopped (Recorder -> SFU)
 */
 
 type RecordingStopped struct {
-	Id                 string    `json:"id,omitempty"`
-	RecordingSessionId string    `json:"recordingSessionId,omitempty"`
-	Reason             string    `json:"reason,omitempty"`
-	TimestampUTC       time.Time `json:"timestampUTC,omitempty"`
-	TimestampHR        time.Time `json:"timestampHR,omitempty"`
+	Id           string        `json:"id,omitempty"`
+	SessionId    string        `json:"recordingSessionId,omitempty"`
+	Reason       string        `json:"reason,omitempty"`
+	TimestampUTC time.Time     `json:"timestampUTC,omitempty"`
+	TimestampHR  time.Duration `json:"timestampHR,omitempty"`
+}
+
+func NewRecordingStopped(id, reason string, ts time.Duration) *RecordingStopped {
+	return &RecordingStopped{
+		Id:           "recordingStopped",
+		SessionId:    id,
+		Reason:       reason,
+		TimestampUTC: time.Now().UTC(),
+		TimestampHR:  ts,
+	}
 }

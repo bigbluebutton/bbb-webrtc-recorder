@@ -38,10 +38,9 @@ func NewHTTPServer(cfg *config.Config, ps pubsub.PubSub) *HTTPServer {
 func (s *HTTPServer) Serve() {
 	answerChannels := make(map[string]*chan string)
 	go s.pubsub.Subscribe(s.cfg.PubSub.Channels.Publish, func(ctx context.Context, msg []byte) {
-		name, event := events.Decode(msg)
-		if name == "startRecordingResponse" {
-			e := event.(events.StartRecordingResponse)
-			*answerChannels[e.RecordingSessionId] <- *e.SDP
+		event := events.Decode(msg)
+		if e := event.StartRecordingResponse(); e != nil {
+			*answerChannels[e.SessionId] <- *e.SDP
 		}
 	})
 	go s.serve(func(sdp string) string {
@@ -50,10 +49,10 @@ func (s *HTTPServer) Serve() {
 		answerChan := make(chan string)
 		answerChannels[sessId] = &answerChan
 		e := events.StartRecording{
-			Id:                 "startRecording",
-			RecordingSessionId: sessId,
-			SDP:                sdp,
-			FileName:           fmt.Sprintf("%s.webm", t.Format("20060102150405")),
+			Id:        "startRecording",
+			SessionId: sessId,
+			SDP:       sdp,
+			FileName:  fmt.Sprintf("%s.webm", t.Format("20060102150405")),
 		}
 		j, _ := json.Marshal(e)
 		s.pubsub.Publish(s.cfg.PubSub.Channels.Subscribe, j)

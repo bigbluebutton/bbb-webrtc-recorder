@@ -61,7 +61,7 @@ func NewWebmRecorder(file string, fn FlowCallbackFn) *WebmRecorder {
 			case <-r.statusTicker.C:
 				if ts == r.videoTimestamp {
 					r.flowing = false
-					r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp)
+					r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp, r.closed)
 				}
 			}
 			ts = r.videoTimestamp
@@ -95,9 +95,9 @@ func (r *WebmRecorder) Push(p *rtp.Packet, track *webrtc.TrackRemote) {
 	}
 }
 
-func (r *WebmRecorder) Close() {
+func (r *WebmRecorder) Close() time.Duration {
 	if r.closed {
-		return
+		return r.videoTimestamp
 	}
 	r.flowing = false
 	r.closed = true
@@ -115,12 +115,14 @@ func (r *WebmRecorder) Close() {
 		}
 	}
 	if r.started {
+		//r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp, r.closed)
 		log.WithField("session", r.ctx.Value("session")).
 			Printf("webm writer closed: %s", r.file)
 	} else {
 		log.WithField("session", r.ctx.Value("session")).
 			Print("webm writer closed without starting")
 	}
+	return r.videoTimestamp
 }
 
 func (r *WebmRecorder) pushOpus(rtpPacket *rtp.Packet) {
@@ -184,7 +186,7 @@ func (r *WebmRecorder) pushVP8(rtpPacket *rtp.Packet) {
 			ts = r.videoTimestamp
 		}
 		if !r.flowing || videoKeyframe {
-			r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp)
+			r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp, r.closed)
 		}
 
 	}

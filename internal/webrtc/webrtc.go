@@ -23,7 +23,7 @@ func NewWebRTC(ctx context.Context, cfg config.WebRTC) *WebRTC {
 	return &WebRTC{ctx: ctx, cfg: cfg}
 }
 
-func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder) webrtc.SessionDescription {
+func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder, connStateCallbackFn func(state webrtc.ICEConnectionState)) webrtc.SessionDescription {
 	// Prepare the configuration
 	cfg := webrtc.Configuration{
 		ICEServers:   w.cfg.ICEServers,
@@ -151,13 +151,13 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder) webrt
 				log.WithField("session", w.ctx.Value("session")).
 					Error(err)
 			}
-			r.Close()
 
 			for _, done := range trackDone {
 				done <- true
 			}
 			trackDone = nil
 		}
+		connStateCallbackFn(connectionState)
 	})
 
 	// Set the remote SessionDescription

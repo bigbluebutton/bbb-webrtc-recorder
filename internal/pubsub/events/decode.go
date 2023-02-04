@@ -1,43 +1,46 @@
 package events
 
 import (
+	log "github.com/sirupsen/logrus"
 	"github.com/titanous/json5"
 )
 
-func Decode(message []byte) (string, interface{}) {
+func Decode(message []byte) *Event {
+	e := &Event{}
 	m := make(map[string]interface{})
 	if err := json5.Unmarshal(message, &m); err != nil {
-
+		log.Error(err, message)
+		return nil
 	}
 
-	if _, ok := m["id"].(string); !ok {
-
+	var id string
+	var ok bool
+	if id, ok = m["id"].(string); !ok {
+		return nil
 	}
-	id := m["id"].(string)
 
-	var r interface{}
+	var s interface{}
 	switch id {
 	case "startRecording":
-		s := StartRecording{}
-		if err := json5.Unmarshal(message, &s); err != nil {
-
-		}
-		r = s
+		s = &StartRecording{}
 	case "stopRecording":
-		s := StopRecording{}
-		if err := json5.Unmarshal(message, &s); err != nil {
-
-		}
-		r = s
+		s = &StopRecording{}
 	case "startRecordingResponse":
-		s := StartRecordingResponse{}
-		if err := json5.Unmarshal(message, &s); err != nil {
-
-		}
-		r = s
+		s = &StartRecordingResponse{}
+	case "recordingRtpStatusChanged":
+		s = &RecordingRtpStatusChanged{}
 	default:
-
+		var v map[string]interface{}
+		s = &v
 	}
 
-	return id, r
+	if err := json5.Unmarshal(message, s); err != nil {
+		log.Error(err, string(message))
+		return nil
+	}
+
+	e.Id = id
+	e.Data = s
+
+	return e
 }

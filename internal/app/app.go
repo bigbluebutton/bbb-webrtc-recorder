@@ -19,6 +19,7 @@ var (
 	flags struct {
 		debug   bool
 		config  string
+		dump    string
 		help    bool
 		version bool
 	}
@@ -32,6 +33,7 @@ func init() {
 	app.LongName = fmt.Sprintf("%s %s", app.Name, app.Version)
 
 	flag.StringVarP(&flags.config, "config", "c", flags.config, "load configuration file")
+	flag.StringVar(&flags.dump, "dump", "", "print config value (e.g. 'recorder.directory')")
 	flag.BoolVarP(&flags.debug, "debug", "d", flags.debug, "enable debug log")
 	flag.BoolVarP(&flags.help, "help", "h", flags.help, "print help")
 	flag.BoolVarP(&flags.version, "version", "v", flags.version, "print version")
@@ -48,6 +50,13 @@ func init() {
 		os.Exit(0)
 	}
 
+	if flags.dump != "" {
+		log.SetLevel(log.FatalLevel)
+		cfg = initConfig()
+		loadConfig()
+		dumpConfig()
+	}
+
 	Init()
 	Run()
 }
@@ -57,6 +66,7 @@ func Init() {
 	log.Infof("Starting %s PID: %d", app.Name, os.Getpid())
 	configureLog()
 	loadConfig()
+	configureLog()
 	sigintHandler()
 	sighupHandler()
 }
@@ -72,17 +82,6 @@ func Run() {
 	ps.Subscribe(cfg.PubSub.Channels.Subscribe, s.HandlePubSub)
 }
 
-func initConfig() *config.Config {
-	return (&config.Config{App: app, Debug: flags.debug}).GetDefaults()
-}
-
-func loadConfig() {
-	newCfg := initConfig()
-	newCfg.Load(app, flags.config)
-	*cfg = *newCfg
-	configureLog()
-}
-
 func sighupHandler() {
 	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
@@ -92,6 +91,7 @@ func sighupHandler() {
 			case <-sighup:
 				log.Debug("reloading config...")
 				loadConfig()
+				configureLog()
 			}
 		}
 	}()
