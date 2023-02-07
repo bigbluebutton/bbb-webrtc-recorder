@@ -32,6 +32,22 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string, fn FlowC
 	}
 
 	file = path.Clean(dir + string(os.PathSeparator) + file)
+	fileDir := path.Dir(file)
+
+	if stat, err := os.Stat(fileDir); err != nil {
+		log.WithField("session", ctx.Value("session")).
+			Debug(stat)
+
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("file directory is not accessible %s", fileDir)
+		}
+
+		err = os.MkdirAll(fileDir, 0700)
+		if err != nil && !os.IsExist(err) {
+			return nil, fmt.Errorf("file directory could not be created %s", fileDir)
+		}
+	}
+
 	if stat, err := os.Stat(file); !os.IsNotExist(err) {
 		log.WithField("session", ctx.Value("session")).
 			Debug(stat)
