@@ -78,6 +78,8 @@ type Channels struct {
 
 type WebRTC struct {
 	ICEServers []webrtc.ICEServer `yaml:"iceServers,omitempty"`
+	RTCMinPort uint16  `yaml:"rtcMinPort,omitempty"`
+	RTCMaxPort uint16  `yaml:"rtcMaxPort,omitempty"`
 }
 
 type HTTP struct {
