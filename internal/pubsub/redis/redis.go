@@ -14,14 +14,16 @@ const healthCheckPeriod = time.Minute
 type PubSub struct {
 	network string
 	address string
+	password string
 	conn    redis.Conn
 	psc     redis.PubSubConn
 }
 
-func NewPubSub(network, address string) (*PubSub, error) {
+func NewPubSub(network, address string, password string) (*PubSub, error) {
 	p := &PubSub{
 		network: network,
 		address: address,
+		password: password,
 	}
 	if conn, err := p.dial(); err != nil {
 		return nil, err
@@ -36,7 +38,8 @@ func (p *PubSub) dial() (redis.Conn, error) {
 	return redis.Dial(p.network, p.address,
 		// Read timeout on server should be greater than ping period.
 		redis.DialReadTimeout(healthCheckPeriod+10*time.Second),
-		redis.DialWriteTimeout(10*time.Second))
+		redis.DialWriteTimeout(10*time.Second),
+		redis.DialPassword(p.password))
 }
 
 func (p *PubSub) ListenChannels(ctx context.Context,

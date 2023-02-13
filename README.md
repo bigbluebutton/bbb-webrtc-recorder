@@ -40,6 +40,7 @@ pubsub:
     redis:
       address: :6379
       network: tcp
+      #password: foobared
 
 webrtc:
   # UDP port range to be used

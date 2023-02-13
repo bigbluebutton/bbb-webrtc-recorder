@@ -46,6 +46,7 @@ func (cfg *Config) SetDefaults() {
 	cfg.PubSub.Adapters["redis"] = &Redis{
 		Address: ":6379",
 		Network: "tcp",
+		Password: "",
 	}
 	cfg.WebRTC.ICEServers = append(cfg.WebRTC.ICEServers, webrtc.ICEServer{
 		URLs: []string{"stun:stun.l.google.com:19302"},
@@ -63,6 +64,7 @@ type Recorder struct {
 type Redis struct {
 	Address string `yaml:"address,omitempty"`
 	Network string `yaml:"network,omitempty"`
+	Password string `yaml:"network,omitempty"`
 }
 
 type PubSub struct {
