@@ -64,7 +64,7 @@ type Recorder struct {
 type Redis struct {
 	Address string `yaml:"address,omitempty"`
 	Network string `yaml:"network,omitempty"`
-	Password string `yaml:"network,omitempty"`
+	Password string `yaml:"password,omitempty"`
 }
 
 type PubSub struct {
