@@ -37,7 +37,7 @@ func (r *Redis) Publish(channel string, message []byte) {
 
 func NewRedis(cfg config.Redis) *Redis {
 	r := &Redis{config: cfg}
-	if p, err := redis.NewPubSub(cfg.Network, cfg.Address); err != nil {
+	if p, err := redis.NewPubSub(cfg.Network, cfg.Address, cfg.Password); err != nil {
 		log.Fatalf("failed to start redis pubsub: %s", err)
 	} else {
 		r.ctx, r.cancel = context.WithCancel(context.Background())

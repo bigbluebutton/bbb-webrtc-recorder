@@ -50,6 +50,7 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder, connS
 
 	se := &webrtc.SettingEngine{}
 	se.SetSRTPReplayProtectionWindow(1024)
+	se.SetEphemeralUDPPortRange(w.cfg.RTCMinPort, w.cfg.RTCMaxPort)
 
 	// Create the API object with the MediaEngine
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithSettingEngine(*se))

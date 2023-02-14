@@ -12,6 +12,13 @@
 <button id="stop" onclick="window.stopRecording()" disabled> Stop Recording </button>
 [ <a href="/media" target="_blank">All Recordings</a> ]
 <br /><br />
+<legend>Recording mode</legend>
+<select name="modes" id="modes-selection" onselect="console.log">
+    <option value="camWithAudio">Camera and audio</option>
+    <option value="cam">Camera</option>
+    <option value="screen">Screen</option>
+</select>
+<br /><br />
 <div id="logs"></div>
 
 <script>
@@ -34,9 +41,23 @@
         return resultStr;
     }
 
+    function getRecordingModeOpts() {
+        const recordingMode = document.getElementById('modes-selection').value
+        switch (recordingMode) {
+            case 'cam':
+                return { constraints: { audio: false, video: true } }
+            case 'screen':
+                return { screen: true, constraints: { audio: true, video: true } }
+            case 'camWithAudio':
+            default:
+              return { constraints: { audio: true, video: true } }
+        }
+    }
+
     window.startRecording = () => {
         document.getElementById('start').disabled = true
         document.getElementById('stop').disabled = false
+        const { screen = false, constraints } = getRecordingModeOpts();
 
         let pc = new RTCPeerConnection({
             iceServers: [
@@ -71,7 +92,11 @@
             }
         }
 
-        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        const boundStreamGenerator = !screen
+            ? navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
+            : navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+
+        boundStreamGenerator(constraints)
             .then(stream => {
                 document.getElementById('video1').srcObject = stream
                 // stream.getTracks().forEach(track => pc.addTrack(track, stream))

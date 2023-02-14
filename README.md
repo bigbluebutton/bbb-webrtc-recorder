@@ -9,7 +9,7 @@ apt update
 apt install ./bbb-webrtc-recorder_x.x-x_amd64.deb
 ```
 
-It depends on `redis` package which will be installed automatically. 
+It depends on `redis` package which will be installed automatically.
 
 ### Configuration
 
@@ -40,8 +40,12 @@ pubsub:
     redis:
       address: :6379
       network: tcp
+      #password: foobared
 
 webrtc:
+  # UDP port range to be used
+  rtcMinPort: 24577
+  rtcMaxPort: 32768
   # List of IceServers used for RTC
   iceServers:
     - urls:
