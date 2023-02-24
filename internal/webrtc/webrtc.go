@@ -5,7 +5,9 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
+	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
+	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 	log "github.com/sirupsen/logrus"
 	"io"
@@ -33,6 +35,12 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder, connS
 	// Create a MediaEngine object to configure the supported codec
 	m := &webrtc.MediaEngine{}
 
+	sdpOffer := sdp.SessionDescription{}
+
+	if err := sdpOffer.Unmarshal([]byte(offer.SDP)); err != nil {
+		panic(err)
+	}
+
 	// Setup the codecs you want to use.
 	// Only support VP8 and OPUS, this makes our WebM muxer code simpler
 	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
@@ -50,10 +58,22 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder, connS
 
 	se := &webrtc.SettingEngine{}
 	se.SetSRTPReplayProtectionWindow(1024)
-	se.SetEphemeralUDPPortRange(w.cfg.RTCMinPort, w.cfg.RTCMaxPort)
+	if err := se.SetEphemeralUDPPortRange(w.cfg.RTCMinPort, w.cfg.RTCMaxPort); err != nil {
+		panic(err)
+	}
+
+	i := &interceptor.Registry{}
+	// Use the default set of Interceptors
+	if err := webrtc.RegisterDefaultInterceptors(m, i); err != nil {
+		panic(err)
+	}
 
 	// Create the API object with the MediaEngine
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithSettingEngine(*se))
+	api := webrtc.NewAPI(
+		webrtc.WithMediaEngine(m),
+		webrtc.WithSettingEngine(*se),
+		webrtc.WithInterceptorRegistry(i),
+	)
 
 	// Create a new RTCPeerConnection
 	peerConnection, err := api.NewPeerConnection(cfg)

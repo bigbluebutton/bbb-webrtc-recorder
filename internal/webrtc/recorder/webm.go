@@ -59,7 +59,7 @@ func NewWebmRecorder(file string, fn FlowCallbackFn) *WebmRecorder {
 			case <-r.statusTickerChan:
 				return
 			case <-r.statusTicker.C:
-				if ts == r.videoTimestamp {
+				if ts == r.videoTimestamp && r.flowing {
 					r.flowing = false
 					r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp, r.closed)
 				}
@@ -69,6 +69,10 @@ func NewWebmRecorder(file string, fn FlowCallbackFn) *WebmRecorder {
 	}()
 
 	return r
+}
+
+func (r *WebmRecorder) GetFilePath() string {
+	return r.file
 }
 
 func (r *WebmRecorder) SetContext(ctx context.Context) {
@@ -147,6 +151,7 @@ func (r *WebmRecorder) pushVP8(rtpPacket *rtp.Packet) {
 
 	var ts time.Duration
 	for {
+		flowing := r.flowing
 		sample := r.videoBuilder.Pop()
 		if sample == nil {
 			return
@@ -180,12 +185,14 @@ func (r *WebmRecorder) pushVP8(rtpPacket *rtp.Packet) {
 				panic(err)
 			}
 		}
+
 		if ts == r.videoTimestamp {
 			r.flowing = false
 		} else {
 			ts = r.videoTimestamp
+			r.flowing = true
 		}
-		if !r.flowing || videoKeyframe {
+		if r.flowing != flowing {
 			r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp, r.closed)
 		}
 

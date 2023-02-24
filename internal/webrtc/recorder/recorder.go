@@ -16,6 +16,7 @@ import (
 type FlowCallbackFn func(isFlowing bool, keyframeSequence int64, videoTimestamp time.Duration, closed bool)
 
 type Recorder interface {
+	GetFilePath() string
 	Push(rtp *rtp.Packet, track *webrtc.TrackRemote)
 	SetContext(ctx context.Context)
 	Close() time.Duration

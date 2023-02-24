@@ -128,6 +128,7 @@ journalctl -u bbb-webrtc-recorder -f
     status: "ok" | "failed",
     error: undefined | <String>,
     sdp: <String | undefined>, // answer
+    fileName: <String | undefined>, // full path to recording
 }
 ```
 
