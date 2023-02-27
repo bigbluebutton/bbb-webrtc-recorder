@@ -81,9 +81,7 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 				sess := NewSession(e.SessionId, s, wrtc, rec)
 				s.sessions.Store(e.SessionId, sess)
 				sdp = sess.StartRecording(e.SDP)
-				s.PublishPubSub(e.Success(sdp))
-				log.WithField("session", ctx.Value("session")).
-					Debug(sdp)
+				s.PublishPubSub(e.Success(sdp, rec.GetFilePath()))
 			}()
 			if err != nil {
 				log.WithField("session", ctx.Value("session")).

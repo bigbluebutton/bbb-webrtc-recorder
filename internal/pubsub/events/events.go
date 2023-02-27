@@ -64,13 +64,14 @@ func (e *StartRecording) Fail(err error) *StartRecordingResponse {
 	return &r
 }
 
-func (e *StartRecording) Success(sdp string) *StartRecordingResponse {
+func (e *StartRecording) Success(sdp, fileName string) *StartRecordingResponse {
 	r := StartRecordingResponse{
 		Id:        "startRecordingResponse",
 		SessionId: e.SessionId,
 		Status:    "ok",
 		Error:     nil,
 		SDP:       pointer.ToString(sdp),
+		FileName:  pointer.ToString(fileName),
 	}
 	return &r
 }
@@ -84,6 +85,7 @@ startRecordingResponse (Recorder -> SFU)
 	status: ‘ok’ | ‘failed’,
 	error: undefined | <String>,
 	sdp: <String | undefined>, // answer
+	fileName: <String | undefined>, // full path to recording
 }
 ```
 */
@@ -94,6 +96,7 @@ type StartRecordingResponse struct {
 	Status    string  `json:"status,omitempty"`
 	Error     *string `json:"error,omitempty"`
 	SDP       *string `json:"sdp,omitempty"`
+	FileName  *string `json:"fileName,omitempty"`
 }
 
 /*
