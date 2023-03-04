@@ -46,6 +46,8 @@ webrtc:
   # UDP port range to be used
   rtcMinPort: 24577
   rtcMaxPort: 32768
+  # Jitter Buffer size
+  jitterBuffer: 512
   # List of IceServers used for RTC
   iceServers:
     - urls:

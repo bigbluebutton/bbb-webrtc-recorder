@@ -50,21 +50,8 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 			return
 		}
 
-		flowCallbackFn := func() recorder.FlowCallbackFn {
-			return func(isFlowing bool, keyframeSequence int64, videoTimestamp time.Duration, closed bool) {
-				var message interface{}
-				if !closed {
-					message = events.NewRecordingRtpStatusChanged(e.SessionId, isFlowing, videoTimestamp/time.Millisecond)
-				} else {
-					s.CloseSession(e.SessionId)
-					message = events.NewRecordingStopped(e.SessionId, "closed", videoTimestamp/time.Millisecond)
-				}
-				s.PublishPubSub(message)
-			}
-		}
-
 		var sdp string
-		if rec, err := recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName, flowCallbackFn()); err != nil {
+		if rec, err := recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName); err != nil {
 			log.WithField("session", ctx.Value("session")).
 				Error(err)
 			s.PublishPubSub(e.Fail(err))

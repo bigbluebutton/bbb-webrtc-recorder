@@ -48,7 +48,7 @@ func TestNackParsToSequenceNumbers(t *testing.T) {
 		u16(65580), u16(65581),
 	}
 
-	seqNums := NackParsToSequenceNumbers(pairs)
+	seqNums := NackPairsToSequenceNumbers(pairs)
 
 	if diff := pretty.Diff(wantSeqNums, seqNums); len(diff) > 0 {
 		t.Errorf("want/got: %v", diff)

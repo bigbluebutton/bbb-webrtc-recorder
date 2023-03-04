@@ -11,7 +11,7 @@ type JitterBuffer struct {
 	size      int64
 }
 
-func NewJitterBuffer(size int) *JitterBuffer {
+func NewJitterBuffer(size uint16) *JitterBuffer {
 	return &JitterBuffer{
 		packets: make([]*rtp.Packet, size),
 		size:    int64(size),
