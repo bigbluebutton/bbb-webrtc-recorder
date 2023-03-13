@@ -28,7 +28,7 @@ func NackPairs(seqNums []uint16) []rtcp.NackPair {
 	return pairs
 }
 
-func NackParsToSequenceNumbers(pairs []rtcp.NackPair) []uint16 {
+func NackPairsToSequenceNumbers(pairs []rtcp.NackPair) []uint16 {
 	seqs := make([]uint16, 0)
 	for _, pair := range pairs {
 		startSeq := pair.PacketID

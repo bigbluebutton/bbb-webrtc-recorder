@@ -39,12 +39,20 @@ func (s *Session) StartRecording(sdp string) string {
 				s.server.CloseSession(s.id)
 			}
 		}
+	}, func(isFlowing bool, videoTimestamp time.Duration, closed bool) {
+		var message interface{}
+		if !closed {
+			message = events.NewRecordingRtpStatusChanged(s.id, isFlowing, videoTimestamp/time.Millisecond)
+		} else {
+			s.server.CloseSession(s.id)
+			message = events.NewRecordingStopped(s.id, "closed", videoTimestamp/time.Millisecond)
+		}
+		s.server.PublishPubSub(message)
 	})
 	return signal.Encode(answer)
 }
 
 func (s *Session) StopRecording() time.Duration {
-	//s.webrtc.Close()
 	if !s.stopped {
 		s.stopped = true
 		return s.recorder.Close()

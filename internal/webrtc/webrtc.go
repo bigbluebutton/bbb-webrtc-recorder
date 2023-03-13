@@ -25,7 +25,12 @@ func NewWebRTC(ctx context.Context, cfg config.WebRTC) *WebRTC {
 	return &WebRTC{ctx: ctx, cfg: cfg}
 }
 
-func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder, connStateCallbackFn func(state webrtc.ICEConnectionState)) webrtc.SessionDescription {
+func (w WebRTC) Init(
+	offer webrtc.SessionDescription,
+	r recorder.Recorder,
+	connStateCallbackFn func(state webrtc.ICEConnectionState),
+	flowCallbackFn func(isFlowing bool, videoTimestamp time.Duration, closed bool),
+) webrtc.SessionDescription {
 	// Prepare the configuration
 	cfg := webrtc.Configuration{
 		ICEServers:   w.cfg.ICEServers,
@@ -82,67 +87,152 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder, connS
 	}
 	w.pc = peerConnection
 
-	//done := make(chan bool)
-	trackDone := make([]chan bool, 0)
+	for _, md := range sdpOffer.MediaDescriptions {
+		switch md.MediaName.Media {
+		case "audio":
+			if _, err = peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio); err != nil {
+				panic(err)
+			}
+		case "video":
+			if _, err = peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo); err != nil {
+				panic(err)
+			}
+		}
+	}
+
 	// Set a handler for when a new remote track starts, this handler copies inbound RTP packets,
 	// replaces the SSRC and sends them back
 	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
-		ticker := time.NewTicker(time.Second * 3)
-		done1 := make(chan bool)
-		trackDone = append(trackDone, done1)
-		go func() {
-			for {
-				select {
-				case <-done1:
-					ticker.Stop()
-					return
-				case <-ticker.C:
-					errSend := peerConnection.WriteRTCP([]rtcp.Packet{
-						&rtcp.PictureLossIndication{
-							MediaSSRC: uint32(track.SSRC()),
-						},
-					})
-					if errSend != nil {
-						log.WithField("session", w.ctx.Value("session")).
-							Error(errSend)
-					}
-				}
-			}
-		}()
-
-		receiveLog, err := utils.NewReceiveLog(1024)
-		if err != nil {
-			panic(err)
-		}
-		var senderSSRC = rand.Uint32()
-		done2 := make(chan bool)
-		trackDone = append(trackDone, done2)
-		go func() {
-			ticker := time.NewTicker(time.Millisecond * 50)
-			for {
-				select {
-				case <-done2:
-					ticker.Stop()
-					return
-				case <-ticker.C:
-					missing := receiveLog.MissingSeqNumbers(10)
-					nack := &rtcp.TransportLayerNack{
-						SenderSSRC: senderSSRC,
-						MediaSSRC:  uint32(track.SSRC()),
-						Nacks:      utils.NackPairs(missing),
-					}
-					errSend := peerConnection.WriteRTCP([]rtcp.Packet{nack})
-					if errSend != nil {
-						log.WithField("session", w.ctx.Value("session")).
-							Error(errSend)
-					}
-				}
-			}
-		}()
+		isAudio := track.Kind() == webrtc.RTPCodecTypeAudio
+		isVideo := track.Kind() == webrtc.RTPCodecTypeVideo
 
 		log.WithField("session", w.ctx.Value("session")).
 			Infof("%s (%d) track started", track.Codec().RTPCodecCapability.MimeType, track.PayloadType())
+
+		if isVideo {
+			// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
+			done := make(chan bool)
+			defer func() {
+				done <- true
+			}()
+			go func() {
+				ticker := time.NewTicker(time.Second * 3)
+				for {
+					select {
+					case <-done:
+						ticker.Stop()
+						return
+					case <-ticker.C:
+						errSend := peerConnection.WriteRTCP([]rtcp.Packet{
+							&rtcp.PictureLossIndication{
+								MediaSSRC: uint32(track.SSRC()),
+							},
+						})
+						if errSend != nil {
+							log.WithField("session", w.ctx.Value("session")).
+								Error(errSend)
+						}
+					}
+				}
+			}()
+		}
+
+		rl, err := utils.NewReceiveLog(1024)
+		if err != nil {
+			panic(err)
+		}
+
+		if true {
+			senderSSRC := rand.Uint32()
+			done := make(chan bool)
+			defer func() {
+				done <- true
+			}()
+			go func() {
+				ticker := time.NewTicker(time.Millisecond * 50)
+				for {
+					select {
+					case <-done:
+						ticker.Stop()
+						return
+					case <-ticker.C:
+						missing := rl.MissingSeqNumbers(10)
+						if missing == nil || len(missing) == 0 {
+							continue
+						}
+						nack := &rtcp.TransportLayerNack{
+							SenderSSRC: senderSSRC,
+							MediaSSRC:  uint32(track.SSRC()),
+							Nacks:      utils.NackPairs(missing),
+						}
+						errSend := peerConnection.WriteRTCP([]rtcp.Packet{nack})
+						if errSend != nil {
+							log.WithField("session", w.ctx.Value("session")).
+								Error(errSend)
+						}
+					}
+				}
+			}()
+		}
+
+		jb := utils.NewJitterBuffer(w.cfg.JitterBuffer)
+
+		if true {
+			done := make(chan bool)
+			defer func() {
+				done <- true
+			}()
+			go func() {
+				ticker := time.NewTicker(time.Millisecond * 100)
+				var wasFlowing, isFlowing bool
+				var s1, s2 uint16
+				for {
+					select {
+					case <-done:
+						ticker.Stop()
+						if isVideo {
+							flowCallbackFn(false, r.VideoTimestamp(), true)
+						}
+						return
+					case <-ticker.C:
+						if s1 == s2 {
+							isFlowing = false
+						} else {
+							isFlowing = true
+						}
+						s1 = s2
+						if isVideo {
+							if isFlowing != wasFlowing {
+								flowCallbackFn(isFlowing, r.VideoTimestamp(), false)
+								if isFlowing {
+									ticker.Reset(time.Millisecond * 1000)
+								} else {
+									ticker.Reset(time.Millisecond * 100)
+								}
+							}
+						}
+						wasFlowing = isFlowing
+					default:
+						packets := jb.NextPackets()
+						if packets == nil {
+							continue
+						}
+						for _, p := range packets {
+							s2 = p.SequenceNumber
+							switch {
+							case isAudio:
+								r.PushAudio(p)
+							case isVideo:
+								r.PushVideo(p)
+							}
+						}
+					}
+				}
+			}()
+		}
+
+		var seq int64
+		su := utils.NewSequenceUnwrapper(16)
 		for {
 			// Read RTP packets being sent to Pion
 			rtp, _, readErr := track.ReadRTP()
@@ -156,12 +246,12 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder, connS
 					Error(readErr)
 				return
 			}
-
-			receiveLog.Add(rtp.SequenceNumber)
-
-			r.Push(rtp, track)
+			seq = su.Unwrap(uint64(rtp.SequenceNumber))
+			jb.Add(seq, rtp)
+			rl.Add(rtp.SequenceNumber)
 		}
 	})
+
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
@@ -172,11 +262,6 @@ func (w WebRTC) Init(offer webrtc.SessionDescription, r recorder.Recorder, connS
 				log.WithField("session", w.ctx.Value("session")).
 					Error(err)
 			}
-
-			for _, done := range trackDone {
-				done <- true
-			}
-			trackDone = nil
 		}
 		connStateCallbackFn(connectionState)
 	})

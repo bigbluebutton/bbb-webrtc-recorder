@@ -1,29 +1,39 @@
 <style>
+    * {
+        font-family: 'Arial', sans-serif
+    }
+
     video {
         border: 1px solid #333;
         background: transparent url(/images/BigBlueButton_icon.svg) 50% 50% no-repeat;
     }
-</style>
 
-<!--<video id="video1" poster="/images/BigBlueButton_icon.svg" width="640" height="480" autoplay muted></video>-->
-<video id="video1" width="640" height="480" autoplay muted></video>
-<br /><br />
-<button id="start" onclick="window.startRecording()"> Start Recording </button>
-<button id="stop" onclick="window.stopRecording()" disabled> Stop Recording </button>
-[ <a href="/media" target="_blank">All Recordings</a> ]
-<br /><br />
-<legend>Recording mode</legend>
-<select name="modes" id="modes-selection" onselect="console.log">
-    <option value="camWithAudio">Camera and audio</option>
-    <option value="cam">Camera</option>
-    <option value="screen">Screen</option>
-</select>
-<br /><br />
+    #logs {
+        font-family: monospace
+    }
+</style>
+<div style="width: 650px;margin: 0 auto;">
+    <!--<video id="video1" poster="/images/BigBlueButton_icon.svg" width="640" height="480" autoplay muted></video>-->
+    <video id="video1" width="640" height="480" autoplay muted></video>
+    <br/><br/>
+    <button id="start" onclick="window.startRecording()"> Start Recording</button>
+    <button id="stop" onclick="window.stopRecording()" disabled> Stop Recording</button>
+    [ <a href="/media" target="_blank">All Recordings</a> ]
+    <br/><br/>
+    <legend>Recording mode</legend>
+    <select name="modes" id="modes-selection" onselect="console.log">
+        <option value="camWithAudio">Camera and audio</option>
+        <option value="cam">Camera</option>
+        <option value="screen">Screen</option>
+    </select>
+</div>
+<br/><br/>
 <div id="logs"></div>
 
 <script>
     var log = msg => {
         document.getElementById('logs').innerHTML += msg + '<br>'
+        console.log(msg)
     }
 
     async function getTextFromStream(readableStream) {
@@ -45,19 +55,20 @@
         const recordingMode = document.getElementById('modes-selection').value
         switch (recordingMode) {
             case 'cam':
-                return { constraints: { audio: false, video: true } }
+                return {constraints: {audio: false, video: true}}
             case 'screen':
-                return { screen: true, constraints: { audio: true, video: true } }
+                return {screen: true, constraints: {audio: true, video: true}}
             case 'camWithAudio':
             default:
-              return { constraints: { audio: true, video: true } }
+                return {constraints: {audio: true, video: true}}
         }
     }
 
     window.startRecording = () => {
         document.getElementById('start').disabled = true
         document.getElementById('stop').disabled = false
-        const { screen = false, constraints } = getRecordingModeOpts();
+
+        const {screen = false, constraints} = getRecordingModeOpts();
 
         let pc = new RTCPeerConnection({
             iceServers: [
@@ -79,15 +90,12 @@
                 })
                     .then(async response => {
                         let responseText = await getTextFromStream(response.body);
-                        console.log(responseText)
                         let r = JSON.parse(atob(responseText))
                         await pc.setRemoteDescription(r)
                         log(JSON.stringify(r))
-                        console.log(JSON.stringify(r))
                     })
                     .catch(error => {
                         log(error)
-                        console.log(error)
                     });
             }
         }
@@ -98,7 +106,10 @@
 
         boundStreamGenerator(constraints)
             .then(stream => {
-                document.getElementById('video1').srcObject = stream
+                const v = document.getElementById('video1')
+                if (document.getElementById('modes-selection').value != "screen")
+                    v.style.cssText = "background: none; -webkit-transform: scaleX(-1); transform: scaleX(-1);"
+                v.srcObject = stream
                 // stream.getTracks().forEach(track => pc.addTrack(track, stream))
                 stream.getTracks().forEach(track => {
                     console.log(track.getSettings())
@@ -106,6 +117,7 @@
                 })
                 pc.createOffer().then(d => pc.setLocalDescription(d))
                     .catch(log)
+                window.localStream = stream
             })
             .catch(log)
 
@@ -113,14 +125,18 @@
     }
 
     window.stopRecording = () => {
+        localStream.getTracks().forEach((track) => {
+            track.stop();
+        })
         window.pc.close()
         window.pc = null
-        document.getElementById('video1').srcObject = null
+        const v = document.getElementById('video1')
+        v.style.cssText = ""
+        v.srcObject = null
         document.getElementById('logs').innerHTML = ""
 
         document.getElementById('start').disabled = false
         document.getElementById('stop').disabled = true
-
     }
 
 </script>

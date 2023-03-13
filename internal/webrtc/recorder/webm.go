@@ -5,10 +5,8 @@ import (
 	"github.com/at-wat/ebml-go/mkvcore"
 	"github.com/at-wat/ebml-go/webm"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
-	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media/samplebuilder"
 	log "github.com/sirupsen/logrus"
 	"os"
@@ -16,6 +14,11 @@ import (
 )
 
 var _ Recorder = (*WebmRecorder)(nil)
+
+const (
+	vp8SampleRate       = 90000
+	secondToNanoseconds = 1000000000
+)
 
 type WebmRecorder struct {
 	ctx  context.Context
@@ -25,48 +28,20 @@ type WebmRecorder struct {
 	audioBuilder, videoBuilder     *samplebuilder.SampleBuilder
 	audioTimestamp, videoTimestamp time.Duration
 
-	jitterBuffer *utils.JitterBuffer
-	seqUnwrapper *utils.SequenceUnwrapper
-
 	started bool
-	flowing bool
 	closed  bool
 
-	flowCallbackFn   FlowCallbackFn
-	keyframeSequence int64
-
-	statusTicker     *time.Ticker
-	statusTickerChan chan bool
+	seenKeyFrame    bool
+	currentFrame    []byte
+	packetTimestamp uint32
 }
 
-func NewWebmRecorder(file string, fn FlowCallbackFn) *WebmRecorder {
+func NewWebmRecorder(file string) *WebmRecorder {
 	r := &WebmRecorder{
-		ctx:            context.Background(),
-		file:           file,
-		audioBuilder:   samplebuilder.New(10, &codecs.OpusPacket{}, 48000),
-		videoBuilder:   samplebuilder.New(10, &codecs.VP8Packet{}, 90000),
-		seqUnwrapper:   utils.NewSequenceUnwrapper(16),
-		jitterBuffer:   utils.NewJitterBuffer(512),
-		flowCallbackFn: fn,
+		ctx:          context.Background(),
+		file:         file,
+		audioBuilder: samplebuilder.New(10, &codecs.OpusPacket{}, 48000),
 	}
-
-	r.statusTicker = time.NewTicker(1000 * time.Millisecond)
-	r.statusTickerChan = make(chan bool)
-	go func() {
-		var ts time.Duration
-		for {
-			select {
-			case <-r.statusTickerChan:
-				return
-			case <-r.statusTicker.C:
-				if ts == r.videoTimestamp && r.flowing {
-					r.flowing = false
-					r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp, r.closed)
-				}
-			}
-			ts = r.videoTimestamp
-		}
-	}()
 
 	return r
 }
@@ -75,38 +50,31 @@ func (r *WebmRecorder) GetFilePath() string {
 	return r.file
 }
 
-func (r *WebmRecorder) SetContext(ctx context.Context) {
+func (r *WebmRecorder) WithContext(ctx context.Context) {
 	r.ctx = ctx
 }
 
-func (r *WebmRecorder) Push(p *rtp.Packet, track *webrtc.TrackRemote) {
-	if r.closed {
-		return
-	}
+func (r *WebmRecorder) VideoTimestamp() time.Duration {
+	return r.videoTimestamp
+}
 
-	seq := r.seqUnwrapper.Unwrap(uint64(p.SequenceNumber))
-	if !r.jitterBuffer.Add(seq, p) {
-		return
-	}
+func (r *WebmRecorder) AudioTimestamp() time.Duration {
+	return r.audioTimestamp
+}
 
-	for _, p := range r.jitterBuffer.NextPackets() {
-		switch track.Kind() {
-		case webrtc.RTPCodecTypeAudio:
-			r.pushOpus(p)
-		case webrtc.RTPCodecTypeVideo:
-			r.pushVP8(p)
-		}
-	}
+func (r *WebmRecorder) PushVideo(p *rtp.Packet) {
+	r.pushVP8(p)
+}
+
+func (r *WebmRecorder) PushAudio(p *rtp.Packet) {
+	r.pushOpus(p)
 }
 
 func (r *WebmRecorder) Close() time.Duration {
 	if r.closed {
 		return r.videoTimestamp
 	}
-	r.flowing = false
 	r.closed = true
-	r.statusTicker.Stop()
-	r.statusTickerChan <- true
 
 	if r.audioWriter != nil {
 		if err := r.audioWriter.Close(); err != nil {
@@ -119,7 +87,6 @@ func (r *WebmRecorder) Close() time.Duration {
 		}
 	}
 	if r.started {
-		//r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp, r.closed)
 		log.WithField("session", r.ctx.Value("session")).
 			Printf("webm writer closed: %s", r.file)
 	} else {
@@ -129,8 +96,8 @@ func (r *WebmRecorder) Close() time.Duration {
 	return r.videoTimestamp
 }
 
-func (r *WebmRecorder) pushOpus(rtpPacket *rtp.Packet) {
-	r.audioBuilder.Push(rtpPacket)
+func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
+	r.audioBuilder.Push(p)
 
 	for {
 		sample := r.audioBuilder.Pop()
@@ -146,57 +113,53 @@ func (r *WebmRecorder) pushOpus(rtpPacket *rtp.Packet) {
 	}
 }
 
-func (r *WebmRecorder) pushVP8(rtpPacket *rtp.Packet) {
-	r.videoBuilder.Push(rtpPacket)
-
-	var ts time.Duration
-	for {
-		flowing := r.flowing
-		sample := r.videoBuilder.Pop()
-		if sample == nil {
-			return
-		}
-		// Read VP8 header.
-		videoKeyframe := sample.Data[0]&0x1 == 0
-		if videoKeyframe {
-			// jitter buffer content will be dropped up until the keyframe
-			seq := r.seqUnwrapper.Unwrap(uint64(rtpPacket.SequenceNumber))
-			r.jitterBuffer.SetNextPacketsStart(seq)
-			r.keyframeSequence = seq
-
-			//log.Debug("keyframe #", seq)
-
-			// Keyframe has frame information.
-			raw := uint(sample.Data[6]) | uint(sample.Data[7])<<8 | uint(sample.Data[8])<<16 | uint(sample.Data[9])<<24
-			width := int(raw & 0x3FFF)
-			height := int((raw >> 16) & 0x3FFF)
-
-			if r.videoWriter == nil || r.audioWriter == nil {
-				//Initialize WebM saver using received frame size.
-				r.initWriter(width, height)
-			}
-		}
-		if r.videoWriter != nil {
-			r.videoTimestamp += sample.Duration
-			if r.closed {
-				break
-			}
-			if _, err := r.videoWriter.Write(videoKeyframe, int64(r.videoTimestamp/time.Millisecond), sample.Data); err != nil {
-				panic(err)
-			}
-		}
-
-		if ts == r.videoTimestamp {
-			r.flowing = false
-		} else {
-			ts = r.videoTimestamp
-			r.flowing = true
-		}
-		if r.flowing != flowing {
-			r.flowCallbackFn(r.flowing, r.keyframeSequence, r.videoTimestamp, r.closed)
-		}
-
+func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
+	if len(p.Payload) == 0 || r.closed {
+		return
 	}
+
+	vp8Packet := codecs.VP8Packet{}
+	if _, err := vp8Packet.Unmarshal(p.Payload); err != nil {
+		return
+	}
+
+	isKeyFrame := vp8Packet.Payload[0]&0x01 == 0
+
+	switch {
+	case !r.seenKeyFrame && !isKeyFrame:
+		return
+	case r.currentFrame == nil && vp8Packet.S != 1:
+		return
+	}
+
+	if !r.seenKeyFrame {
+		r.packetTimestamp = p.Timestamp
+	}
+
+	r.seenKeyFrame = true
+	r.currentFrame = append(r.currentFrame, vp8Packet.Payload[0:]...)
+
+	if !p.Marker || len(r.currentFrame) == 0 {
+		return
+	}
+
+	// from github.com/pion/webrtc/v3@v3.1.56/pkg/media/samplebuilder/samplebuilder.go#264
+	duration := time.Duration((float64(p.Timestamp-r.packetTimestamp)/float64(vp8SampleRate))*secondToNanoseconds) * time.Nanosecond
+	if r.videoWriter == nil || r.audioWriter == nil {
+		raw := uint(r.currentFrame[6]) | uint(r.currentFrame[7])<<8 | uint(r.currentFrame[8])<<16 | uint(r.currentFrame[9])<<24
+		width := int(raw & 0x3FFF)
+		height := int((raw >> 16) & 0x3FFF)
+		r.initWriter(width, height)
+	}
+	if r.videoWriter != nil {
+		r.videoTimestamp += duration
+		if _, err := r.videoWriter.Write(isKeyFrame, int64(r.videoTimestamp/time.Millisecond), r.currentFrame); err != nil {
+			log.Error(err)
+		}
+	}
+
+	r.currentFrame = nil
+	r.packetTimestamp = p.Timestamp
 }
 
 func (r *WebmRecorder) initWriter(width, height int) {
@@ -214,37 +177,35 @@ func (r *WebmRecorder) initWriter(width, height int) {
 	ws, err := webm.NewSimpleBlockWriter(w,
 		[]webm.TrackEntry{
 			{
-				Name:            "Audio",
-				TrackNumber:     1,
-				TrackUID:        12345,
-				CodecID:         "A_OPUS",
-				TrackType:       2,
-				DefaultDuration: 20000000,
-				Audio: &webm.Audio{
-					SamplingFrequency: 48000.0,
-					Channels:          2,
-				},
-			}, {
-				Name:            "Video",
-				TrackNumber:     2,
-				TrackUID:        67890,
-				CodecID:         "V_VP8",
-				TrackType:       1,
-				DefaultDuration: 33333333,
+				Name:        "Video",
+				TrackNumber: 1,
+				TrackUID:    12345,
+				CodecID:     "V_VP8",
+				TrackType:   1,
 				Video: &webm.Video{
 					PixelWidth:  uint64(width),
 					PixelHeight: uint64(height),
 				},
 			},
+			{
+				Name:        "Audio",
+				TrackNumber: 2,
+				TrackUID:    54321,
+				CodecID:     "A_OPUS",
+				TrackType:   2,
+				Audio: &webm.Audio{
+					SamplingFrequency: 48000.0,
+					Channels:          2,
+				},
+			},
 		}, mkvcore.WithSegmentInfo(info))
+
 	if err != nil {
 		panic(err)
 	}
 	log.WithField("session", r.ctx.Value("session")).
 		Printf("webm writer started with %dx%d video: %s", width, height, r.file)
-	r.audioWriter = ws[0]
-	r.videoWriter = ws[1]
+	r.videoWriter = ws[0]
+	r.audioWriter = ws[1]
 	r.started = true
-
-	r.flowing = true
 }
