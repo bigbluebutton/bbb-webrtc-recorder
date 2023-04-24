@@ -6,6 +6,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/server"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
 	"os"
@@ -72,6 +73,11 @@ func Init() {
 }
 
 func Run() {
+	if cfg.Prometheus.Enable {
+		prometheus.Init()
+		prometheus.ServePromMetrics(cfg.Prometheus)
+	}
+
 	if cfg.HTTP.Enable {
 		ps := pubsub.NewPubSub(cfg.PubSub)
 		h := server.NewHTTPServer(cfg, ps)

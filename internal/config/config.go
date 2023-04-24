@@ -14,12 +14,13 @@ type App struct {
 }
 
 type Config struct {
-	App      App      `yaml:"-"`
-	Debug    bool     `yaml:"debug"`
-	Recorder Recorder `yaml:"recorder,omitempty"`
-	PubSub   PubSub   `yaml:"pubsub,omitempty"`
-	WebRTC   WebRTC   `yaml:"webrtc,omitempty"`
-	HTTP     HTTP     `yaml:"http,omitempty"`
+	App        App        `yaml:"-"`
+	Debug      bool       `yaml:"debug"`
+	Recorder   Recorder   `yaml:"recorder,omitempty"`
+	PubSub     PubSub     `yaml:"pubsub,omitempty"`
+	WebRTC     WebRTC     `yaml:"webrtc,omitempty"`
+	HTTP       HTTP       `yaml:"http,omitempty"`
+	Prometheus Prometheus `yaml:"prometheus,omitempty"`
 }
 
 func (cfg *Config) GetDefaults() *Config {
@@ -55,6 +56,10 @@ func (cfg *Config) SetDefaults() {
 		Enable: false,
 		Port:   8080,
 	}
+	cfg.Prometheus = Prometheus{
+		Enable:        false,
+		ListenAddress: "127.0.0.1:3200",
+	}
 }
 
 type Recorder struct {
@@ -88,4 +93,9 @@ type WebRTC struct {
 type HTTP struct {
 	Enable bool `yaml:"enable,omitempty"`
 	Port   int  `yaml:"port,omitempty"`
+}
+
+type Prometheus struct {
+	Enable        bool   `yaml:"enable,omitempty"`
+	ListenAddress string `yaml:"listenAddress,omitempty"`
 }

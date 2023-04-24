@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
@@ -28,6 +29,7 @@ func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, recorder recorder.Rec
 }
 
 func (s *Session) StartRecording(sdp string) string {
+	prometheus.Sessions.Inc()
 	offer := pwebrtc.SessionDescription{}
 	signal.Decode(sdp, &offer)
 
@@ -55,6 +57,7 @@ func (s *Session) StartRecording(sdp string) string {
 func (s *Session) StopRecording() time.Duration {
 	if !s.stopped {
 		s.stopped = true
+		prometheus.Sessions.Dec()
 		return s.recorder.Close()
 	}
 	return 0
