@@ -1,2 +1,7 @@
 build
 release/*
+*swn
+*swo
+*swp
+*~
+*log.*
