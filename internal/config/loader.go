@@ -20,6 +20,7 @@ func (cfg *Config) Load(app App, configFile string) {
 		Filename: configFile,
 		Finder: gonfig.Finder{
 			BasePaths: []string{
+				fmt.Sprintf("/etc/bigbluebutton/%s", app.Name),
 				fmt.Sprintf("/etc/%s/%s", app.Name, app.Name),
 				fmt.Sprintf("$HOME/.config/%s", app.Name),
 				fmt.Sprintf("./%s", app.Name),
