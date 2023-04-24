@@ -48,9 +48,6 @@ func (cfg *Config) SetDefaults() {
 		Network:  "tcp",
 		Password: "",
 	}
-	cfg.WebRTC.ICEServers = append(cfg.WebRTC.ICEServers, webrtc.ICEServer{
-		URLs: []string{"stun:stun.l.google.com:19302"},
-	})
 	cfg.WebRTC.RTCMinPort = 24577
 	cfg.WebRTC.RTCMaxPort = 32768
 	cfg.WebRTC.JitterBuffer = 512
