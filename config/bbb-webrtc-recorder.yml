@@ -31,3 +31,7 @@ webrtc:
 http:
   port: 8080
   enable: false
+
+prometheus:
+  enable: false
+  listenAddress: 127.0.0.1:3200
