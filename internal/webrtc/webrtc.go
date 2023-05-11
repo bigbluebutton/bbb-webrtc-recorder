@@ -176,6 +176,7 @@ func (w WebRTC) Init(
 		}
 
 		jb := utils.NewJitterBuffer(w.cfg.JitterBuffer)
+		var s1, s2 uint16
 
 		if true {
 			done := make(chan bool)
@@ -185,7 +186,6 @@ func (w WebRTC) Init(
 			go func() {
 				ticker := time.NewTicker(time.Millisecond * 100)
 				var wasFlowing, isFlowing bool
-				var s1, s2 uint16
 				for {
 					select {
 					case <-done:
@@ -212,20 +212,6 @@ func (w WebRTC) Init(
 							}
 						}
 						wasFlowing = isFlowing
-					default:
-						packets := jb.NextPackets()
-						if packets == nil {
-							continue
-						}
-						for _, p := range packets {
-							s2 = p.SequenceNumber
-							switch {
-							case isAudio:
-								r.PushAudio(p)
-							case isVideo:
-								r.PushVideo(p)
-							}
-						}
 					}
 				}
 			}()
@@ -249,6 +235,21 @@ func (w WebRTC) Init(
 			seq = su.Unwrap(uint64(rtp.SequenceNumber))
 			jb.Add(seq, rtp)
 			rl.Add(rtp.SequenceNumber)
+			packets := jb.NextPackets()
+
+			if packets == nil {
+				continue
+			}
+
+			for _, p := range packets {
+				s2 = p.SequenceNumber
+				switch {
+				case isAudio:
+					r.PushAudio(p)
+				case isVideo:
+					r.PushVideo(p)
+				}
+			}
 		}
 	})
 
