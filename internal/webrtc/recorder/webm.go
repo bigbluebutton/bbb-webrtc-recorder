@@ -163,7 +163,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 }
 
 func (r *WebmRecorder) initWriter(width, height int) {
-	w, err := os.OpenFile(r.file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	w, err := os.OpenFile(r.file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0700)
 	if err != nil {
 		panic(err)
 	}
