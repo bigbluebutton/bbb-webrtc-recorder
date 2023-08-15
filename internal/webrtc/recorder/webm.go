@@ -34,6 +34,7 @@ type WebmRecorder struct {
 	seenKeyFrame    bool
 	currentFrame    []byte
 	packetTimestamp uint32
+	hasAudio        bool
 }
 
 func NewWebmRecorder(file string) *WebmRecorder {
@@ -52,6 +53,14 @@ func (r *WebmRecorder) GetFilePath() string {
 
 func (r *WebmRecorder) WithContext(ctx context.Context) {
 	r.ctx = ctx
+}
+
+func (r *WebmRecorder) SetHasAudio(hasAudio bool) {
+	r.hasAudio = hasAudio
+}
+
+func (r *WebmRecorder) GetHasAudio() bool {
+	return r.hasAudio
 }
 
 func (r *WebmRecorder) VideoTimestamp() time.Duration {
@@ -145,7 +154,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 
 	// from github.com/pion/webrtc/v3@v3.1.56/pkg/media/samplebuilder/samplebuilder.go#264
 	duration := time.Duration((float64(p.Timestamp-r.packetTimestamp)/float64(vp8SampleRate))*secondToNanoseconds) * time.Nanosecond
-	if r.videoWriter == nil || r.audioWriter == nil {
+	if r.videoWriter == nil || (r.audioWriter == nil && r.hasAudio) {
 		raw := uint(r.currentFrame[6]) | uint(r.currentFrame[7])<<8 | uint(r.currentFrame[8])<<16 | uint(r.currentFrame[9])<<24
 		width := int(raw & 0x3FFF)
 		height := int((raw >> 16) & 0x3FFF)
@@ -174,38 +183,49 @@ func (r *WebmRecorder) initWriter(width, height int) {
 		WritingApp:    internal.AppName,
 	}
 
-	ws, err := webm.NewSimpleBlockWriter(w,
-		[]webm.TrackEntry{
-			{
-				Name:        "Video",
-				TrackNumber: 1,
-				TrackUID:    12345,
-				CodecID:     "V_VP8",
-				TrackType:   1,
-				Video: &webm.Video{
-					PixelWidth:  uint64(width),
-					PixelHeight: uint64(height),
-				},
+	// TODO make this dynamic based on the tracks we have in the peer connection
+	// when we allow for multiple tracks and/or multiple codecs
+
+	// Video track is always present - initialize tracks a array with it
+	tracks := []webm.TrackEntry{
+		{
+			Name:        "Video",
+			TrackNumber: 1,
+			TrackUID:    12345,
+			CodecID:     "V_VP8",
+			TrackType:   1,
+			Video: &webm.Video{
+				PixelWidth:  uint64(width),
+				PixelHeight: uint64(height),
 			},
-			{
-				Name:        "Audio",
-				TrackNumber: 2,
-				TrackUID:    54321,
-				CodecID:     "A_OPUS",
-				TrackType:   2,
-				Audio: &webm.Audio{
-					SamplingFrequency: 48000.0,
-					Channels:          2,
-				},
+		},
+	}
+
+	// Audio track is optional
+	if r.hasAudio {
+		tracks = append(tracks, webm.TrackEntry{
+			Name:        "Audio",
+			TrackNumber: 2,
+			TrackUID:    54321,
+			CodecID:     "A_OPUS",
+			TrackType:   2,
+			Audio: &webm.Audio{
+				SamplingFrequency: 48000.0,
+				Channels:          2,
 			},
-		}, mkvcore.WithSegmentInfo(info))
+		})
+	}
+
+	writers, err := webm.NewSimpleBlockWriter(w, tracks, mkvcore.WithSegmentInfo(info))
 
 	if err != nil {
 		panic(err)
 	}
 	log.WithField("session", r.ctx.Value("session")).
-		Printf("webm writer started with %dx%d video: %s", width, height, r.file)
-	r.videoWriter = ws[0]
-	r.audioWriter = ws[1]
+		Printf("webm writers started with %dx%d video, audio=%t : %s", width, height, r.hasAudio, r.file)
+	r.videoWriter = writers[0]
+	if r.hasAudio && len(writers) > 1 {
+		r.audioWriter = writers[1]
+	}
 	r.started = true
 }

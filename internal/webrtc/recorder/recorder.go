@@ -18,6 +18,8 @@ type Recorder interface {
 	PushAudio(rtp *rtp.Packet)
 	WithContext(ctx context.Context)
 	VideoTimestamp() time.Duration
+	SetHasAudio(hasAudio bool)
+	GetHasAudio() bool
 	Close() time.Duration
 }
 

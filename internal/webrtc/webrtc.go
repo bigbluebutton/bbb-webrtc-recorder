@@ -106,6 +106,9 @@ func (w WebRTC) Init(
 		isAudio := track.Kind() == webrtc.RTPCodecTypeAudio
 		isVideo := track.Kind() == webrtc.RTPCodecTypeVideo
 
+		if isAudio {
+			r.SetHasAudio(true)
+		}
 		log.WithField("session", w.ctx.Value("session")).
 			Infof("%s (%d) track started", track.Codec().RTPCodecCapability.MimeType, track.PayloadType())
 
