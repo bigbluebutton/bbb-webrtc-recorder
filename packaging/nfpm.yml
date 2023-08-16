@@ -41,7 +41,7 @@ contents:
   - dst: /var/lib/bbb-webrtc-recorder
     type: dir
     file_info:
-      mode: 0755
+      mode: 0700
 
 scripts:
   postinstall: ./packaging/after-all.sh
