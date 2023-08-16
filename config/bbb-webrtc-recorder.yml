@@ -2,6 +2,7 @@ debug: false
 
 recorder:
   directory: /var/lib/bbb-webrtc-recorder
+  fileMode: 0700
 
 pubsub:
   channels:

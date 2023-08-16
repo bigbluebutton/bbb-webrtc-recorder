@@ -26,6 +26,8 @@ debug: true
 recorder:
   # Directory where the recorder will save files
   directory: /var/lib/bbb-webrtc-recorder
+  # File mode permissions for the recording directories and files (octal)
+  fileMode: 0700
 
 pubsub:
   channels:

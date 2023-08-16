@@ -35,6 +35,7 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string) (Recorde
 
 	file = path.Clean(dir + string(os.PathSeparator) + file)
 	fileDir := path.Dir(file)
+	fileMode := cfg.FileMode
 
 	if stat, err := os.Stat(fileDir); err != nil {
 		log.WithField("session", ctx.Value("session")).
@@ -44,7 +45,7 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string) (Recorde
 			return nil, fmt.Errorf("file directory is not accessible %s", fileDir)
 		}
 
-		err = os.MkdirAll(fileDir, 0700)
+		err = os.MkdirAll(fileDir, fileMode)
 		if err != nil && !os.IsExist(err) {
 			return nil, fmt.Errorf("file directory could not be created %s", fileDir)
 		}
@@ -60,7 +61,7 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string) (Recorde
 	var err error
 	switch ext {
 	case ".webm":
-		r = NewWebmRecorder(file)
+		r = NewWebmRecorder(file, fileMode)
 		r.WithContext(ctx)
 	default:
 		err = fmt.Errorf("unsupported format '%s'", ext)

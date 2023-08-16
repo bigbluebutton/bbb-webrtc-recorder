@@ -21,8 +21,9 @@ const (
 )
 
 type WebmRecorder struct {
-	ctx  context.Context
-	file string
+	ctx      context.Context
+	file     string
+	fileMode os.FileMode
 
 	audioWriter, videoWriter       webm.BlockWriteCloser
 	audioBuilder, videoBuilder     *samplebuilder.SampleBuilder
@@ -37,10 +38,11 @@ type WebmRecorder struct {
 	hasAudio        bool
 }
 
-func NewWebmRecorder(file string) *WebmRecorder {
+func NewWebmRecorder(file string, fileMode os.FileMode) *WebmRecorder {
 	r := &WebmRecorder{
 		ctx:          context.Background(),
 		file:         file,
+		fileMode:     fileMode,
 		audioBuilder: samplebuilder.New(10, &codecs.OpusPacket{}, 48000),
 	}
 
@@ -172,7 +174,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 }
 
 func (r *WebmRecorder) initWriter(width, height int) {
-	w, err := os.OpenFile(r.file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0700)
+	w, err := os.OpenFile(r.file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, r.fileMode)
 	if err != nil {
 		panic(err)
 	}

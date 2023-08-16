@@ -38,6 +38,7 @@ func (cfg *Config) SetDefaults() {
 		}
 	}
 
+	cfg.Recorder.FileMode = 0700
 	cfg.PubSub.Channels = Channels{
 		Subscribe: "to-" + cfg.App.Name,
 		Publish:   "from-" + cfg.App.Name,
@@ -63,7 +64,8 @@ func (cfg *Config) SetDefaults() {
 }
 
 type Recorder struct {
-	Directory string `yaml:"directory,omitempty"`
+	Directory string      `yaml:"directory,omitempty"`
+	FileMode  os.FileMode `yaml:"fileMode,omitempty"`
 }
 
 type Redis struct {
