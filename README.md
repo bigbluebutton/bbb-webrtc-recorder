@@ -68,6 +68,10 @@ http:
 ```
 
 Default `env` file used by SystemD service:
+    * Note: all environment variables must be prefixed with `BBBRECORDER_`
+    * Note: all environment variables must be upper case
+    * Note: nested objects are separated by `_` (underscore)
+        - Example: `BBBRECORDER_RECORDER_DIRECTORY=/var/lib/bbb-webrtc-recorder` (equivalent of `recorder.directory` in config file)
 
 ```
 /etc/default/bbb-webrtc-recorder

@@ -6,7 +6,6 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"path"
-	"strings"
 )
 
 func (cfg *Config) Load(app App, configFile string) {
@@ -37,12 +36,11 @@ func (cfg *Config) Load(app App, configFile string) {
 	}
 
 	// Load from environment variables
-	envPrefix := strings.ReplaceAll(app.Name, " ", "_")
-	envPrefix = strings.ReplaceAll(envPrefix, "-", "_")
-	envPrefix = strings.ToUpper(envPrefix) + "_"
+	envPrefix := "BBBRECORDER_"
 	envLoader := gonfig.NewEnvLoader(gonfig.EnvLoaderConfig{
 		Prefix: envPrefix,
 	})
+
 	if found, err := envLoader.Load(cfg); err != nil {
 		log.Fatal(errors.Wrap(err, "failed to decode configuration from environment variables"))
 	} else if !found {
