@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -35,7 +36,6 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string) (Recorde
 
 	file = path.Clean(dir + string(os.PathSeparator) + file)
 	fileDir := path.Dir(file)
-	fileMode := cfg.FileMode
 
 	if stat, err := os.Stat(fileDir); err != nil {
 		log.WithField("session", ctx.Value("session")).
@@ -45,7 +45,15 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string) (Recorde
 			return nil, fmt.Errorf("file directory is not accessible %s", fileDir)
 		}
 
-		err = os.MkdirAll(fileDir, fileMode)
+		var dirFileMode os.FileMode
+		if parsedFileMode, err := strconv.ParseUint(cfg.DirFileMode, 0, 32); err != nil {
+			return nil, fmt.Errorf("invalid file mode %s", cfg.DirFileMode)
+		} else {
+			dirFileMode = os.FileMode(parsedFileMode)
+		}
+
+		err = os.MkdirAll(fileDir, dirFileMode)
+
 		if err != nil && !os.IsExist(err) {
 			return nil, fmt.Errorf("file directory could not be created %s", fileDir)
 		}
@@ -55,6 +63,13 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string) (Recorde
 		log.WithField("session", ctx.Value("session")).
 			Debug(stat)
 		return nil, fmt.Errorf("file already exists %s", file)
+	}
+
+	var fileMode os.FileMode
+	if parsedFileMode, err := strconv.ParseUint(cfg.FileMode, 0, 32); err != nil {
+		return nil, fmt.Errorf("invalid file mode %s", cfg.FileMode)
+	} else {
+		fileMode = os.FileMode(parsedFileMode)
 	}
 
 	var r Recorder
