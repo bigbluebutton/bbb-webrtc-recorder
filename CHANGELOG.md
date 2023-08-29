@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.5.0
+
+* feat: add getRecorderStatus/recorderStatus RPCs
+
 ### v0.4.1
 
 * fix: change file mode of rec dir in nfpm scripts to 0700
@@ -27,4 +31,3 @@ All notable changes to this project will be documented in this file.
 ### v0.2.0
 
 * First release
-
