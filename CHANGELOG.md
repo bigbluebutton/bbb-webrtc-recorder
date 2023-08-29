@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-### Unreleased
+### v0.5.1
 
 fix: add onStart param to Subscribe call in http module
 
