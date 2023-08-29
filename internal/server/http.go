@@ -4,17 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/web"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"io/fs"
 	"net/http"
 	"path"
 	"strconv"
 	"time"
+
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/web"
+	log "github.com/sirupsen/logrus"
 )
 
 type HTTPServer struct {
@@ -37,12 +38,17 @@ func NewHTTPServer(cfg *config.Config, ps pubsub.PubSub) *HTTPServer {
 
 func (s *HTTPServer) Serve() {
 	answerChannels := make(map[string]*chan string)
-	go s.pubsub.Subscribe(s.cfg.PubSub.Channels.Publish, func(ctx context.Context, msg []byte) {
-		event := events.Decode(msg)
-		if e := event.StartRecordingResponse(); e != nil {
-			*answerChannels[e.SessionId] <- *e.SDP
-		}
-	})
+	go s.pubsub.Subscribe(s.cfg.PubSub.Channels.Publish,
+		func(ctx context.Context, msg []byte) {
+			event := events.Decode(msg)
+			if e := event.StartRecordingResponse(); e != nil {
+				*answerChannels[e.SessionId] <- *e.SDP
+			}
+		},
+		func() error {
+			return nil
+		},
+	)
 	go s.serve(func(sdp string) string {
 		t := time.Now()
 		sessId := t.Format("20060102150405")

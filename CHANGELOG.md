@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+### Unreleased
+
+fix: add onStart param to Subscribe call in http module
+
 ### v0.5.0
 
 * feat: add getRecorderStatus/recorderStatus RPCs
