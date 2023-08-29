@@ -2,16 +2,18 @@ package app
 
 import (
 	"fmt"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/server"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
-	log "github.com/sirupsen/logrus"
-	flag "github.com/spf13/pflag"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/server"
+	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
+	flag "github.com/spf13/pflag"
 )
 
 var (
@@ -32,6 +34,7 @@ func init() {
 	app.Name = internal.AppName
 	app.Version = internal.AppVersion
 	app.LongName = fmt.Sprintf("%s %s", app.Name, app.Version)
+	app.InstanceId = uuid.New().String()
 
 	flag.StringVarP(&flags.config, "config", "c", flags.config, "load configuration file")
 	flag.StringVar(&flags.dump, "dump", "", "print config value (e.g. 'recorder.directory')")
@@ -85,7 +88,7 @@ func Run() {
 	}
 	ps := pubsub.NewPubSub(cfg.PubSub)
 	s := server.NewServer(cfg, ps)
-	ps.Subscribe(cfg.PubSub.Channels.Subscribe, s.HandlePubSub)
+	ps.Subscribe(cfg.PubSub.Channels.Subscribe, s.HandlePubSub, s.OnStart)
 }
 
 func sighupHandler() {

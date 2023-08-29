@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"time"
+
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	log "github.com/sirupsen/logrus"
-	"sync"
-	"time"
 )
 
 type Server struct {
@@ -85,12 +86,23 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 			s.sessions.Delete(e.SessionId)
 			s.PublishPubSub(e.Stopped("stop requested", ts))
 		}
+	case "getRecorderStatus":
+		e := event.GetRecorderStatus()
+		if e != nil {
+			s.PublishPubSub(e.Status(s.cfg.App.Version, s.cfg.App.InstanceId))
+		}
 	}
 }
 
 func (s *Server) PublishPubSub(msg interface{}) {
 	j, _ := json.Marshal(msg)
 	s.pubsub.Publish(s.cfg.PubSub.Channels.Publish, j)
+}
+
+func (s *Server) OnStart() error {
+	log.Info("Application started. Version=", s.cfg.App.Version, " InstanceId=", s.cfg.App.InstanceId)
+	s.PublishPubSub(events.NewRecorderStatus(s.cfg.App.Version, s.cfg.App.InstanceId))
+	return nil
 }
 
 func (s *Server) CloseSession(id string) {

@@ -175,3 +175,20 @@ journalctl -u bbb-webrtc-recorder -f
 }
 ```
 
+getRecorderStatus (* -> Recorer)
+```JSON5
+{
+	id: ‘getRecorderStatus’,
+}
+```
+
+`recorderStatus` (Recorder -> *)
+
+```JSON5
+{
+	id: ‘recorderStatus’, // Triggered by getRecorderStatus
+	appVersion: <String>, // version of the recorder
+	instanceId: <String>, // unique instance id
+	timestamp: <Number>, // event generation timestamp
+}
+```

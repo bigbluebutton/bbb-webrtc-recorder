@@ -1,16 +1,18 @@
 package config
 
 import (
+	"os"
+
 	"github.com/pion/webrtc/v3"
 	log "github.com/sirupsen/logrus"
-	"os"
 )
 
 type App struct {
-	Name     string
-	Version  string
-	GitHash  string
-	LongName string
+	Name       string
+	Version    string
+	GitHash    string
+	LongName   string
+	InstanceId string
 }
 
 type Config struct {

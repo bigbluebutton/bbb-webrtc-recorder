@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"context"
+
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/redis"
 	log "github.com/sirupsen/logrus"
@@ -16,9 +17,13 @@ type Redis struct {
 	cancel context.CancelFunc
 }
 
-func (r *Redis) Subscribe(channel string, handler PubSubHandler) {
+func (r *Redis) Subscribe(channel string, handler PubSubHandler, onStart func() error) {
 	log.Printf("subscribing to pubsub %s on redis %s", channel, r.config.Address)
-	r.pubsub.ListenChannels(r.ctx, func() error { return nil },
+	r.pubsub.ListenChannels(r.ctx,
+		func() error {
+			onStart()
+			return nil
+		},
 		func(channel string, message []byte) error {
 			//log.Debugf("channel: %s, message: %s\n", channel, message)
 			handler(r.ctx, message)

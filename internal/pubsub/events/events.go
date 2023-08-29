@@ -1,8 +1,9 @@
 package events
 
 import (
-	"github.com/AlekSi/pointer"
 	"time"
+
+	"github.com/AlekSi/pointer"
 )
 
 type Event struct {
@@ -186,4 +187,56 @@ func NewRecordingStopped(id, reason string, ts time.Duration) *RecordingStopped 
 		TimestampUTC: time.Now().UTC(),
 		TimestampHR:  ts,
 	}
+}
+
+/*
+recorderStatus (Recorder -> *)
+```JSON5
+{
+	id: ‘recorderStatus’,
+	appVersion: <String>, // version of the recorder
+	instanceId: <String>, // unique instance id
+	timestamp: <Number>, // event generation timestamp
+}
+```
+*/
+
+type RecorderStatus struct {
+	Id         string `json:"id,omitempty"`
+	AppVersion string `json:"appVersion,omitempty"`
+	InstanceId string `json:"instanceId,omitempty"`
+	Timestamp  int64  `json:"timestamp,omitempty"`
+}
+
+func NewRecorderStatus(appVersion string, instanceId string) *RecorderStatus {
+	return &RecorderStatus{
+		Id:         "recorderStatus",
+		AppVersion: appVersion,
+		InstanceId: instanceId,
+		Timestamp:  time.Now().UTC().UnixMilli(),
+	}
+}
+
+/*
+getRecorderStatus (* -> Recorer)
+```JSON5
+{
+	id: ‘getRecorderStatus’,
+}
+```
+*/
+
+type GetRecorderStatus struct {
+	Id string `json:"id,omitempty"`
+}
+
+func (e *Event) GetRecorderStatus() *GetRecorderStatus {
+	if ev, ok := e.Data.(*GetRecorderStatus); ok {
+		return ev
+	}
+	return nil
+}
+
+func (e *GetRecorderStatus) Status(appVersion string, instanceId string) *RecorderStatus {
+	return NewRecorderStatus(appVersion, instanceId)
 }

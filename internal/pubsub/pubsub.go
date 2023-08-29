@@ -3,13 +3,14 @@ package pubsub
 import (
 	"context"
 	"fmt"
+
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
 )
 
 type PubSub interface {
-	Subscribe(channel string, handler PubSubHandler)
+	Subscribe(channel string, handler PubSubHandler, onStart func() error)
 	Publish(channel string, message []byte)
 }
 
