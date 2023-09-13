@@ -1,23 +1,29 @@
-FROM golang:1.19-alpine
+# Build stage
+FROM golang:1.19 as builder
 
-COPY . /app
+ARG APP_VERSION=devel
+ARG GOMOD=github.com/bigbluebutton/bbb-webrtc-recorder
+
 WORKDIR /app
 
-ENV APP_VERSION $(cat ./VERSION)
-ENV GOMOD $(go list -m)
+COPY go.* ./
 
 RUN go mod tidy
-RUN go build -o ./build/bbb-webrtc-recorder ./cmd/bbb-webrtc-recorder
 
-RUN ls -ahlt ./*
+COPY . ./
 
-RUN mv /app/build/bbb-webrtc-recorder /usr/local/bin/bbb-webrtc-recorder
+RUN go build -o ./build/bbb-webrtc-recorder \
+      -ldflags="-X '${GOMOD}/internal.AppVersion=${APP_VERSION}'" \
+      ./cmd/bbb-webrtc-recorder
 
-WORKDIR /usr/local/bin
+RUN mv /app/build/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder
 
 RUN rm -rf /app
 
-EXPOSE 8080
+# Running stage
+FROM debian:bookworm-slim
 
-RUN ls -ahlt
-CMD ["./bbb-webrtc-recorder"]
+# Copy the binary to the production image from the builder stage.
+COPY --from=builder /usr/bin/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder
+
+CMD ["/usr/bin/bbb-webrtc-recorder"]
