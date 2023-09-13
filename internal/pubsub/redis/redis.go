@@ -125,7 +125,7 @@ func (p *PubSub) Publish(channel string, message []byte) error {
 		return err
 	}
 	defer c.Close()
-	log.Debugf("publishing to channel %s: %s", channel, string(message))
+	log.Tracef("publishing to channel %s: %s", channel, string(message))
 	if _, err = c.Do("PUBLISH", channel, message); err != nil {
 		return err
 	}

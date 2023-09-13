@@ -26,7 +26,7 @@ func NewServer(cfg *config.Config, ps pubsub.PubSub) *Server {
 }
 
 func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
-	log.Debug(string(msg))
+	log.Trace(string(msg))
 	event := events.Decode(msg)
 
 	if !event.IsValid() {
