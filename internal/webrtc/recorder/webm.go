@@ -10,6 +10,7 @@ import (
 	"github.com/pion/webrtc/v3/pkg/media/samplebuilder"
 	log "github.com/sirupsen/logrus"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -24,6 +25,7 @@ type WebmRecorder struct {
 	ctx      context.Context
 	file     string
 	fileMode os.FileMode
+	m        sync.Mutex
 
 	audioWriter, videoWriter       webm.BlockWriteCloser
 	audioBuilder, videoBuilder     *samplebuilder.SampleBuilder
@@ -81,7 +83,8 @@ func (r *WebmRecorder) PushAudio(p *rtp.Packet) {
 	r.pushOpus(p)
 }
 
-func (r *WebmRecorder) Close() time.Duration {
+// Locked
+func (r *WebmRecorder) close() time.Duration {
 	if r.closed {
 		return r.videoTimestamp
 	}
@@ -104,10 +107,22 @@ func (r *WebmRecorder) Close() time.Duration {
 		log.WithField("session", r.ctx.Value("session")).
 			Print("webm writer closed without starting")
 	}
+
 	return r.videoTimestamp
 }
 
+func (r *WebmRecorder) Close() time.Duration {
+	r.m.Lock()
+	ts := r.close()
+	r.m.Unlock()
+
+	return ts
+}
+
 func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
+	r.m.Lock()
+	defer r.m.Unlock()
+
 	r.audioBuilder.Push(p)
 
 	for {
@@ -125,6 +140,9 @@ func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
 }
 
 func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
+	r.m.Lock()
+	defer r.m.Unlock()
+
 	if len(p.Payload) == 0 || r.closed {
 		return
 	}
