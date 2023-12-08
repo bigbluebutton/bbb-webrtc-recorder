@@ -2,9 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.5.2
+
+* fix: lock EBML write and close ops
+  - Fixes a crash
+* build(docker): separate build and run stages, add APP version arg
+
 ### v0.5.1
 
-fix: add onStart param to Subscribe call in http module
+* fix: add onStart param to Subscribe call in http module
 
 ### v0.5.0
 
@@ -14,7 +20,7 @@ fix: add onStart param to Subscribe call in http module
 
 * fix: change file mode of rec dir in nfpm scripts to 0700
 * fix: change to working env prefix BBBRECORDER_, add docs on env vars
-* fix: split dir and file modes, make the configs string 
+* fix: split dir and file modes, make the configs string
 
 ### v0.4.0
 
@@ -28,9 +34,8 @@ fix: add onStart param to Subscribe call in http module
 ### v0.3.0
 
 * feat: add basic Prometheus instrumentation
-* fix: CPU lock when reading packets from JB 
+* fix: CPU lock when reading packets from JB
 * build: add basic Dockerfile
-
 
 ### v0.2.0
 
