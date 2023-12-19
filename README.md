@@ -30,6 +30,8 @@ recorder:
   dirFileMode: 0700
   # File mode permissions for the recording files (octal)
   fileMode: 0700
+  # Whether to write to /dev/null instead of a file (for testing)
+  writeToDevNull: false
 
 pubsub:
   channels:

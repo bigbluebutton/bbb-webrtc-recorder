@@ -4,6 +4,7 @@ recorder:
   directory: /var/lib/bbb-webrtc-recorder
   dirFileMode: 0700
   fileMode: 0600
+  writeToDevNull: false
 
 pubsub:
   channels:
