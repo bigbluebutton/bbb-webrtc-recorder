@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-### v0.6.0 (UNRELEASED)
+### v0.6.0
 
 * feat: recorder.writeToDevNull option to write files to /dev/null (testing)
 * fix: panic due to negative seqnums in sequence unwrapper 
