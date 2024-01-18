@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.6.0 (UNRELEASED)
+
+* feat: recorder.writeToDevNull option to write files to /dev/null (testing)
+* fix: panic due to negative seqnums in sequence unwrapper 
+
 ### v0.5.2
 
 * fix: lock EBML write and close ops
