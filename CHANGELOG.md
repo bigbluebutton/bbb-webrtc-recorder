@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ### v0.7.0 (UNRELEASED)
 
+* build(docker): go 1.21
 * build: bump pion/webrtc/v3 to v3.2.24
 
 ### v0.6.0

@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.19 as builder
+FROM golang:1.21 as builder
 
 ARG APP_VERSION=devel
 ARG GOMOD=github.com/bigbluebutton/bbb-webrtc-recorder
@@ -16,9 +16,8 @@ RUN go build -o ./build/bbb-webrtc-recorder \
       -ldflags="-X '${GOMOD}/internal.AppVersion=${APP_VERSION}'" \
       ./cmd/bbb-webrtc-recorder
 
-RUN mv /app/build/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder
-
-RUN rm -rf /app
+RUN mv /app/build/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder \
+      && rm -rf /app
 
 # Running stage
 FROM debian:bookworm-slim
