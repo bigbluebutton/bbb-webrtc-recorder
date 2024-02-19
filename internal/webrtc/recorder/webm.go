@@ -123,6 +123,10 @@ func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
 	r.m.Lock()
 	defer r.m.Unlock()
 
+	if len(p.Payload) == 0 || r.closed {
+		return
+	}
+
 	r.audioBuilder.Push(p)
 
 	for {
