@@ -2,8 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-### v0.7.0 (UNRELEASED)
+### v0.7.0
 
+* fix: panic due to invalid OPUS samples pushed to builder
 * build(docker): go 1.21
 * build: bump pion/webrtc/v3 to v3.2.24
 
