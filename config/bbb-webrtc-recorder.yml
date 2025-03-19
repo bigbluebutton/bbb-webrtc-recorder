@@ -20,7 +20,7 @@ pubsub:
 webrtc:
   rtcMinPort: 24577
   rtcMaxPort: 32768
-  jitterBuffer: 512
+  jitterBuffer: 1024
   iceServers:
     - urls: []
 # Example turn server
