@@ -15,6 +15,11 @@ import (
 	"time"
 )
 
+type NACKTracker struct {
+	count     int
+	timestamp time.Time
+}
+
 type WebRTC struct {
 	ctx context.Context
 	cfg config.WebRTC
@@ -109,11 +114,15 @@ func (w WebRTC) Init(
 		if isAudio {
 			r.SetHasAudio(true)
 		}
+
 		log.WithField("session", w.ctx.Value("session")).
-			Infof("%s (%d) track started", track.Codec().RTPCodecCapability.MimeType, track.PayloadType())
+			Infof("Track started: kind=%s, codec=%s, payload=%d, ssrc=%d, rid=%s",
+				track.Kind().String(), track.Codec().MimeType, track.PayloadType(),
+				track.SSRC(), track.RID())
 
 		if isVideo {
 			// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
+			sentPLIs := 0
 			done := make(chan bool)
 			defer func() {
 				done <- true
@@ -126,11 +135,15 @@ func (w WebRTC) Init(
 						ticker.Stop()
 						return
 					case <-ticker.C:
+						sentPLIs++
+						log.WithField("session", w.ctx.Value("session")).
+							Tracef("Sending PLI #%d for SSRC %d", sentPLIs, track.SSRC())
 						errSend := peerConnection.WriteRTCP([]rtcp.Packet{
 							&rtcp.PictureLossIndication{
 								MediaSSRC: uint32(track.SSRC()),
 							},
 						})
+
 						if errSend != nil {
 							log.WithField("session", w.ctx.Value("session")).
 								Error(errSend)
@@ -145,14 +158,27 @@ func (w WebRTC) Init(
 			panic(err)
 		}
 
+		jitterBufferSize := w.cfg.JitterBuffer
+
+		if isVideo {
+			// JB size for video is doubled for now - review later (prlanzarin)
+			jitterBufferSize = jitterBufferSize * 2
+		}
+
+		jb := utils.NewJitterBuffer(jitterBufferSize)
+
 		if true {
 			senderSSRC := rand.Uint32()
+			sentNACKs := 0
 			done := make(chan bool)
 			defer func() {
 				done <- true
 			}()
 			go func() {
+				nackedPackets := make(map[uint16]NACKTracker) // Track NACK'ed packets
+				maxNackAttempts := 10 // NACK retries - 10 is what mediasoup uses, copy them >:)
 				ticker := time.NewTicker(time.Millisecond * 50)
+
 				for {
 					select {
 					case <-done:
@@ -163,22 +189,65 @@ func (w WebRTC) Init(
 						if missing == nil || len(missing) == 0 {
 							continue
 						}
-						nack := &rtcp.TransportLayerNack{
-							SenderSSRC: senderSSRC,
-							MediaSSRC:  uint32(track.SSRC()),
-							Nacks:      utils.NackPairs(missing),
+
+						filteredMissing := make([]uint16, 0)
+						now := time.Now()
+
+						for _, seq := range missing {
+							tracker, exists := nackedPackets[seq]
+
+							// If we've never NACKed this pkt, do it now
+							if !exists {
+								nackedPackets[seq] = NACKTracker{count: 1, timestamp: now}
+								filteredMissing = append(filteredMissing, seq)
+								continue
+							}
+
+							if tracker.count < maxNackAttempts {
+								nackedPackets[seq] = NACKTracker{count: tracker.count + 1, timestamp: now}
+								filteredMissing = append(filteredMissing, seq)
+							} else if tracker.count == maxNackAttempts {
+								log.WithField("session", w.ctx.Value("session")).
+									Warnf("Giving up on packet: seq=%d, attempts=%d", seq, maxNackAttempts)
+
+								rl.IgnoreSeqNum(seq)
+								jb.SkipPacket(int64(seq))
+								nackedPackets[seq] = NACKTracker{count: tracker.count + 1, timestamp: now}
+							}
 						}
-						errSend := peerConnection.WriteRTCP([]rtcp.Packet{nack})
-						if errSend != nil {
+
+						for seq, tracker := range nackedPackets {
+							if now.Sub(tracker.timestamp) > time.Second*5 {
+								delete(nackedPackets, seq)
+							}
+						}
+
+						if len(missing) > 5 {
 							log.WithField("session", w.ctx.Value("session")).
+								Warnf("Large packet gap detected for SSRC %d: %d packets", senderSSRC, len(missing))
+						}
+
+						if len(filteredMissing) > 0 {
+							sentNACKs++
+							log.WithField("session", w.ctx.Value("session")).
+								Debugf("Request NACK for SSRC %d: count=%d, missing=%d, first=%d, last=%d",
+									senderSSRC, sentNACKs, len(filteredMissing), filteredMissing[0], filteredMissing[len(filteredMissing)-1])
+							nack := &rtcp.TransportLayerNack{
+								SenderSSRC: senderSSRC,
+								MediaSSRC:  uint32(track.SSRC()),
+								Nacks:      utils.NackPairs(filteredMissing),
+							}
+							errSend := peerConnection.WriteRTCP([]rtcp.Packet{nack})
+							if errSend != nil {
+								log.WithField("session", w.ctx.Value("session")).
 								Error(errSend)
+							}
 						}
 					}
 				}
 			}()
 		}
 
-		jb := utils.NewJitterBuffer(w.cfg.JitterBuffer)
 		var s1, s2 uint16
 
 		if true {
@@ -221,6 +290,9 @@ func (w WebRTC) Init(
 		}
 
 		var seq int64
+		var prevSeq uint16
+		packetCounter := 0
+
 		su := utils.NewSequenceUnwrapper(16)
 		for {
 			// Read RTP packets being sent to Pion
@@ -235,14 +307,45 @@ func (w WebRTC) Init(
 					Error(readErr)
 				return
 			}
+
+			packetCounter++
+
+			if packetCounter > 1 && (rtp.SequenceNumber - prevSeq) > 1 {
+				log.WithField("session", w.ctx.Value("session")).
+					Debugf("Sequence gap detected: expected=%d, got=%d, diff=%d",
+				prevSeq+1, rtp.SequenceNumber, rtp.SequenceNumber-prevSeq-1)
+			}
+			prevSeq = rtp.SequenceNumber
+
 			seq = su.Unwrap(uint64(rtp.SequenceNumber))
-			jb.Add(seq, rtp)
+
+			if packetCounter < 10 || packetCounter%1000 == 0 {
+				log.WithField("session", w.ctx.Value("session")).
+					Tracef("Packet: seq=%d, unwrapped=%d, timestamp=%d, size=%d",
+					rtp.SequenceNumber, seq, rtp.Timestamp, len(rtp.Payload))
+			}
+
+			if !jb.Add(seq, rtp) {
+				log.WithField("session", w.ctx.Value("session")).
+					Warnf("Failed to add packet to jitter buffer: seq=%d, timestamp=%d",
+					rtp.SequenceNumber, rtp.Timestamp)
+			}
+
 			rl.Add(rtp.SequenceNumber)
+
+			log.WithField("session", w.ctx.Value("session")).
+				Tracef("Processed packet: track=%s, seq=%d, unwrapped=%d, timestamp=%d, size=%d",
+					track.ID(), rtp.SequenceNumber, seq, rtp.Timestamp, len(rtp.Payload))
+
 			packets := jb.NextPackets()
 
 			if packets == nil {
 				continue
 			}
+
+			log.WithField("session", w.ctx.Value("session")).
+				Tracef("Got %d packets from jitter buffer: first=%d, last=%d",
+					len(packets), packets[0].SequenceNumber, packets[len(packets)-1].SequenceNumber)
 
 			for _, p := range packets {
 				s2 = p.SequenceNumber

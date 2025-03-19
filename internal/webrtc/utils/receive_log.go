@@ -104,6 +104,22 @@ func (s *ReceiveLog) MissingSeqNumbers(skipLastN uint16) []uint16 {
 	return missingPacketSeqNums
 }
 
+func (s *ReceiveLog) IgnoreSeqNum(seq uint16) {
+	// Forcefully mark this packet as received - used in scenarios where we
+	// we give up on NACKing a packet
+	s.set(seq)
+
+	// If this seqnum was blocking, ffw it
+	if seq == s.lastConsecutive+1 {
+		s.lastConsecutive = seq
+		s.fixLastConsecutive()
+	}
+}
+
+func (s *ReceiveLog) GetLastConsecutive() uint16 {
+	return s.lastConsecutive
+}
+
 func (s *ReceiveLog) set(seq uint16) {
 	pos := seq % s.size
 	s.packets[pos/64] |= 1 << (pos % 64)
