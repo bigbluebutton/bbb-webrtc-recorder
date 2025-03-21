@@ -159,12 +159,6 @@ func (w WebRTC) Init(
 		}
 
 		jitterBufferSize := w.cfg.JitterBuffer
-
-		if isVideo {
-			// JB size for video is doubled for now - review later (prlanzarin)
-			jitterBufferSize = jitterBufferSize * 2
-		}
-
 		jb := utils.NewJitterBuffer(jitterBufferSize)
 
 		if true {
@@ -177,7 +171,7 @@ func (w WebRTC) Init(
 			go func() {
 				nackedPackets := make(map[uint16]NACKTracker) // Track NACK'ed packets
 				maxNackAttempts := 10 // NACK retries - 10 is what mediasoup uses, copy them >:)
-				ticker := time.NewTicker(time.Millisecond * 50)
+				ticker := time.NewTicker(time.Millisecond * 40) // 40ms is also ms
 
 				for {
 					select {
@@ -319,12 +313,6 @@ func (w WebRTC) Init(
 
 			seq = su.Unwrap(uint64(rtp.SequenceNumber))
 
-			if packetCounter < 10 || packetCounter%1000 == 0 {
-				log.WithField("session", w.ctx.Value("session")).
-					Tracef("Packet: seq=%d, unwrapped=%d, timestamp=%d, size=%d",
-					rtp.SequenceNumber, seq, rtp.Timestamp, len(rtp.Payload))
-			}
-
 			if !jb.Add(seq, rtp) {
 				log.WithField("session", w.ctx.Value("session")).
 					Warnf("Failed to add packet to jitter buffer: seq=%d, timestamp=%d",
@@ -337,7 +325,7 @@ func (w WebRTC) Init(
 				Tracef("Processed packet: track=%s, seq=%d, unwrapped=%d, timestamp=%d, size=%d",
 					track.ID(), rtp.SequenceNumber, seq, rtp.Timestamp, len(rtp.Payload))
 
-			packets := jb.NextPackets()
+			packets, skipped := jb.NextPackets()
 
 			if packets == nil {
 				continue
@@ -346,6 +334,17 @@ func (w WebRTC) Init(
 			log.WithField("session", w.ctx.Value("session")).
 				Tracef("Got %d packets from jitter buffer: first=%d, last=%d",
 					len(packets), packets[0].SequenceNumber, packets[len(packets)-1].SequenceNumber)
+
+			// Signal packet skip to WebmRecorder to handle potential frame boundary issues
+			if skipped {
+				skippedSeq, ok := jb.GetAndClearLastSkipped()
+				if ok {
+					if r!= nil {
+						r.NotifySkippedPacket(uint16(skippedSeq))
+						log.Debugf("Notified recorder of skipped packet: seq=%d", skippedSeq)
+					}
+				}
+			}
 
 			for _, p := range packets {
 				s2 = p.SequenceNumber

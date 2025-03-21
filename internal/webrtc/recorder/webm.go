@@ -23,9 +23,21 @@ const (
 )
 
 type VP8PartitionTracker struct {
-	partitionsStarted int
-	partitionsComplete int
+	partitionsStarted    int
+	partitionsComplete   int
 	currentPartitionSize int
+}
+
+// This is more of a debugging thing than anything else
+type VP8FrameInfo struct {
+	startSequence   uint16
+	endSequence     uint16
+	packets         []uint16 // seqnums packets making up this frame
+	startTime       time.Time
+	pictureID       uint16
+	isKeyFrame      bool
+	timestamp       uint32
+	size            int
 }
 
 type WebmRecorder struct {
@@ -41,10 +53,23 @@ type WebmRecorder struct {
 	started bool
 	closed  bool
 
+	// Seen at least one keyframe
 	seenKeyFrame      bool
+	// Has a valid keyframe to keep recording
+	hasKeyFrame      bool
 	currentFrame      []byte
+	// Again, more debugging than anything else
+	currentFrameInfo  *VP8FrameInfo
 	packetTimestamp   uint32
+	// Last PTS (presentation timestamp) *written* to the WebM file
+	pts						int64
 	hasAudio          bool
+	// Last PictureID received in any VP8 packet, not necessarily written
+	lastPictureID     uint16
+	lastSkippedSeq    uint16
+	skipSignaled      bool
+	lastProcessedSeq  uint16
+	expectedNextSeq   uint16
 
 	lastKeyFrameTime     time.Time
 	corruptedFrameCount  int
@@ -62,8 +87,11 @@ func NewWebmRecorder(file string, fileMode os.FileMode) *WebmRecorder {
 		fileMode:            fileMode,
 		audioBuilder:        samplebuilder.New(10, &codecs.OpusPacket{}, 48000),
 		lastKeyFrameTime:    time.Now(),
-		frameTimeout:        time.Millisecond * 500,
-		maxFrameSize:        5 * 1024 * 1024,
+		// TODO Make this configurable or remove the timeout altogether - prlanzarin
+		frameTimeout:        time.Millisecond * 2000,
+		// maxFrameSize = 5MB
+		maxFrameSize:        10 * 1024 * 1024,
+		skipSignaled:        false,
 	}
 
 	return r
@@ -99,6 +127,47 @@ func (r *WebmRecorder) PushVideo(p *rtp.Packet) {
 
 func (r *WebmRecorder) PushAudio(p *rtp.Packet) {
 	r.pushOpus(p)
+}
+
+func (r *WebmRecorder) NotifySkippedPacket(seq uint16) {
+	r.m.Lock()
+	defer r.m.Unlock()
+
+	r.lastSkippedSeq = seq
+	r.skipSignaled = true
+
+	// Frame in progress and skipped packet might belong to it, discard current
+	// frame to avoid stream corruption ( not that great but better than
+	// nothing)
+	if r.currentFrame != nil &&
+	   ((r.currentFrameInfo != nil &&
+		 isSequenceInRange(seq, r.currentFrameInfo.startSequence, r.lastProcessedSeq)) ||
+		r.currentFrameInfo == nil) {
+		var logMsgPkts = "unknown"
+
+		if r.currentFrameInfo != nil {
+			logMsgPkts = fmt.Sprintf("%d-%d (%d)",
+				r.currentFrameInfo.startSequence,
+				r.lastProcessedSeq,
+				len(r.currentFrameInfo.packets),
+			)
+		}
+
+		log.WithField("session", r.ctx.Value("session")).
+			Warnf("Discarding frame due to skipped packet: seq=%d, frame=%v", seq, logMsgPkts)
+
+		r.currentFrame = nil
+		r.currentFrameInfo = nil
+		r.hasKeyFrame = false
+	}
+}
+
+func isSequenceInRange(seq, start, end uint16) bool {
+	if start <= end {
+		return seq >= start && seq <= end
+	}
+
+	return seq >= start || seq <= end
 }
 
 // Locked
@@ -161,7 +230,11 @@ func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
 	}
 }
 
-func validateVP8Frame(frame []byte) (bool, string) {
+// Some validations here are kind of duplicate from the depayloader (pushVP8)
+// e.g.: keyframe detection, continuity etc
+// That is intentional for now - I'm trying to figure out whether the assembly
+// itself is borking things rather than packet-by-packet cheking done there.
+func validateVP8Frame(frame []byte, frameInfo *VP8FrameInfo) (bool, string) {
 	// TODO review min frame len - matching with VP8 header size for now
 	minFrameLen := 10
 
@@ -192,6 +265,15 @@ func validateVP8Frame(frame []byte) (bool, string) {
 		}
 	}
 
+	// For frames with multiple packets, check for continuity and keyframe flags
+	if frameInfo != nil && len(frameInfo.packets) > 1 {
+		// If the frame claims to be a keyframe, the first byte of payload should indicate it
+		if frameInfo.isKeyFrame != isKeyFrame {
+			return false, fmt.Sprintf("keyframe flag inconsistency: %v vs %v",
+				frameInfo.isKeyFrame, isKeyFrame)
+		}
+	}
+
 	return true, ""
 }
 
@@ -203,107 +285,276 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 		return
 	}
 
+	if r.expectedNextSeq > 0 && p.SequenceNumber != r.expectedNextSeq {
+		if !r.skipSignaled {
+			log.WithField("session", r.ctx.Value("session")).
+				Debugf("Sequence discontinuity detected: expected=%d, got=%d",
+					r.expectedNextSeq, p.SequenceNumber)
+		}
+
+		if r.skipSignaled && r.lastSkippedSeq+1 == p.SequenceNumber {
+			log.WithField("session", r.ctx.Value("session")).
+				Debugf("Processing first packet after skip: seq=%d, last_skipped=%d",
+					p.SequenceNumber, r.lastSkippedSeq)
+
+			// Force treating this as a new frame start for safety
+			if r.currentFrame != nil {
+				var logMsgPkts = 0
+
+				if r.currentFrameInfo != nil {
+					logMsgPkts = len(r.currentFrameInfo.packets)
+				}
+
+				log.WithField("session", r.ctx.Value("session")).
+					Warnf("Discarding partial frame after skip boundary: pkts=%v", logMsgPkts)
+				r.currentFrame = nil
+				r.currentFrameInfo = nil
+			}
+		}
+
+		r.skipSignaled = false
+	}
+
+	r.expectedNextSeq = p.SequenceNumber + 1
+	r.lastProcessedSeq = p.SequenceNumber
+
 	vp8Packet := codecs.VP8Packet{}
+
 	if _, err := vp8Packet.Unmarshal(p.Payload); err != nil {
 		log.WithField("session", r.ctx.Value("session")).
 			Debugf("Failed to unmarshal VP8 packet: seq=%d, err=%v", p.SequenceNumber, err)
+		r.hasKeyFrame = false
 		return
 	}
 
-	isKeyFrame := vp8Packet.Payload[0]&0x01 == 0
+	// Lifted from LK
+	isKeyFrame := vp8Packet.S != 0 && (vp8Packet.Payload[0]&0x1 == 0) && vp8Packet.PID == 0
+	pictureID := vp8Packet.PictureID
 
-	if isKeyFrame {
+	log.WithField("session", r.ctx.Value("session")).
+		Tracef("VP8 RTP-DEPAY: seq=%d, ts=%d, marker=%v, S=%v, PictureID=%d, KeyFrame=%v, size=%d, PartID=%d",
+			p.SequenceNumber, p.Timestamp, p.Marker, vp8Packet.S == 1,
+			pictureID, isKeyFrame, len(vp8Packet.Payload), vp8Packet.PID)
+
+	// I don't fully get this: when testing with some extreme network scenarios,
+	// I got packets with S=1 and PID > 0. I have not had the time to investigate
+	// further, so try and make it work but log it - prlanzarin
+	if vp8Packet.S == 1 && vp8Packet.PID > 0 {
 		log.WithField("session", r.ctx.Value("session")).
-			Tracef("Received keyframe: seq=%d, timestamp=%d, size=%d",
-				p.SequenceNumber, p.Timestamp, len(p.Payload))
+			Warnf("Mid-frame partition detected: seq=%d, PID=%d", p.SequenceNumber, vp8Packet.PID)
+		if r.currentFrameInfo != nil {
+			r.currentFrameInfo.packets = append(r.currentFrameInfo.packets, p.SequenceNumber)
+			r.currentFrame = append(r.currentFrame, vp8Packet.Payload[0:]...)
+			return
+		}
 	}
 
+	// NEW FRAME!
 	if vp8Packet.S == 1 {
-		r.vp8Tracker.partitionsStarted++
-		r.vp8Tracker.currentPartitionSize = 0
-
-		// If we have an existing frame being assembled that wasn't properly finished
-		// with a marker bit, discard it - it's likely corrupted
+		// OLD FRAME, but not complete. Discard it.
 		if r.currentFrame != nil && len(r.currentFrame) > 0 {
+			var logMsgPkts = "none"
+
+			if r.currentFrameInfo != nil && len(r.currentFrameInfo.packets) > 0 {
+				logMsgPkts = fmt.Sprintf("%d-%d (%d)",
+				r.currentFrameInfo.packets[0],
+				r.currentFrameInfo.packets[len(r.currentFrameInfo.packets)-1],
+				len(r.currentFrameInfo.packets))
+			}
+
 			log.WithField("session", r.ctx.Value("session")).
-				Warn("Discarding incomplete frame as new frame started")
+				Warnf("Discarding incomplete VP8 frame: packets=%v, size=%d, elapsed=%v, new_seq=%d",
+					logMsgPkts,
+					len(r.currentFrame),
+					time.Since(r.frameStartTime), p.SequenceNumber)
+
 			r.currentFrame = nil
+			r.currentFrameInfo = nil
+			r.hasKeyFrame = false
 		}
 
+		r.vp8Tracker.partitionsStarted++
+		r.vp8Tracker.currentPartitionSize = 0
 		r.frameStartTime = time.Now()
+
+		r.currentFrameInfo = &VP8FrameInfo{
+			startSequence: p.SequenceNumber,
+			pictureID:     pictureID,
+			isKeyFrame:    isKeyFrame,
+			timestamp:     p.Timestamp,
+			startTime:     r.frameStartTime,
+			packets:       []uint16{p.SequenceNumber},
+		}
+
+		// Check for PictureID discontinuity
+		if r.lastPictureID > 0 {
+			// Picture ID should ++ and wrap around at 15 bits
+			expectedID := (r.lastPictureID + 1) & 0x7FFF
+
+			if pictureID != expectedID {
+				log.WithField("session", r.ctx.Value("session")).
+					Warnf("VP8 Picture ID discontinuity: expected=%d, got=%d, seq=%d",
+						expectedID, pictureID, p.SequenceNumber)
+
+				r.hasKeyFrame = false
+				r.currentFrame = nil
+				r.currentFrameInfo = nil
+				r.lastPictureID = 0
+				return
+			}
+		}
+	} else if r.currentFrameInfo != nil {
+		// Frame in progress, add packet to it
+		r.currentFrameInfo.packets = append(r.currentFrameInfo.packets, p.SequenceNumber)
+
+		// Check for timestamp discontinuity within a frame
+		if r.currentFrameInfo.timestamp != p.Timestamp {
+			log.WithField("session", r.ctx.Value("session")).
+				Warnf("Timestamp discontinuity in frame: expected=%d, got=%d, seq=%d",
+					r.currentFrameInfo.timestamp, p.Timestamp, p.SequenceNumber)
+		}
 	}
 
 	r.vp8Tracker.currentPartitionSize += len(vp8Packet.Payload)
 
-	// Frame assembly timeout check - prevent stale frame assembly
+	// Frame assembly timeout - TODO review later - prlanzarin
 	if r.currentFrame != nil && time.Since(r.frameStartTime) > r.frameTimeout {
+		var logMsgPkts = "unknown"
+
+		if r.currentFrameInfo != nil {
+			logMsgPkts = fmt.Sprintf("[%d-%d] (%d)",
+				r.currentFrameInfo.startSequence,
+				r.currentFrameInfo.packets[len(r.currentFrameInfo.packets)-1],
+				len(r.currentFrameInfo.packets))
+		}
+
 		log.WithField("session", r.ctx.Value("session")).
-			Warnf("Frame assembly timed out after %v, discarding partial frame", r.frameTimeout)
+			Warnf("Frame assembly timed out after %v: packets=%v, size=%d",
+				r.frameTimeout,
+				logMsgPkts,
+				len(r.currentFrame),
+			)
+
 		r.currentFrame = nil
+		r.currentFrameInfo = nil
+		r.hasKeyFrame = false
+
+		return
 	}
 
 	switch {
-	case !r.seenKeyFrame && !isKeyFrame:
-		// Still waiting for first keyframe
-		log.WithField("session", r.ctx.Value("session")).
-			Debug("Waiting for initial keyframe, dropping non-keyframe")
-		return
-	case r.currentFrame == nil && vp8Packet.S != 1:
-		// Received continuation packet without a frame start
-		log.WithField("session", r.ctx.Value("session")).
-			Debug("Dropping continuation packet without start bit (S=1)")
-		return
+		case !r.hasKeyFrame && !isKeyFrame:
+			log.WithField("session", r.ctx.Value("session")).
+				Tracef("Waiting for keyframe, dropping non-keyframe: seq=%d", p.SequenceNumber)
+				r.currentFrame = nil
+				r.currentFrameInfo = nil
+			return
+		case r.currentFrame == nil && vp8Packet.S != 1:
+			log.WithField("session", r.ctx.Value("session")).
+				Debugf("Dropping continuation packet without start bit: seq=%d", p.SequenceNumber)
+				r.currentFrameInfo = nil
+				r.hasKeyFrame = false
+			return
 	}
 
-	if !r.seenKeyFrame {
-		r.packetTimestamp = p.Timestamp
+	if !r.hasKeyFrame {
+		if !r.seenKeyFrame {
+			log.WithField("session", r.ctx.Value("session")).
+				Infof("First keyframe received: seq=%d, timestamp=%d, picID=%d",
+					p.SequenceNumber, p.Timestamp, pictureID)
+			r.seenKeyFrame = true
+			r.packetTimestamp = p.Timestamp
+		}
+
 		r.lastKeyFrameTime = time.Now()
 		log.WithField("session", r.ctx.Value("session")).
-			Infof("First keyframe received: seq=%d, timestamp=%d",
-				p.SequenceNumber, p.Timestamp)
+			Debugf("Unblocking keyframe received: seq=%d, timestamp=%d, picID=%d",
+				p.SequenceNumber, p.Timestamp, pictureID)
 	}
 
 	if r.currentFrame != nil && len(r.currentFrame)+len(vp8Packet.Payload) > r.maxFrameSize {
+		var logMsgPkts = "unknown"
+
+		if r.currentFrameInfo != nil {
+			logMsgPkts = fmt.Sprintf("[%d-%d] (%d)",
+				r.currentFrameInfo.startSequence,
+				r.currentFrameInfo.packets[len(r.currentFrameInfo.packets)-1],
+				len(r.currentFrameInfo.packets))
+		}
+
 		log.WithField("session", r.ctx.Value("session")).
-			Warnf("Frame exceeds max size (%d bytes), discarding", r.maxFrameSize)
+			Warnf("Frame exceeds max size (%d bytes), discarding: packets=%v",
+				r.maxFrameSize,
+				logMsgPkts,
+			)
+
 		r.currentFrame = nil
+		r.currentFrameInfo = nil
+		r.hasKeyFrame = false
+
 		return
 	}
 
-	log.WithField("session", r.ctx.Value("session")).
-		Tracef("VP8 packet: seq=%d, S=%v, marker=%v, size=%d, timestamp=%d",
-			p.SequenceNumber, vp8Packet.S == 1, p.Marker, len(vp8Packet.Payload), p.Timestamp)
-
-	r.seenKeyFrame = true
+	r.hasKeyFrame = true
 	r.currentFrame = append(r.currentFrame, vp8Packet.Payload[0:]...)
 
-	// Not the last packet of the frame yet
+	// Not a complete frame yet, wait for more packets
 	if !p.Marker || len(r.currentFrame) == 0 {
 		return
 	}
 
 	if p.Marker {
 		r.vp8Tracker.partitionsComplete++
+
+		if r.currentFrameInfo != nil {
+			r.currentFrameInfo.endSequence = p.SequenceNumber
+			r.currentFrameInfo.size = len(r.currentFrame)
+			r.lastPictureID = r.currentFrameInfo.pictureID
+
+			log.WithField("session", r.ctx.Value("session")).
+				Debugf("VP8 frame complete: seq=[%d-%d], ts=%d, packets=%d, size=%d, elapsed=%v, keyframe=%v",
+					r.currentFrameInfo.startSequence, p.SequenceNumber,
+					p.Timestamp, len(r.currentFrameInfo.packets), len(r.currentFrame),
+					time.Since(r.currentFrameInfo.startTime), r.currentFrameInfo.isKeyFrame)
+		}
+
 		log.WithField("session", r.ctx.Value("session")).
 			Tracef("VP8 partition stats: started=%d, complete=%d, lastSize=%d",
 				r.vp8Tracker.partitionsStarted, r.vp8Tracker.partitionsComplete,
 				r.vp8Tracker.currentPartitionSize)
 	}
 
-	if valid, reason := validateVP8Frame(r.currentFrame); !valid {
+	if valid, reason := validateVP8Frame(r.currentFrame, r.currentFrameInfo); !valid {
+		var logMsgPkts = "unknown"
+
+		if r.currentFrameInfo != nil {
+			logMsgPkts = fmt.Sprintf("[%d-%d] (%d)",
+				r.currentFrameInfo.startSequence,
+				r.currentFrameInfo.packets[len(r.currentFrameInfo.packets)-1],
+				len(r.currentFrameInfo.packets),
+			)
+		}
+
 		log.WithField("session", r.ctx.Value("session")).
-			Warnf("Discarding invalid VP8 frame: %s", reason)
+			Warnf("Discarding invalid VP8 frame: %s, packets=%v", reason, logMsgPkts)
+
 		r.corruptedFrameCount++
 		r.currentFrame = nil
-
-		// TODO request PLI upstream
-		//if r.corruptedFrameCount >= 5 && time.Since(r.lastKeyFrameTime) > time.Second*1 {
-		//	log.WithField("session", r.ctx.Value("session")).
-		//		Warn("Multiple corrupt frames detected, requesting keyframe")
-		//	r.lastKeyFrameTime = time.Now()
-		//}
+		r.currentFrameInfo = nil
+		r.hasKeyFrame = false
 
 		return
+	}
+
+	if r.currentFrameInfo != nil {
+		// PictureID continuity
+		if r.lastPictureID > 0 &&
+		   pictureID != ((r.lastPictureID + 1) & 0x7FFF) &&
+		   r.currentFrameInfo.pictureID != pictureID {
+			log.WithField("session", r.ctx.Value("session")).
+				Warnf("Picture ID mismatch in frame: start=%d, end=%d",
+					r.currentFrameInfo.pictureID, pictureID)
+		}
 	}
 
 	r.lastFrameSize = len(r.currentFrame)
@@ -311,14 +562,16 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 
 	frameSize := len(r.currentFrame)
 	log.WithField("session", r.ctx.Value("session")).
-		Tracef("Assembled complete VP8 frame: isKF=%v, size=%d",
+		Tracef("Assembled complete VP8 frame: keyframe=%v, size=%d",
 			isKeyFrame, frameSize)
 
 	duration := time.Duration((float64(p.Timestamp-r.packetTimestamp)/float64(vp8SampleRate))*secondToNanoseconds) * time.Nanosecond
+	newVideoTs := r.videoTimestamp + duration
+	newPts := int64(newVideoTs / time.Millisecond)
 
 	log.WithField("session", r.ctx.Value("session")).
-		Tracef("Frame duration: %v, new timestamp: %v",
-			duration, r.videoTimestamp+duration)
+		Tracef("Frame duration: %v, pts=%v, new timestamp: %v, prevPacketTS: %v, newPacketTS: %v",
+			duration, newPts, r.videoTimestamp+duration, r.packetTimestamp, p.Timestamp)
 
 	if r.videoWriter == nil || (r.audioWriter == nil && r.hasAudio) {
 		raw := uint(r.currentFrame[6]) | uint(r.currentFrame[7])<<8 | uint(r.currentFrame[8])<<16 | uint(r.currentFrame[9])<<24
@@ -332,7 +585,15 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 	}
 
 	if r.videoWriter != nil {
-		r.videoTimestamp += duration
+		if r.pts > 0 && r.pts == newPts {
+			log.WithField("session", r.ctx.Value("session")).
+				Warnf("Duplicate frame detected: pts=%d, seq=[%d-%d], duration=%v, prevPacketTS=%d, newPacketTS=%d",
+					newPts, r.currentFrameInfo.startSequence, p.SequenceNumber, duration, r.packetTimestamp, p.Timestamp)
+		}
+
+		r.videoTimestamp = newVideoTs
+		r.packetTimestamp = p.Timestamp
+		r.pts = newPts
 
 		if isKeyFrame {
 			r.lastKeyFrameTime = time.Now()
@@ -340,21 +601,36 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 
 		log.WithField("session", r.ctx.Value("session")).
 			Tracef("Writing frame to WebM: pts=%d, isKey=%v, size=%d",
-				int64(r.videoTimestamp/time.Millisecond), isKeyFrame, frameSize)
+				newPts, isKeyFrame, frameSize)
 
-		if _, err := r.videoWriter.Write(isKeyFrame, int64(r.videoTimestamp/time.Millisecond), r.currentFrame); err != nil {
+		if _, err := r.videoWriter.Write(isKeyFrame, newPts, r.currentFrame); err != nil {
 			log.WithField("session", r.ctx.Value("session")).
 				Errorf("Error writing video frame: %v", err)
+				r.hasKeyFrame = false
 		} else {
-			if isKeyFrame {
+				var sSeq, eSeq, pktCount, stime, pictureID, timestamp int = 0, 0, 0, 0, 0, 0
+
+				if r.currentFrameInfo != nil {
+					sSeq = int(r.currentFrameInfo.startSequence)
+					eSeq = int(r.currentFrameInfo.endSequence)
+					stime = int(r.currentFrameInfo.startTime.Unix())
+					pictureID = int(r.currentFrameInfo.pictureID)
+					timestamp = int(r.currentFrameInfo.timestamp)
+					pktCount = len(r.currentFrameInfo.packets)
+				}
+
+
 				log.WithField("session", r.ctx.Value("session")).
-					Debugf("Written keyframe of size %d bytes at pts=%d", len(r.currentFrame), int64(r.videoTimestamp/time.Millisecond))
-			}
+					Tracef("Written VP8 frame to WebM: size=%d, pts=%d, seq=[%d-%d], ts=%d, picID=%d, keyframe=%v, pkts=%d, stime=%d",
+						len(r.currentFrame),
+						newPts,
+						sSeq, eSeq, timestamp, pictureID, isKeyFrame, pktCount, stime,
+					)
 		}
 	}
 
 	r.currentFrame = nil
-	r.packetTimestamp = p.Timestamp
+	r.currentFrameInfo = nil
 }
 
 func (r *WebmRecorder) initWriter(width, height int) {

@@ -13,15 +13,21 @@ type JitterBuffer struct {
 	size      int64
 	missingPacketTimers map[int64]time.Time
 	maxWaitTime         time.Duration
+	lastSkippedSeq      int64
 	// TODO add ctx for logging
 }
 
-func NewJitterBuffer(size uint16) *JitterBuffer {
+func NewJitterBuffer(
+	size uint16,
+) *JitterBuffer {
 	return &JitterBuffer{
 		packets: make([]*rtp.Packet, size),
 		size:    int64(size),
 		missingPacketTimers: make(map[int64]time.Time),
-		maxWaitTime:        time.Millisecond * 100,
+		// NACK retransmission timeout is 10*40u ms. Add +50ms here to guarantee
+		// that we don't skip packets that are still in transit.
+		maxWaitTime:        time.Millisecond * 450,
+		lastSkippedSeq:     0,
 	}
 }
 
@@ -69,9 +75,11 @@ func (s *JitterBuffer) Add(seq int64, packet *rtp.Packet) bool {
 	return true
 }
 
-func (s *JitterBuffer) NextPackets() []*rtp.Packet {
+func (s *JitterBuffer) NextPackets() ([]*rtp.Packet, bool) {
+	skippedPacket := false
+
 	if s.nextStart > s.end {
-		return nil
+		return nil, false
 	}
 
 	if s.packets[s.nextStart%s.size] == nil {
@@ -80,19 +88,26 @@ func (s *JitterBuffer) NextPackets() []*rtp.Packet {
 		if _, exists := s.missingPacketTimers[s.nextStart]; !exists {
 			s.missingPacketTimers[s.nextStart] = time.Now()
 			log.Debugf("Started tracking missing packet: seq=%d", s.nextStart)
-			return nil
+			return nil, false
 		}
 
 		if time.Since(s.missingPacketTimers[s.nextStart]) < s.maxWaitTime {
-			return nil
+			return nil, false
 		}
 
 		log.Warnf("Skipping missing packet after timeout: seq=%d", s.nextStart)
 		delete(s.missingPacketTimers, s.nextStart)
-		// TODO Use SetNextPacketsStart to skip the missing packet?
+		s.lastSkippedSeq = s.nextStart
 		s.nextStart++
+		skippedPacket = true
 
-		return s.NextPackets()
+		pkts, moreSkips := s.NextPackets()
+
+		if pkts == nil {
+			return nil, skippedPacket
+		}
+
+		return pkts, skippedPacket || moreSkips
 	}
 
 	delete(s.missingPacketTimers, s.nextStart)
@@ -114,13 +129,15 @@ func (s *JitterBuffer) NextPackets() []*rtp.Packet {
 	}
 
 	s.nextStart = end + 1
-	return packets
+
+	return packets, skippedPacket
 }
 
 // SkipPacket forces the jitter buffer to skip waiting for a specific sequence number
 func (s *JitterBuffer) SkipPacket(seq int64) {
 	if seq == s.nextStart {
 		log.Debugf("Skipping missing packet in jitter buffer: seq=%d", seq)
+			s.lastSkippedSeq = seq
 			s.SetNextPacketsStart(seq + 1)
 	}
 }
@@ -137,4 +154,15 @@ func (s *JitterBuffer) SetNextPacketsStart(nextPacketsStart int64) {
 
 func (s *JitterBuffer) GetNextStart() int64 {
 	return s.nextStart
+}
+
+func (s *JitterBuffer) GetAndClearLastSkipped() (int64, bool) {
+	if s.lastSkippedSeq == 0 {
+		return 0, false
+	}
+
+	skipped := s.lastSkippedSeq
+	s.lastSkippedSeq = 0
+
+	return skipped, true
 }

@@ -17,6 +17,7 @@ type Recorder interface {
 	GetFilePath() string
 	PushVideo(rtp *rtp.Packet)
 	PushAudio(rtp *rtp.Packet)
+	NotifySkippedPacket(seq uint16)
 	WithContext(ctx context.Context)
 	VideoTimestamp() time.Duration
 	SetHasAudio(hasAudio bool)
