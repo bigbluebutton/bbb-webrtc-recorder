@@ -57,6 +57,10 @@ type WebmRecorder struct {
 	seenKeyFrame      bool
 	// Has a valid keyframe to keep recording
 	hasKeyFrame      bool
+	lastKeyFrameTime     time.Time
+	keyframeRequester         KeyframeRequester
+	lastKeyframeRequestTime   time.Time
+
 	currentFrame      []byte
 	// Again, more debugging than anything else
 	currentFrameInfo  *VP8FrameInfo
@@ -71,7 +75,6 @@ type WebmRecorder struct {
 	lastProcessedSeq  uint16
 	expectedNextSeq   uint16
 
-	lastKeyFrameTime     time.Time
 	corruptedFrameCount  int
 	lastFrameSize        int
 	frameTimeout         time.Duration
@@ -111,6 +114,13 @@ func (r *WebmRecorder) SetHasAudio(hasAudio bool) {
 
 func (r *WebmRecorder) GetHasAudio() bool {
 	return r.hasAudio
+}
+
+func (r *WebmRecorder) SetKeyframeRequester(requester KeyframeRequester) {
+    r.m.Lock()
+    defer r.m.Unlock()
+    r.keyframeRequester = requester
+    r.lastKeyframeRequestTime = time.Time{}
 }
 
 func (r *WebmRecorder) VideoTimestamp() time.Duration {
@@ -159,6 +169,7 @@ func (r *WebmRecorder) NotifySkippedPacket(seq uint16) {
 		r.currentFrame = nil
 		r.currentFrameInfo = nil
 		r.hasKeyFrame = false
+		r.RequestKeyframe()
 	}
 }
 
@@ -227,6 +238,20 @@ func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
 				panic(err)
 			}
 		}
+	}
+}
+
+func (r *WebmRecorder) RequestKeyframe() {
+	if r.keyframeRequester == nil {
+		return
+	}
+
+	if r.lastKeyframeRequestTime.IsZero() ||
+		time.Since(r.lastKeyframeRequestTime) > time.Second {
+		log.WithField("session", r.ctx.Value("session")).Debug("Recorder is requesting keyframe")
+
+		r.keyframeRequester.RequestKeyframe()
+		r.lastKeyframeRequestTime = time.Now()
 	}
 }
 
@@ -324,6 +349,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 		log.WithField("session", r.ctx.Value("session")).
 			Debugf("Failed to unmarshal VP8 packet: seq=%d, err=%v", p.SequenceNumber, err)
 		r.hasKeyFrame = false
+		r.RequestKeyframe()
 		return
 	}
 
@@ -371,6 +397,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 			r.currentFrame = nil
 			r.currentFrameInfo = nil
 			r.hasKeyFrame = false
+			r.RequestKeyframe()
 		}
 
 		r.vp8Tracker.partitionsStarted++
@@ -400,6 +427,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 				r.currentFrame = nil
 				r.currentFrameInfo = nil
 				r.lastPictureID = 0
+				r.RequestKeyframe()
 				return
 			}
 		}
@@ -438,6 +466,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 		r.currentFrame = nil
 		r.currentFrameInfo = nil
 		r.hasKeyFrame = false
+		r.RequestKeyframe()
 
 		return
 	}
@@ -446,6 +475,10 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 		case !r.hasKeyFrame && !isKeyFrame:
 			log.WithField("session", r.ctx.Value("session")).
 				Tracef("Waiting for keyframe, dropping non-keyframe: seq=%d", p.SequenceNumber)
+				if !r.seenKeyFrame {
+					r.RequestKeyframe()
+				}
+
 				r.currentFrame = nil
 				r.currentFrameInfo = nil
 			return
@@ -454,6 +487,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 				Debugf("Dropping continuation packet without start bit: seq=%d", p.SequenceNumber)
 				r.currentFrameInfo = nil
 				r.hasKeyFrame = false
+				r.RequestKeyframe()
 			return
 	}
 
@@ -491,6 +525,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 		r.currentFrame = nil
 		r.currentFrameInfo = nil
 		r.hasKeyFrame = false
+		r.RequestKeyframe()
 
 		return
 	}
@@ -542,6 +577,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 		r.currentFrame = nil
 		r.currentFrameInfo = nil
 		r.hasKeyFrame = false
+		r.RequestKeyframe()
 
 		return
 	}
@@ -607,6 +643,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 			log.WithField("session", r.ctx.Value("session")).
 				Errorf("Error writing video frame: %v", err)
 				r.hasKeyFrame = false
+				r.RequestKeyframe()
 		} else {
 				var sSeq, eSeq, pktCount, stime, pictureID, timestamp int = 0, 0, 0, 0, 0, 0
 

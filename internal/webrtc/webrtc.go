@@ -20,10 +20,18 @@ type NACKTracker struct {
 	timestamp time.Time
 }
 
+type PLITracker struct {
+	count     int
+	timestamp time.Time
+}
+
 type WebRTC struct {
 	ctx context.Context
 	cfg config.WebRTC
 	pc  *webrtc.PeerConnection
+
+	videoTrackSSRCs []uint32
+	pliStats map[uint32]PLITracker
 }
 
 func NewWebRTC(ctx context.Context, cfg config.WebRTC) *WebRTC {
@@ -32,10 +40,12 @@ func NewWebRTC(ctx context.Context, cfg config.WebRTC) *WebRTC {
 
 func (w WebRTC) Init(
 	offer webrtc.SessionDescription,
-	r recorder.Recorder,
+	rec recorder.Recorder,
 	connStateCallbackFn func(state webrtc.ICEConnectionState),
 	flowCallbackFn func(isFlowing bool, videoTimestamp time.Duration, closed bool),
 ) webrtc.SessionDescription {
+	w.pliStats = make(map[uint32]PLITracker)
+
 	// Prepare the configuration
 	cfg := webrtc.Configuration{
 		ICEServers:   w.cfg.ICEServers,
@@ -112,7 +122,7 @@ func (w WebRTC) Init(
 		isVideo := track.Kind() == webrtc.RTPCodecTypeVideo
 
 		if isAudio {
-			r.SetHasAudio(true)
+			rec.SetHasAudio(true)
 		}
 
 		log.WithField("session", w.ctx.Value("session")).
@@ -121,8 +131,16 @@ func (w WebRTC) Init(
 				track.SSRC(), track.RID())
 
 		if isVideo {
+			w.videoTrackSSRCs = append(w.videoTrackSSRCs, uint32(track.SSRC()))
+			w.pliStats[uint32(track.SSRC())] = PLITracker{count: 0, timestamp: time.Now()}
+
+			if kfr, ok := rec.(interface{
+				SetKeyframeRequester(recorder.KeyframeRequester)
+			}); ok {
+				kfr.SetKeyframeRequester(w)
+			}
+
 			// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
-			sentPLIs := 0
 			done := make(chan bool)
 			defer func() {
 				done <- true
@@ -131,24 +149,12 @@ func (w WebRTC) Init(
 				ticker := time.NewTicker(time.Second * 3)
 				for {
 					select {
-					case <-done:
-						ticker.Stop()
-						return
-					case <-ticker.C:
-						sentPLIs++
-						log.WithField("session", w.ctx.Value("session")).
-							Tracef("Sending PLI #%d for SSRC %d", sentPLIs, track.SSRC())
-						errSend := peerConnection.WriteRTCP([]rtcp.Packet{
-							&rtcp.PictureLossIndication{
-								MediaSSRC: uint32(track.SSRC()),
-							},
-						})
-
-						if errSend != nil {
-							log.WithField("session", w.ctx.Value("session")).
-								Error(errSend)
+						case <-done:
+							ticker.Stop()
+							return
+						case <-ticker.C:
+							w.RequestKeyframeForSSRC(uint32(track.SSRC()))
 						}
-					}
 				}
 			}()
 		}
@@ -260,7 +266,7 @@ func (w WebRTC) Init(
 					case <-done:
 						ticker.Stop()
 						if isVideo {
-							flowCallbackFn(false, r.VideoTimestamp(), true)
+							flowCallbackFn(false, rec.VideoTimestamp(), true)
 						}
 						return
 					case <-ticker.C:
@@ -272,7 +278,7 @@ func (w WebRTC) Init(
 						s1 = s2
 						if isVideo {
 							if isFlowing != wasFlowing {
-								flowCallbackFn(isFlowing, r.VideoTimestamp(), false)
+								flowCallbackFn(isFlowing, rec.VideoTimestamp(), false)
 								if isFlowing {
 									ticker.Reset(time.Millisecond * 1000)
 								} else {
@@ -342,8 +348,8 @@ func (w WebRTC) Init(
 			if skipped {
 				skippedSeq, ok := jb.GetAndClearLastSkipped()
 				if ok {
-					if r!= nil {
-						r.NotifySkippedPacket(uint16(skippedSeq))
+					if rec != nil {
+						rec.NotifySkippedPacket(uint16(skippedSeq))
 						log.Debugf("Notified recorder of skipped packet: seq=%d", skippedSeq)
 					}
 				}
@@ -353,9 +359,9 @@ func (w WebRTC) Init(
 				s2 = p.SequenceNumber
 				switch {
 				case isAudio:
-					r.PushAudio(p)
+					rec.PushAudio(p)
 				case isVideo:
-					r.PushVideo(p)
+					rec.PushVideo(p)
 				}
 			}
 		}
@@ -409,6 +415,34 @@ func (w WebRTC) Init(
 	return *peerConnection.LocalDescription()
 }
 
+func (w WebRTC) RequestKeyframe() {
+	for _, ssrc := range w.videoTrackSSRCs {
+		w.RequestKeyframeForSSRC(ssrc)
+	}
+}
+
+func (w WebRTC) RequestKeyframeForSSRC(ssrc uint32) {
+	err := w.pc.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: ssrc}})
+
+	if err != nil {
+		log.WithField("session", w.ctx.Value("session")).
+			Error(err)
+	}
+
+	if _, exists := w.pliStats[ssrc]; !exists {
+		w.pliStats[ssrc] = PLITracker{count: 0, timestamp: time.Now()}
+	}
+
+	newCount := w.pliStats[ssrc].count + 1
+	now := time.Now()
+	log.WithField("session", w.ctx.Value("session")).
+		Tracef("Sending PLI #%d for SSRC %d (sinceLast=%s)",
+			newCount, ssrc, now.Sub(w.pliStats[ssrc].timestamp))
+	w.pliStats[ssrc] = PLITracker{count: w.pliStats[ssrc].count + 1, timestamp: time.Now()}
+}
+
 func (w WebRTC) Close() error {
 	return w.pc.Close()
 }
+
+var _ recorder.KeyframeRequester = (*WebRTC)(nil)

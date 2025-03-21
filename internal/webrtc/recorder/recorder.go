@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+type KeyframeRequester interface {
+	RequestKeyframe()
+	RequestKeyframeForSSRC(ssrc uint32)
+}
+
 type Recorder interface {
 	GetFilePath() string
 	PushVideo(rtp *rtp.Packet)
@@ -21,6 +26,7 @@ type Recorder interface {
 	WithContext(ctx context.Context)
 	VideoTimestamp() time.Duration
 	SetHasAudio(hasAudio bool)
+	SetKeyframeRequester(requester KeyframeRequester)
 	GetHasAudio() bool
 	Close() time.Duration
 }
