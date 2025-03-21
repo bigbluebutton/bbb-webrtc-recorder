@@ -57,6 +57,7 @@ func (cfg *Config) SetDefaults() {
 	cfg.WebRTC.RTCMinPort = 24577
 	cfg.WebRTC.RTCMaxPort = 32768
 	cfg.WebRTC.JitterBuffer = 512
+	cfg.WebRTC.JitterBufferPktTimeout = 200
 	cfg.HTTP = HTTP{
 		Enable: false,
 		Port:   8080,
@@ -92,10 +93,11 @@ type Channels struct {
 }
 
 type WebRTC struct {
-	ICEServers   []webrtc.ICEServer `yaml:"iceServers,omitempty"`
-	RTCMinPort   uint16             `yaml:"rtcMinPort,omitempty"`
-	RTCMaxPort   uint16             `yaml:"rtcMaxPort,omitempty"`
-	JitterBuffer uint16             `yaml:"jitterBuffer,omitempty"`
+	ICEServers             []webrtc.ICEServer `yaml:"iceServers,omitempty"`
+	RTCMinPort             uint16             `yaml:"rtcMinPort,omitempty"`
+	RTCMaxPort             uint16             `yaml:"rtcMaxPort,omitempty"`
+	JitterBuffer           uint16             `yaml:"jitterBuffer,omitempty"`
+	JitterBufferPktTimeout uint16             `yaml:"jitterBufferPktTimeout,omitempty"`
 }
 
 type HTTP struct {

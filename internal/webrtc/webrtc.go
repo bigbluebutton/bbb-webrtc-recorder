@@ -158,8 +158,11 @@ func (w WebRTC) Init(
 			panic(err)
 		}
 
-		jitterBufferSize := w.cfg.JitterBuffer
-		jb := utils.NewJitterBuffer(jitterBufferSize)
+		jb := utils.NewJitterBuffer(
+			w.cfg.JitterBuffer,
+			w.cfg.JitterBufferPktTimeout,
+			w.ctx,
+		)
 
 		if true {
 			senderSSRC := rand.Uint32()
