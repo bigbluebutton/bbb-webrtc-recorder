@@ -512,7 +512,7 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 			r.lastPictureID = r.currentFrameInfo.pictureID
 
 			log.WithField("session", r.ctx.Value("session")).
-				Debugf("VP8 frame complete: seq=[%d-%d], ts=%d, packets=%d, size=%d, elapsed=%v, keyframe=%v",
+				Tracef("VP8 frame complete: seq=[%d-%d], ts=%d, packets=%d, size=%d, elapsed=%v, keyframe=%v",
 					r.currentFrameInfo.startSequence, p.SequenceNumber,
 					p.Timestamp, len(r.currentFrameInfo.packets), len(r.currentFrame),
 					time.Since(r.currentFrameInfo.startTime), r.currentFrameInfo.isKeyFrame)
