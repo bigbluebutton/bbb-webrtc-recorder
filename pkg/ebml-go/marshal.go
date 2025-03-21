@@ -31,29 +31,29 @@ var ErrNonStringMapKey = errors.New("non-string map key")
 //
 // Examples of struct field tags:
 //
-//	// Field appears as element "EBMLVersion".
-//	Field uint64 `ebml:EBMLVersion`
+//   // Field appears as element "EBMLVersion".
+//   Field uint64 `ebml:EBMLVersion`
 //
-//	// Field appears as element "EBMLVersion" and
-//	// the field is omitted from the output if the value is empty.
-//	Field uint64 `ebml:TheElement,omitempty`
+//   // Field appears as element "EBMLVersion" and
+//   // the field is omitted from the output if the value is empty.
+//   Field uint64 `ebml:TheElement,omitempty`
 //
-//	// Field appears as element "EBMLVersion" and
-//	// the field is omitted from the output if the value is empty.
-//	EBMLVersion uint64 `ebml:,omitempty`
+//   // Field appears as element "EBMLVersion" and
+//   // the field is omitted from the output if the value is empty.
+//   EBMLVersion uint64 `ebml:,omitempty`
 //
-//	// Field appears as master element "Segment" and
-//	// the size of the element contents is left unknown for streaming data.
-//	Field struct{} `ebml:Segment,size=unknown`
+//   // Field appears as master element "Segment" and
+//   // the size of the element contents is left unknown for streaming data.
+//   Field struct{} `ebml:Segment,size=unknown`
 //
-//	// Field appears as master element "Segment" and
-//	// the size of the element contents is left unknown for streaming data.
-//	// This style may be deprecated in the future.
-//	Field struct{} `ebml:Segment,inf`
+//   // Field appears as master element "Segment" and
+//   // the size of the element contents is left unknown for streaming data.
+//   // This style may be deprecated in the future.
+//   Field struct{} `ebml:Segment,inf`
 //
-//	// Field appears as element "EBMLVersion" and
-//	// the size of the element data is reserved by 4 bytes.
-//	Field uint64 `ebml:EBMLVersion,size=4`
+//   // Field appears as element "EBMLVersion" and
+//   // the size of the element data is reserved by 4 bytes.
+//   Field uint64 `ebml:EBMLVersion,size=4`
 func Marshal(val interface{}, w io.Writer, opts ...MarshalOption) error {
 	options := &MarshalOptions{}
 	for _, o := range opts {
