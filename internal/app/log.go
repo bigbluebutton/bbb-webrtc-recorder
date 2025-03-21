@@ -14,11 +14,14 @@ func configureLog() {
 	log.SetOutput(os.Stdout)
 
 	if isTty() {
-		log.SetFormatter(&log.TextFormatter{CallerPrettyfier: func(f *runtime.Frame) (string, string) {
+		log.SetFormatter(&log.TextFormatter{
+			CallerPrettyfier: func(f *runtime.Frame) (string, string) {
 			filename := path.Base(f.File)
 			return fmt.Sprintf("%s:%d", filename, f.Line),
 				fmt.Sprintf("> %s()", strings.Replace(f.Function, internal.ModName, ".", 1))
-		}})
+			},
+			FullTimestamp: true,
+		})
 	} else {
 		log.SetFormatter(&log.JSONFormatter{CallerPrettyfier: func(f *runtime.Frame) (string, string) {
 			return fmt.Sprintf("%s()", strings.Replace(f.Function, internal.ModName, ".", 1)),
