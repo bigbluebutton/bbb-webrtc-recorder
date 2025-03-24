@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* fix: multiple adjusments to VP8 sample building in the WebM recorder
+* fix: multiple adjustments to packet loss handling
+* fix: better pts generation for video samples
+* fix: edge case adjusments to RTP jitter buffer and receive log
+* chore: change default JB size
+* feat: add option to write IVF copies of recorded streams
+* feat: add option to use alternative video sample builder
+* feat: make jb packet timeout configurable
+* feat: make EBML max write queue sizes configurable
+* build: use Galene's samplebuilder instead of Pion's
+* build: sync ebml-go with upstream (4b8f657f0)
+
 ### v0.7.0
 
 * fix: panic due to invalid OPUS samples pushed to builder
