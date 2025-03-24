@@ -952,6 +952,8 @@ func (r *WebmRecorder) initWriter(width, height int) {
 		r.audioWriter = writers[1]
 	}
 
+	r.started = true
+
 	if r.writeIVFCopy {
 		if err := r.startIVFWriter(); err != nil {
 			log.WithField("session", r.ctx.Value("session")).
