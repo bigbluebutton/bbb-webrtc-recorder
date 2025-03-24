@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-### UNRELEASED
+### v0.8.0
 
 * fix: multiple adjusments to VP8 sample building in the WebM recorder
 * fix: multiple adjustments to packet loss handling
