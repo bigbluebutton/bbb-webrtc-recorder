@@ -46,7 +46,7 @@ func (cfg *Config) SetDefaults() {
 	cfg.Recorder.WriteIVFCopy = false
 	cfg.Recorder.VideoPacketQueueSize = 256
 	cfg.Recorder.AudioPacketQueueSize = 32
-	cfg.Recorder.UseCustomSampler = false
+	cfg.Recorder.UseCustomSampler = true
 	cfg.PubSub.Channels = Channels{
 		Subscribe: "to-" + cfg.App.Name,
 		Publish:   "from-" + cfg.App.Name,

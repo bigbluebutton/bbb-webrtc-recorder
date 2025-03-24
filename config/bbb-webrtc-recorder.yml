@@ -8,7 +8,7 @@ recorder:
   writeIVFCopy: false
   videoPacketQueueSize: 256
   audioPacketQueueSize: 32
-  useCustomSampler: false
+  useCustomSampler: true
 
 pubsub:
   channels:
