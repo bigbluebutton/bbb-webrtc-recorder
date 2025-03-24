@@ -5,6 +5,10 @@ recorder:
   dirFileMode: 0700
   fileMode: 0600
   writeToDevNull: false
+  writeIVFCopy: false
+  videoPacketQueueSize: 256
+  audioPacketQueueSize: 32
+  useCustomSampler: false
 
 pubsub:
   channels:
@@ -20,7 +24,8 @@ pubsub:
 webrtc:
   rtcMinPort: 24577
   rtcMaxPort: 32768
-  jitterBuffer: 1024
+  jitterBuffer: 256
+  jitterBufferPktTimeout: 200
   iceServers:
     - urls: []
 # Example turn server

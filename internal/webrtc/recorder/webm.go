@@ -8,7 +8,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
-	"github.com/pion/webrtc/v3/pkg/media/samplebuilder"
+	"github.com/jech/samplebuilder"
 	log "github.com/sirupsen/logrus"
 	"os"
 	"sync"
@@ -18,6 +18,7 @@ import (
 var _ Recorder = (*WebmRecorder)(nil)
 
 const (
+	opusSampleRate      = 48000
 	vp8SampleRate       = 90000
 	secondToNanoseconds = 1000000000
 )
@@ -41,10 +42,15 @@ type VP8FrameInfo struct {
 }
 
 type WebmRecorder struct {
-	ctx      context.Context
-	file     string
-	fileMode os.FileMode
-	m        sync.Mutex
+	m                     sync.Mutex
+	ctx                   context.Context
+	file                  string
+	fileMode              os.FileMode
+	videoPacketQueueSize  uint16
+	sorterPacketQueueSize int
+	audioPacketQueueSize  uint16
+	useCustomSampler      bool
+	writeIVFCopy          bool
 
 	audioWriter, videoWriter       webm.BlockWriteCloser
 	audioBuilder, videoBuilder     *samplebuilder.SampleBuilder
@@ -57,6 +63,7 @@ type WebmRecorder struct {
 	seenKeyFrame      bool
 	// Has a valid keyframe to keep recording
 	hasKeyFrame      bool
+	currKeyFrame      *rtp.Packet
 	lastKeyFrameTime     time.Time
 	keyframeRequester         KeyframeRequester
 	lastKeyframeRequestTime   time.Time
@@ -81,20 +88,34 @@ type WebmRecorder struct {
 	frameStartTime       time.Time
 	maxFrameSize         int
 	vp8Tracker           VP8PartitionTracker
+	ivfWriter						*IVFWriter
 }
 
-func NewWebmRecorder(file string, fileMode os.FileMode) *WebmRecorder {
+func NewWebmRecorder(
+	file string,
+	fileMode os.FileMode,
+	videoPacketQueueSize uint16,
+	audioPacketQueueSize uint16,
+	useCustomSampler bool,
+	writeIVFCopy bool,
+) *WebmRecorder {
 	r := &WebmRecorder{
-		ctx:                 context.Background(),
-		file:                file,
-		fileMode:            fileMode,
-		audioBuilder:        samplebuilder.New(10, &codecs.OpusPacket{}, 48000),
-		lastKeyFrameTime:    time.Now(),
+		ctx:                   context.Background(),
+		file:                  file,
+		fileMode:              fileMode,
+		videoPacketQueueSize:  videoPacketQueueSize,
+		sorterPacketQueueSize: int(videoPacketQueueSize) + 16,
+		audioPacketQueueSize:  audioPacketQueueSize,
+		useCustomSampler:      useCustomSampler,
+		writeIVFCopy:          writeIVFCopy,
+		audioBuilder:          samplebuilder.New(audioPacketQueueSize, &codecs.OpusPacket{}, opusSampleRate),
+		videoBuilder:          samplebuilder.New(videoPacketQueueSize, &codecs.VP8Packet{}, vp8SampleRate),
+		lastKeyFrameTime:      time.Now(),
 		// TODO Make this configurable or remove the timeout altogether - prlanzarin
-		frameTimeout:        time.Millisecond * 2000,
-		// maxFrameSize = 5MB
-		maxFrameSize:        10 * 1024 * 1024,
-		skipSignaled:        false,
+		frameTimeout:          time.Millisecond * 2000,
+		// maxFrameSize = 5MB (basically disabled for now)
+		maxFrameSize:          10 * 1024 * 1024,
+		skipSignaled:          false,
 	}
 
 	return r
@@ -132,7 +153,11 @@ func (r *WebmRecorder) AudioTimestamp() time.Duration {
 }
 
 func (r *WebmRecorder) PushVideo(p *rtp.Packet) {
-	r.pushVP8(p)
+	if !r.useCustomSampler {
+		r.pushVP8Builtin(p)
+	} else {
+		r.pushVP8Custom(p)
+	}
 }
 
 func (r *WebmRecorder) PushAudio(p *rtp.Packet) {
@@ -206,6 +231,18 @@ func (r *WebmRecorder) close() time.Duration {
 			Info("webm writer closed without starting")
 	}
 
+	if r.ivfWriter != nil {
+		if err := r.ivfWriter.Close(); err != nil {
+			log.WithField("session", r.ctx.Value("session")).
+				Warnf("Error closing IVF writer: %v", err)
+		} else {
+			log.WithField("session", r.ctx.Value("session")).
+				Debugf("IVF writer closed")
+		}
+
+		r.ivfWriter = nil
+	}
+
 	return r.videoTimestamp
 }
 
@@ -215,6 +252,66 @@ func (r *WebmRecorder) Close() time.Duration {
 	r.m.Unlock()
 
 	return ts
+}
+
+func (r *WebmRecorder) pushVP8Builtin(packet *rtp.Packet) {
+	r.m.Lock()
+	defer r.m.Unlock()
+
+	if len(packet.Payload) == 0 || r.closed {
+		return
+	}
+
+	isKeyFrame := IsVP8KeyFrame(packet)
+
+	if isKeyFrame {
+		r.currKeyFrame = packet
+		r.lastKeyFrameTime = time.Now()
+	}
+
+	r.videoBuilder.Push(packet)
+	log.WithField("session", r.ctx.Value("session")).
+		Tracef("BUILTIN: VP8 RTP-DEPAY: seq=%d, ts=%d, marker=%v, S=%v, PictureID=%d, KeyFrame=%v, size=%d, PartID=%d",
+			packet.SequenceNumber, packet.Timestamp, packet.Marker, isKeyFrame,
+			0, isKeyFrame, len(packet.Payload), 0)
+
+	for {
+		sample, ts := r.videoBuilder.PopWithTimestamp()
+
+		if sample == nil {
+			return
+		}
+
+		isKf := false
+
+		if r.currKeyFrame != nil {
+			isKf = ts == r.currKeyFrame.Timestamp
+		}
+
+		if (r.videoWriter == nil || (r.audioWriter == nil && r.hasAudio)) && isKf {
+			width, height := GetVP8KFDimension(packet)
+			log.WithField("session", r.ctx.Value("session")).
+				Tracef("Frame dimensions: %dx%d", width, height)
+			r.initWriter(width, height)
+		}
+
+		if r.videoWriter != nil {
+			log.WithField("session", r.ctx.Value("session")).
+				Tracef("Writing VP8 frame: ts=%d, size=%d, KF=%v", ts, len(sample.Data), isKf)
+			r.videoTimestamp += sample.Duration
+
+			if _, err := r.videoWriter.Write(isKf, int64(r.videoTimestamp/time.Millisecond), sample.Data); err != nil {
+				panic(err)
+			}
+
+			log.WithField("session", r.ctx.Value("session")).
+				Tracef("VP8 frame written: ts=%d, size=%d, KF=%v", ts, len(sample.Data), isKf)
+		}
+
+		if (r.writeIVFCopy) {
+			r.pushToIVFWriter(sample.Data, packet)
+		}
+	}
 }
 
 func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
@@ -302,7 +399,43 @@ func validateVP8Frame(frame []byte, frameInfo *VP8FrameInfo) (bool, string) {
 	return true, ""
 }
 
-func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
+func IsVP8KeyFrame(packet *rtp.Packet) bool {
+	if len(packet.Payload) == 0 {
+		return false
+	}
+
+	vp8Packet := codecs.VP8Packet{}
+
+	if _, err := vp8Packet.Unmarshal(packet.Payload); err != nil {
+		return false
+	}
+
+	return vp8Packet.S != 0 && (vp8Packet.Payload[0]&0x1 == 0) && vp8Packet.PID == 0
+}
+
+func GetVP8KFDimension(packet *rtp.Packet) (int, int) {
+	if len(packet.Payload) == 0 {
+		return 0, 0
+	}
+
+	vp8Packet := codecs.VP8Packet{}
+
+	if _, err := vp8Packet.Unmarshal(packet.Payload); err != nil {
+		return 0, 0
+	}
+
+	if vp8Packet.S != 0 || vp8Packet.PID != 0 {
+		return 0, 0
+	}
+
+	raw := uint(vp8Packet.Payload[6]) | uint(vp8Packet.Payload[7])<<8 | uint(vp8Packet.Payload[8])<<16 | uint(vp8Packet.Payload[9])<<24
+	width := int(raw & 0x3FFF)
+	height := int((raw >> 16) & 0x3FFF)
+
+	return width, height
+}
+
+func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -417,18 +550,47 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 		if r.lastPictureID > 0 {
 			// Picture ID should ++ and wrap around at 15 bits
 			expectedID := (r.lastPictureID + 1) & 0x7FFF
-
-			if pictureID != expectedID {
+			pidDiff := (pictureID - r.lastPictureID) & 0x7FFF
+			if pidDiff > 1 && pidDiff < 0x7000 {
 				log.WithField("session", r.ctx.Value("session")).
-					Warnf("VP8 Picture ID discontinuity: expected=%d, got=%d, seq=%d",
-						expectedID, pictureID, p.SequenceNumber)
+					Warnf("VP8 Picture ID gap detected: expected=%d, got=%d (missing %d frames), seq=%d",
+						expectedID, pictureID, pidDiff-1, p.SequenceNumber)
 
-				r.hasKeyFrame = false
-				r.currentFrame = nil
-				r.currentFrameInfo = nil
-				r.lastPictureID = 0
-				r.RequestKeyframe()
-				return
+				if r.currentFrame != nil {
+					logPID := uint16(0)
+
+					if r.currentFrameInfo != nil {
+						logPID = r.currentFrameInfo.pictureID
+					}
+
+					log.WithField("session", r.ctx.Value("session")).
+						Warnf("Discarding partial frame due to PictureID discontinuity (%d -> %d)",
+							logPID, pictureID)
+
+					r.currentFrame = nil
+					r.currentFrameInfo = nil
+				}
+
+				if isKeyFrame && vp8Packet.S == 1 {
+					// This is a new keyframe after discontinuity - ACCEPT IT
+					log.WithField("session", r.ctx.Value("session")).
+						Debugf("Accepting keyframe despite PictureID discontinuity: new picID=%d, seq=%d",
+							pictureID, p.SequenceNumber)
+
+					// Continue processing this keyframe
+					r.hasKeyFrame = true
+					r.lastKeyFrameTime = time.Now()
+
+					// Still update request state to avoid unnecessary PLIs
+					if r.lastKeyframeRequestTime.IsZero() {
+						r.lastKeyframeRequestTime = time.Now()
+					}
+				} else {
+					// For non-keyframes with discontinuity, reject and request keyframe
+					r.hasKeyFrame = false
+					r.RequestKeyframe()
+					return
+				}
 			}
 		}
 	} else if r.currentFrameInfo != nil {
@@ -664,10 +826,58 @@ func (r *WebmRecorder) pushVP8(p *rtp.Packet) {
 						sSeq, eSeq, timestamp, pictureID, isKeyFrame, pktCount, stime,
 					)
 		}
+
+		if (r.writeIVFCopy) {
+			r.pushToIVFWriter(r.currentFrame, p)
+		}
 	}
 
 	r.currentFrame = nil
 	r.currentFrameInfo = nil
+}
+
+func (r *WebmRecorder) startIVFWriter() error {
+	if r.ivfWriter == nil {
+		ivf, err := NewIVFWriter(r.file)
+
+		if err != nil {
+			return fmt.Errorf("failed to create RTP ivf: %w", err)
+		}
+
+		r.ivfWriter = ivf
+
+		log.WithField("session", r.ctx.Value("session")).
+			Infof("IVF copy enabled: %s", ivf.filePath)
+	}
+
+	return nil
+}
+
+func (r *WebmRecorder) pushToIVFWriter(frame []byte, p *rtp.Packet) {
+	if r.ivfWriter != nil && len(r.currentFrame) > 0 {
+		isKeyFrame := false
+
+		if r.currentFrameInfo != nil {
+			isKeyFrame = r.currentFrameInfo.isKeyFrame
+		} else {
+			isKeyFrame = IsVP8KeyFrame(p)
+		}
+
+		if isKeyFrame && len(frame) >= 10 {
+			raw := uint(frame[6]) | uint(frame[7])<<8 | uint(frame[8])<<16 | uint(frame[9])<<24
+			width := uint16(raw & 0x3FFF)
+			height := uint16((raw >> 16) & 0x3FFF)
+
+			r.ivfWriter.UpdateDimensions(width, height)
+		}
+
+		err := r.ivfWriter.WriteFrame(frame, p.Timestamp, isKeyFrame)
+
+		if err != nil {
+			log.WithField("session", r.ctx.Value("session")).
+				Warnf("Failed to write frame to IVF copy: %v", err)
+		}
+	}
 }
 
 func (r *WebmRecorder) initWriter(width, height int) {
@@ -712,16 +922,40 @@ func (r *WebmRecorder) initWriter(width, height int) {
 		})
 	}
 
-	writers, err := webm.NewSimpleBlockWriter(w, tracks, mkvcore.WithSegmentInfo(info))
+	interceptor, err := mkvcore.NewMultiTrackBlockSorter(
+		mkvcore.WithMaxDelayedPackets(r.sorterPacketQueueSize),
+		mkvcore.WithSortRule(mkvcore.BlockSorterWriteOutdated),
+	)
 
-	if err != nil {
+	if (err != nil) {
+		// TODO review - panic is not the best choice here.
 		panic(err)
 	}
+
+	writers, err := webm.NewSimpleBlockWriter(
+		w,
+		tracks,
+		mkvcore.WithSegmentInfo(info),
+		mkvcore.WithBlockInterceptor(interceptor),
+	)
+
+	if err != nil {
+		// TODO review - panic is not the best choice here.
+		panic(err)
+	}
+
 	log.WithField("session", r.ctx.Value("session")).
 		Infof("webm writers started with %dx%d video, audio=%t : %s", width, height, r.hasAudio, r.file)
 	r.videoWriter = writers[0]
+
 	if r.hasAudio && len(writers) > 1 {
 		r.audioWriter = writers[1]
 	}
-	r.started = true
+
+	if r.writeIVFCopy {
+		if err := r.startIVFWriter(); err != nil {
+			log.WithField("session", r.ctx.Value("session")).
+				Warnf("Error starting RTP ivf: %v", err)
+		}
+	}
 }

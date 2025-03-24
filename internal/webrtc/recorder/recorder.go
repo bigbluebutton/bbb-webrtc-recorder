@@ -91,7 +91,14 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string) (Recorde
 	var err error
 	switch ext {
 	case ".webm":
-		r = NewWebmRecorder(file, fileMode)
+		r = NewWebmRecorder(
+			file,
+			fileMode,
+			cfg.VideoPacketQueueSize,
+			cfg.AudioPacketQueueSize,
+			cfg.UseCustomSampler,
+			cfg.WriteIVFCopy,
+		)
 		r.WithContext(ctx)
 	default:
 		err = fmt.Errorf("unsupported format '%s'", ext)
