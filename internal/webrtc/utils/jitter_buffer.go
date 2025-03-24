@@ -58,7 +58,7 @@ func (s *JitterBuffer) Add(seq int64, packet *rtp.Packet) bool {
 	if seq > s.end {
 		if seq-s.end >= s.size {
 			log.WithField("session", s.ctx.Value("session")).
-				Warnf("Large sequence jump in jitter buffer: from=%d to=%d, diff=%d, resetting buffer",
+				Debugf("Large sequence jump in jitter buffer: from=%d to=%d, diff=%d, resetting buffer",
 					s.end, seq, seq-s.end)
 			s.packets = make([]*rtp.Packet, s.size)
 		} else {
@@ -110,7 +110,7 @@ func (s *JitterBuffer) NextPackets() ([]*rtp.Packet, bool) {
 		}
 
 		log.WithField("session", s.ctx.Value("session")).
-			Warnf("Skipping missing packet after timeout: seq=%d", s.nextStart)
+			Debugf("Skipping missing packet after timeout: seq=%d", s.nextStart)
 		delete(s.missingPacketTimers, s.nextStart)
 		s.lastSkippedSeq = s.nextStart
 		s.nextStart++

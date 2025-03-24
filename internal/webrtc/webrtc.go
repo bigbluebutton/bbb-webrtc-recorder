@@ -211,7 +211,7 @@ func (w WebRTC) Init(
 								filteredMissing = append(filteredMissing, seq)
 							} else if tracker.count == maxNackAttempts {
 								log.WithField("session", w.ctx.Value("session")).
-									Warnf("Giving up on packet: seq=%d, attempts=%d", seq, maxNackAttempts)
+									Debugf("Giving up on packet: seq=%d, attempts=%d", seq, maxNackAttempts)
 
 								rl.IgnoreSeqNum(seq)
 								jb.SkipPacket(int64(seq))
@@ -325,7 +325,7 @@ func (w WebRTC) Init(
 			if !jb.Add(seq, rtp) {
 				log.WithField("session", w.ctx.Value("session")).
 					Warnf("Failed to add packet to jitter buffer: seq=%d, timestamp=%d",
-					rtp.SequenceNumber, rtp.Timestamp)
+						rtp.SequenceNumber, rtp.Timestamp)
 			}
 
 			rl.Add(rtp.SequenceNumber)

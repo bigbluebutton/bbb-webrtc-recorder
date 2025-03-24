@@ -553,7 +553,7 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 			pidDiff := (pictureID - r.lastPictureID) & 0x7FFF
 			if pidDiff > 1 && pidDiff < 0x7000 {
 				log.WithField("session", r.ctx.Value("session")).
-					Warnf("VP8 Picture ID gap detected: expected=%d, got=%d (missing %d frames), seq=%d",
+					Debugf("VP8 Picture ID gap detected: expected=%d, got=%d (missing %d frames), seq=%d",
 						expectedID, pictureID, pidDiff-1, p.SequenceNumber)
 
 				if r.currentFrame != nil {
