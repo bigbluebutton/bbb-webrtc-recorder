@@ -1,0 +1,15 @@
+## Docker itself
+.dockerignore
+Dockerfile
+
+## git
+.git
+.gitignore
+.github
+
+## Log files
+*.log
+
+## vim
+**/.*.sw[po]
+*~
