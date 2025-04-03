@@ -124,10 +124,23 @@ journalctl -u bbb-webrtc-recorder -f
 
 ```json5
 {
-    id: "startRecording",
-    recordingSessionId: <String>, // requester-defined - error out if collision.
-    sdp: <String>, // offer
+    id: 'startRecording',
+    recordingSessionId: <String>, // requester-defined - error out if collision
     fileName: <String>, // file name INCLUDING format (.webm)
+    adapter: <String>, // "mediasoup" or "livekit" - defaults to "mediasoup" if not specified
+    adapterOptions: {
+        // mediasoup-specific options
+        mediasoup?: {
+            sdp: <String>, // required for mediasoup adapter if legacy sdp is not provided
+        },
+        // LiveKit-specific options
+        livekit?: {
+            room: <String>, // required for livekit adapter
+            trackIds: <String[]>, // required for livekit adapter - array of track IDs to record
+        }
+    },
+    // Legacy field for backward compatibility
+    sdp?: <String>, // offer - required for mediasoup adapter if adapterOptions.mediasoup.sdp is not provided
 }
 ```
 
@@ -177,7 +190,7 @@ journalctl -u bbb-webrtc-recorder -f
 }
 ```
 
-getRecorderStatus (* -> Recorer)
+`getRecorderStatus` (* -> Recorder)
 ```JSON5
 {
 	id: ‘getRecorderStatus’,

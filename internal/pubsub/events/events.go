@@ -1,6 +1,7 @@
 package events
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/AlekSi/pointer"
@@ -9,6 +10,37 @@ import (
 type Event struct {
 	Id   string
 	Data interface{}
+}
+
+type AdapterType string
+
+const (
+	AdapterMediasoup AdapterType = "mediasoup"
+	AdapterLiveKit   AdapterType = "livekit"
+)
+
+const (
+	StartRecordingKey            = "startRecording"
+	StartRecordingResponseKey    = "startRecordingResponse"
+	RecordingRtpStatusChangedKey = "recordingRtpStatusChanged"
+	StopRecordingKey             = "stopRecording"
+	RecordingStoppedKey          = "recordingStopped"
+	RecorderStatusKey            = "recorderStatus"
+	GetRecorderStatusKey         = "getRecorderStatus"
+)
+
+type AdapterOptions struct {
+	Mediasoup *MediasoupConfig `json:"mediasoup,omitempty"`
+	LiveKit   *LiveKitConfig   `json:"livekit,omitempty"`
+}
+
+type MediasoupConfig struct {
+	SDP string `json:"sdp,omitempty"`
+}
+
+type LiveKitConfig struct {
+	Room     string   `json:"room,omitempty"`
+	TrackIDs []string `json:"trackIds,omitempty"`
 }
 
 func (e *Event) IsValid() bool {
@@ -39,25 +71,79 @@ func (e *Event) StopRecording() *StopRecording {
 /*
 startRecording (SFU -> Recorder)
 ```JSON5
-{
-	id: ‘startRecording’,
-	recordingSessionId: <String> // requester-defined - error out if collision.
-	sdp: <String>, // offer
-	fileName: <String>, // file name INCLUDING format (.webm)
-}
+
+	{
+		id: 'startRecording',
+		recordingSessionId: <String> // requester-defined - error out if collision.
+		sdp?: <String>, // offer
+		fileName: <String>, // file name INCLUDING format (.webm)
+		adapter: <String>, // "mediasoup" or "livekit"
+		adapterOptions: <Object>, // adapter-specific configuration
+	}
+
 ```
 */
-
 type StartRecording struct {
-	Id        string `json:"id,omitempty"`
-	SessionId string `json:"recordingSessionId,omitempty"`
-	SDP       string `json:"sdp,omitempty"`
-	FileName  string `json:"fileName,omitempty"`
+	Id             string          `json:"id,omitempty"`
+	SessionId      string          `json:"recordingSessionId,omitempty"`
+	FileName       string          `json:"fileName,omitempty"`
+	Adapter        AdapterType     `json:"adapter,omitempty"` // "mediasoup" or "livekit"
+	AdapterOptions *AdapterOptions `json:"adapterOptions,omitempty"`
+	// Legacy field for backward compatibility - check AdapterOptions#Mediasoup#SDP
+	// for the new format
+	SDP string `json:"sdp,omitempty"`
+}
+
+func (e *StartRecording) Validate() error {
+	switch e.Adapter {
+	case AdapterLiveKit:
+		if e.AdapterOptions == nil || e.AdapterOptions.LiveKit == nil {
+			return fmt.Errorf("livekit adapter requires livekit configuration")
+		}
+
+		if e.AdapterOptions.LiveKit.Room == "" {
+			return fmt.Errorf("livekit adapter requires room name")
+		}
+
+		if len(e.AdapterOptions.LiveKit.TrackIDs) == 0 {
+			return fmt.Errorf("livekit adapter requires at least one track ID")
+		}
+	case AdapterMediasoup:
+		// TODO remove legacy SDP field later on - prlanzarin
+		if e.AdapterOptions != nil && e.AdapterOptions.Mediasoup != nil && e.AdapterOptions.Mediasoup.SDP != "" {
+			return nil
+		}
+
+		if e.SDP != "" {
+			return nil
+		}
+
+		return fmt.Errorf("mediasoup adapter requires SDP")
+	default:
+		// Now, if an SDP is present, we assume it's a legacy mediasoup call
+		// and we don't need to validate the adapter.
+		// TODO remove legacy SDP field later on - prlanzarin
+		if e.SDP != "" {
+			return nil
+		}
+
+		return fmt.Errorf("unsupported adapter: %s", e.Adapter)
+	}
+
+	return nil
+}
+
+func (e *StartRecording) GetSDP() string {
+	// TODO remove legacy SDP field later on - prlanzarin
+	if e.AdapterOptions != nil && e.AdapterOptions.Mediasoup != nil && e.AdapterOptions.Mediasoup.SDP != "" {
+		return e.AdapterOptions.Mediasoup.SDP
+	}
+	return e.SDP
 }
 
 func (e *StartRecording) Fail(err error) *StartRecordingResponse {
 	r := StartRecordingResponse{
-		Id:        "startRecordingResponse",
+		Id:        StartRecordingResponseKey,
 		SessionId: e.SessionId,
 		Status:    "failed",
 		Error:     pointer.ToString(err.Error()),
@@ -67,7 +153,7 @@ func (e *StartRecording) Fail(err error) *StartRecordingResponse {
 
 func (e *StartRecording) Success(sdp, fileName string) *StartRecordingResponse {
 	r := StartRecordingResponse{
-		Id:        "startRecordingResponse",
+		Id:        StartRecordingResponseKey,
 		SessionId: e.SessionId,
 		Status:    "ok",
 		Error:     nil,
@@ -81,9 +167,9 @@ func (e *StartRecording) Success(sdp, fileName string) *StartRecordingResponse {
 startRecordingResponse (Recorder -> SFU)
 ```JSON5
 {
-	id: ‘startRecordingResponse’,
+	id: 'startRecordingResponse',
 	recordingSessionId: <String>, // file name,
-	status: ‘ok’ | ‘failed’,
+	status: 'ok' | 'failed',
 	error: undefined | <String>,
 	sdp: <String | undefined>, // answer
 	fileName: <String | undefined>, // full path to recording
@@ -98,14 +184,43 @@ type StartRecordingResponse struct {
 	Error     *string `json:"error,omitempty"`
 	SDP       *string `json:"sdp,omitempty"`
 	FileName  *string `json:"fileName,omitempty"`
+	Adapter   *string `json:"adapter,omitempty"`
+}
+
+func (e *StartRecordingResponse) Validate() error {
+	if e.Id != StartRecordingResponseKey {
+		return fmt.Errorf("invalid event id: %s", e.Id)
+	}
+	if e.SessionId == "" {
+		return fmt.Errorf("missing session id")
+	}
+	if e.Status != "ok" && e.Status != "failed" {
+		return fmt.Errorf("invalid status: %s", e.Status)
+	}
+	if e.Status == "ok" {
+		if e.Error != nil {
+			return fmt.Errorf("error field should not be present in success response")
+		}
+		if e.FileName == nil {
+			return fmt.Errorf("fileName is required in success response")
+		}
+	} else {
+		if e.Error == nil {
+			return fmt.Errorf("error field is required in failure response")
+		}
+		if e.SDP != nil {
+			return fmt.Errorf("sdp field should not be present in failure response")
+		}
+	}
+	return nil
 }
 
 /*
 recordingRtpStatusChanged (Recorder -> SFU)
 ```JSON5
 {
-	id: ‘recordingRtpStatusChanged’, // media started or stopped flowing
-	status: ‘flowing’ | ‘not_flowing’,
+	id: 'recordingRtpStatusChanged', // media started or stopped flowing
+	status: 'flowing' | 'not_flowing',
 	recordingSessionId: <String>, // file name
 	timestampUTC: <Number>, // latest/trigger frame ts, UTC
 	timestampHR: <Number>, monotonic system time (latest/trigger frame ts),
@@ -125,7 +240,7 @@ var flowingStatus = map[bool]string{true: "flowing", false: "not_flowing"}
 
 func NewRecordingRtpStatusChanged(id string, status bool, ts time.Duration) *RecordingRtpStatusChanged {
 	return &RecordingRtpStatusChanged{
-		Id:           "recordingRtpStatusChanged",
+		Id:           RecordingRtpStatusChangedKey,
 		SessionId:    id,
 		Status:       flowingStatus[status],
 		TimestampUTC: time.Now().UTC(),
@@ -137,7 +252,7 @@ func NewRecordingRtpStatusChanged(id string, status bool, ts time.Duration) *Rec
 stopRecording (SFU -> Recorder)
 ```JSON5
 {
-	id: ‘stopRecording’,
+	id: 'stopRecording',
 	recordingSessionId: <String>, // file name
 }
 ```
@@ -150,7 +265,7 @@ type StopRecording struct {
 
 func (e *StopRecording) Stopped(reason string, ts time.Duration) *RecordingStopped {
 	return &RecordingStopped{
-		Id:           "recordingStopped",
+		Id:           RecordingStoppedKey,
 		SessionId:    e.SessionId,
 		Reason:       reason,
 		TimestampUTC: time.Now().UTC(),
@@ -162,7 +277,7 @@ func (e *StopRecording) Stopped(reason string, ts time.Duration) *RecordingStopp
 recordingStopped (Recorder -> SFU)
 ```JSON5
 {
-	id: ‘recordingStopped’,
+	id: 'recordingStopped',
 	recordingSessionId: <String>, // file name
 	reason: <String>,
   	timestampUTC: <Number>, // last written frame timestamp, UTC, wall clock
@@ -181,7 +296,7 @@ type RecordingStopped struct {
 
 func NewRecordingStopped(id, reason string, ts time.Duration) *RecordingStopped {
 	return &RecordingStopped{
-		Id:           "recordingStopped",
+		Id:           RecordingStoppedKey,
 		SessionId:    id,
 		Reason:       reason,
 		TimestampUTC: time.Now().UTC(),
@@ -193,7 +308,7 @@ func NewRecordingStopped(id, reason string, ts time.Duration) *RecordingStopped 
 recorderStatus (Recorder -> *)
 ```JSON5
 {
-	id: ‘recorderStatus’,
+	id: 'recorderStatus',
 	appVersion: <String>, // version of the recorder
 	instanceId: <String>, // unique instance id
 	timestamp: <Number>, // event generation timestamp
@@ -210,7 +325,7 @@ type RecorderStatus struct {
 
 func NewRecorderStatus(appVersion string, instanceId string) *RecorderStatus {
 	return &RecorderStatus{
-		Id:         "recorderStatus",
+		Id:         RecorderStatusKey,
 		AppVersion: appVersion,
 		InstanceId: instanceId,
 		Timestamp:  time.Now().UTC().UnixMilli(),
@@ -218,10 +333,10 @@ func NewRecorderStatus(appVersion string, instanceId string) *RecorderStatus {
 }
 
 /*
-getRecorderStatus (* -> Recorer)
+getRecorderStatus (* -> Recorder)
 ```JSON5
 {
-	id: ‘getRecorderStatus’,
+	id: 'getRecorderStatus',
 }
 ```
 */
