@@ -42,7 +42,9 @@ func (s *HTTPServer) Serve() {
 		func(ctx context.Context, msg []byte) {
 			event := events.Decode(msg)
 			if e := event.StartRecordingResponse(); e != nil {
-				*answerChannels[e.SessionId] <- *e.SDP
+				if e.SDP != nil {
+					*answerChannels[e.SessionId] <- *e.SDP
+				}
 			}
 		},
 		func() error {
@@ -57,8 +59,13 @@ func (s *HTTPServer) Serve() {
 		e := events.StartRecording{
 			Id:        "startRecording",
 			SessionId: sessId,
-			SDP:       sdp,
 			FileName:  fmt.Sprintf("%s.webm", t.Format("20060102150405")),
+			Adapter:   "mediasoup",
+			AdapterOptions: &events.AdapterOptions{
+				Mediasoup: &events.MediasoupConfig{
+					SDP: sdp,
+				},
+			},
 		}
 		j, _ := json.Marshal(e)
 		s.pubsub.Publish(s.cfg.PubSub.Channels.Subscribe, j)
