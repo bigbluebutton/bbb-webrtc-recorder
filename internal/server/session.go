@@ -1,13 +1,14 @@
 package server
 
 import (
+	"time"
+
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/signal"
 	pwebrtc "github.com/pion/webrtc/v3"
-	"time"
 )
 
 type Session struct {
@@ -33,25 +34,31 @@ func (s *Session) StartRecording(sdp string) string {
 	offer := pwebrtc.SessionDescription{}
 	signal.Decode(sdp, &offer)
 
-	answer := s.webrtc.Init(offer, s.recorder, func(state pwebrtc.ICEConnectionState) {
-		if state > pwebrtc.ICEConnectionStateConnected {
-			if !s.stopped {
-				ts := s.StopRecording() / time.Millisecond
-				s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
-				s.server.CloseSession(s.id)
+	// Only initialize WebRTC if we're using mediasoup
+	if s.webrtc != nil {
+		answer := s.webrtc.Init(offer, s.recorder, func(state pwebrtc.ICEConnectionState) {
+			if state > pwebrtc.ICEConnectionStateConnected {
+				if !s.stopped {
+					ts := s.StopRecording() / time.Millisecond
+					s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
+					s.server.CloseSession(s.id)
+				}
 			}
-		}
-	}, func(isFlowing bool, videoTimestamp time.Duration, closed bool) {
-		var message interface{}
-		if !closed {
-			message = events.NewRecordingRtpStatusChanged(s.id, isFlowing, videoTimestamp/time.Millisecond)
-		} else {
-			s.server.CloseSession(s.id)
-			message = events.NewRecordingStopped(s.id, "closed", videoTimestamp/time.Millisecond)
-		}
-		s.server.PublishPubSub(message)
-	})
-	return signal.Encode(answer)
+		}, func(isFlowing bool, videoTimestamp time.Duration, closed bool) {
+			var message interface{}
+			if !closed {
+				message = events.NewRecordingRtpStatusChanged(s.id, isFlowing, videoTimestamp/time.Millisecond)
+			} else {
+				s.server.CloseSession(s.id)
+				message = events.NewRecordingStopped(s.id, "closed", videoTimestamp/time.Millisecond)
+			}
+			s.server.PublishPubSub(message)
+		})
+		return signal.Encode(answer)
+	}
+
+	// For LiveKit, we don't need to return an SDP answer
+	return ""
 }
 
 func (s *Session) StopRecording() time.Duration {

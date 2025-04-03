@@ -2,6 +2,10 @@ package webrtc
 
 import (
 	"context"
+	"io"
+	"math/rand"
+	"time"
+
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
@@ -10,9 +14,6 @@ import (
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 	log "github.com/sirupsen/logrus"
-	"io"
-	"math/rand"
-	"time"
 )
 
 type NACKTracker struct {
@@ -31,7 +32,7 @@ type WebRTC struct {
 	pc  *webrtc.PeerConnection
 
 	videoTrackSSRCs []uint32
-	pliStats map[uint32]PLITracker
+	pliStats        map[uint32]PLITracker
 }
 
 func NewWebRTC(ctx context.Context, cfg config.WebRTC) *WebRTC {
@@ -123,6 +124,8 @@ func (w WebRTC) Init(
 
 		if isAudio {
 			rec.SetHasAudio(true)
+		} else if isVideo {
+			rec.SetHasVideo(true)
 		}
 
 		log.WithField("session", w.ctx.Value("session")).
@@ -134,7 +137,7 @@ func (w WebRTC) Init(
 			w.videoTrackSSRCs = append(w.videoTrackSSRCs, uint32(track.SSRC()))
 			w.pliStats[uint32(track.SSRC())] = PLITracker{count: 0, timestamp: time.Now()}
 
-			if kfr, ok := rec.(interface{
+			if kfr, ok := rec.(interface {
 				SetKeyframeRequester(recorder.KeyframeRequester)
 			}); ok {
 				kfr.SetKeyframeRequester(w)
@@ -149,12 +152,12 @@ func (w WebRTC) Init(
 				ticker := time.NewTicker(time.Second * 3)
 				for {
 					select {
-						case <-done:
-							ticker.Stop()
-							return
-						case <-ticker.C:
-							w.RequestKeyframeForSSRC(uint32(track.SSRC()))
-						}
+					case <-done:
+						ticker.Stop()
+						return
+					case <-ticker.C:
+						w.RequestKeyframeForSSRC(uint32(track.SSRC()))
+					}
 				}
 			}()
 		}
@@ -178,8 +181,8 @@ func (w WebRTC) Init(
 				done <- true
 			}()
 			go func() {
-				nackedPackets := make(map[uint16]NACKTracker) // Track NACK'ed packets
-				maxNackAttempts := 10 // NACK retries - 10 is what mediasoup uses, copy them >:)
+				nackedPackets := make(map[uint16]NACKTracker)   // Track NACK'ed packets
+				maxNackAttempts := 10                           // NACK retries - 10 is what mediasoup uses, copy them >:)
 				ticker := time.NewTicker(time.Millisecond * 40) // 40ms is also ms
 
 				for {
@@ -243,7 +246,7 @@ func (w WebRTC) Init(
 							errSend := peerConnection.WriteRTCP([]rtcp.Packet{nack})
 							if errSend != nil {
 								log.WithField("session", w.ctx.Value("session")).
-								Error(errSend)
+									Error(errSend)
 							}
 						}
 					}
@@ -313,10 +316,10 @@ func (w WebRTC) Init(
 
 			packetCounter++
 
-			if packetCounter > 1 && (rtp.SequenceNumber - prevSeq) > 1 {
+			if packetCounter > 1 && (rtp.SequenceNumber-prevSeq) > 1 {
 				log.WithField("session", w.ctx.Value("session")).
 					Debugf("Sequence gap detected: expected=%d, got=%d, diff=%d",
-				prevSeq+1, rtp.SequenceNumber, rtp.SequenceNumber-prevSeq-1)
+						prevSeq+1, rtp.SequenceNumber, rtp.SequenceNumber-prevSeq-1)
 			}
 			prevSeq = rtp.SequenceNumber
 

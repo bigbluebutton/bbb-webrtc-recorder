@@ -51,13 +51,63 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 			return
 		}
 
-		var sdp string
-		if rec, err := recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName); err != nil {
-			log.WithField("session", ctx.Value("session")).
-				Error(err)
+		if err := e.Validate(); err != nil {
+			log.WithField("session", ctx.Value("session")).Error(err)
 			s.PublishPubSub(e.Fail(err))
-		} else {
-			var err error
+			return
+		}
+
+		var rec recorder.Recorder
+		var err error
+
+		switch e.Adapter {
+		case "livekit":
+			file, fileMode, err := recorder.ValidateAndPrepareFile(ctx, s.cfg.Recorder, e.FileName)
+
+			if err != nil {
+				log.WithField("session", ctx.Value("session")).Error(err)
+				s.PublishPubSub(e.Fail(err))
+				return
+			}
+
+			// TODO: clean up and move to recorder.go
+			rec, err = recorder.NewLiveKitRecorder(
+				ctx,
+				s.cfg.LiveKit,
+				file,
+				fileMode,
+				s.cfg.Recorder.VideoPacketQueueSize,
+				s.cfg.Recorder.AudioPacketQueueSize,
+				s.cfg.Recorder.UseCustomSampler,
+				s.cfg.Recorder.WriteIVFCopy,
+			)
+
+			if err != nil {
+				log.WithField("session", ctx.Value("session")).Error(err)
+				s.PublishPubSub(e.Fail(err))
+				return
+			}
+
+			if err := rec.(*recorder.LiveKitRecorder).Connect(e.AdapterOptions.LiveKit.Room, e.AdapterOptions.LiveKit.TrackIDs); err != nil {
+				log.WithField("session", ctx.Value("session")).Error(err)
+				s.PublishPubSub(e.Fail(err))
+				return
+			}
+
+			s.sessions.Store(e.SessionId, NewSession(e.SessionId, s, nil, rec))
+			s.PublishPubSub(e.Success("", rec.GetFilePath()))
+
+		case "mediasoup", "":
+		default:
+			rec, err = recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName)
+
+			if err != nil {
+				log.WithField("session", ctx.Value("session")).Error(err)
+				s.PublishPubSub(e.Fail(err))
+				return
+			}
+
+			var sdp string
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -68,29 +118,30 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 				wrtc := webrtc.NewWebRTC(ctx, s.cfg.WebRTC)
 				sess := NewSession(e.SessionId, s, wrtc, rec)
 				s.sessions.Store(e.SessionId, sess)
-				sdp = sess.StartRecording(e.SDP)
+				sdp = sess.StartRecording(e.GetSDP())
 				s.PublishPubSub(e.Success(sdp, rec.GetFilePath()))
 			}()
 			if err != nil {
-				log.WithField("session", ctx.Value("session")).
-					Error(err)
+				log.WithField("session", ctx.Value("session")).Error(err)
 				s.PublishPubSub(e.Fail(err))
 			}
 		}
+
 	case "stopRecording":
 		e := event.StopRecording()
-		if sess, ok := s.sessions.Load(e.SessionId); !ok {
-			s.PublishPubSub(e.Stopped("session not found", 0))
-		} else {
+
+		if e == nil {
+			return
+		}
+
+		if sess, ok := s.sessions.Load(e.SessionId); ok {
 			ts := sess.(*Session).StopRecording() / time.Millisecond
-			s.sessions.Delete(e.SessionId)
-			s.PublishPubSub(e.Stopped("stop requested", ts))
+			s.PublishPubSub(e.Stopped("stopped", ts))
+			s.CloseSession(e.SessionId)
 		}
+
 	case "getRecorderStatus":
-		e := event.GetRecorderStatus()
-		if e != nil {
-			s.PublishPubSub(e.Status(s.cfg.App.Version, s.cfg.App.InstanceId))
-		}
+		s.PublishPubSub(events.NewRecorderStatus(s.cfg.App.Version, s.cfg.App.InstanceId))
 	}
 }
 
