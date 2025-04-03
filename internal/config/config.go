@@ -23,6 +23,7 @@ type Config struct {
 	WebRTC     WebRTC     `yaml:"webrtc,omitempty"`
 	HTTP       HTTP       `yaml:"http,omitempty"`
 	Prometheus Prometheus `yaml:"prometheus,omitempty"`
+	LiveKit    LiveKit    `yaml:"livekit,omitempty"`
 }
 
 func (cfg *Config) GetDefaults() *Config {
@@ -70,6 +71,11 @@ func (cfg *Config) SetDefaults() {
 		Enable:        false,
 		ListenAddress: "127.0.0.1:3200",
 	}
+	cfg.LiveKit = LiveKit{
+		Host:      "ws://localhost:7880",
+		APIKey:    "",
+		APISecret: "",
+	}
 }
 
 type Recorder struct {
@@ -116,4 +122,10 @@ type HTTP struct {
 type Prometheus struct {
 	Enable        bool   `yaml:"enable,omitempty"`
 	ListenAddress string `yaml:"listenAddress,omitempty"`
+}
+
+type LiveKit struct {
+	Host      string `mapstructure:"host"`
+	APIKey    string `mapstructure:"api_key"`
+	APISecret string `mapstructure:"api_secret"`
 }

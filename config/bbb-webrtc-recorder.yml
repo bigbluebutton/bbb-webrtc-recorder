@@ -43,3 +43,8 @@ http:
 prometheus:
   enable: false
   listenAddress: 127.0.0.1:3200
+
+livekit:
+  host: ws://localhost:7880
+  apiKey: ""
+  apiSecret: ""
