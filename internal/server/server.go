@@ -83,7 +83,6 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 			s.PublishPubSub(e.Success("", rec.GetFilePath()))
 
 		case "mediasoup", "":
-		default:
 			rec, err = recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName)
 
 			if err != nil {
@@ -110,6 +109,12 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 				log.WithField("session", ctx.Value("session")).Error(err)
 				s.PublishPubSub(e.Fail(err))
 			}
+
+		default:
+			err := fmt.Errorf("unknown adapter type: %s", e.Adapter)
+			log.WithField("session", ctx.Value("session")).Error(err)
+			s.PublishPubSub(e.Fail(err))
+			return
 		}
 
 	case "stopRecording":
