@@ -1,4 +1,5 @@
-debug: false
+log:
+  level: INFO
 
 recorder:
   directory: /var/lib/bbb-webrtc-recorder

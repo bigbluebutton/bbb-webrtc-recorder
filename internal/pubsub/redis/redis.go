@@ -2,9 +2,9 @@ package redis
 
 import (
 	"context"
-	"github.com/gomodule/redigo/redis"
-	log "github.com/sirupsen/logrus"
 	"time"
+
+	"github.com/gomodule/redigo/redis"
 )
 
 // A ping is set to the server with this period to test for the health of
@@ -12,17 +12,17 @@ import (
 const healthCheckPeriod = time.Minute
 
 type PubSub struct {
-	network string
-	address string
+	network  string
+	address  string
 	password string
-	conn    redis.Conn
-	psc     redis.PubSubConn
+	conn     redis.Conn
+	psc      redis.PubSubConn
 }
 
 func NewPubSub(network, address string, password string) (*PubSub, error) {
 	p := &PubSub{
-		network: network,
-		address: address,
+		network:  network,
+		address:  address,
 		password: password,
 	}
 	if conn, err := p.dial(); err != nil {
@@ -125,9 +125,10 @@ func (p *PubSub) Publish(channel string, message []byte) error {
 		return err
 	}
 	defer c.Close()
-	log.Tracef("publishing to channel %s: %s", channel, string(message))
+
 	if _, err = c.Do("PUBLISH", channel, message); err != nil {
 		return err
 	}
+
 	return nil
 }

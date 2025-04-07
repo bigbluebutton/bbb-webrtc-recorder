@@ -2,15 +2,16 @@ package app
 
 import (
 	"fmt"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
-	"gopkg.in/yaml.v3"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func initConfig() *config.Config {
-	return (&config.Config{App: app, Debug: flags.debug}).GetDefaults()
+	return (&config.Config{App: app}).GetDefaults()
 }
 
 func loadConfig() {

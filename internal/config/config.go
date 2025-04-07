@@ -17,13 +17,13 @@ type App struct {
 
 type Config struct {
 	App        App        `yaml:"-"`
-	Debug      bool       `yaml:"debug"`
 	Recorder   Recorder   `yaml:"recorder,omitempty"`
 	PubSub     PubSub     `yaml:"pubsub,omitempty"`
 	WebRTC     WebRTC     `yaml:"webrtc,omitempty"`
 	HTTP       HTTP       `yaml:"http,omitempty"`
 	Prometheus Prometheus `yaml:"prometheus,omitempty"`
 	LiveKit    LiveKit    `yaml:"livekit,omitempty"`
+	Log        LogConfig  `yaml:"log"`
 }
 
 func (cfg *Config) GetDefaults() *Config {
@@ -128,4 +128,8 @@ type LiveKit struct {
 	Host      string `mapstructure:"host"`
 	APIKey    string `mapstructure:"api_key"`
 	APISecret string `mapstructure:"api_secret"`
+}
+
+type LogConfig struct {
+	Level string `yaml:"level"`
 }

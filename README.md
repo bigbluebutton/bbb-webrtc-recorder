@@ -20,8 +20,8 @@ Default configuration file:
 ```
 
 ```yaml
-# Enable verbose logging for debugging
-debug: true
+log:
+  level: INFO  # TRACE, DEBUG, INFO, WARN, ERROR, FATAL
 
 recorder:
   # Directory where the recorder will save files
@@ -105,13 +105,6 @@ bbb-webrtc-recorder [-c config.yml] --dump http.port
 bbb-webrtc-recorder [-c config.yml] --dump recorder.directory
 ```
 
-To run in debug mode (verbose logging) either enable debug in configuration file
-`debug: true` or run the application with `-d` flag:
-
-```
-bbb-webrtc-recorder [-c config.yml] -d
-```
-
 Viewing SystemD logs:
 
 ```
@@ -193,7 +186,7 @@ journalctl -u bbb-webrtc-recorder -f
 `getRecorderStatus` (* -> Recorder)
 ```JSON5
 {
-	id: ‘getRecorderStatus’,
+	id: 'getRecorderStatus',
 }
 ```
 
@@ -201,7 +194,7 @@ journalctl -u bbb-webrtc-recorder -f
 
 ```JSON5
 {
-	id: ‘recorderStatus’, // Triggered by getRecorderStatus
+	id: 'recorderStatus', // Triggered by getRecorderStatus
 	appVersion: <String>, // version of the recorder
 	instanceId: <String>, // unique instance id
 	timestamp: <Number>, // event generation timestamp
