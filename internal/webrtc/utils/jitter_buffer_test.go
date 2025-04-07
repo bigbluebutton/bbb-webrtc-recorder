@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -21,7 +22,7 @@ type testBuffer struct {
 }
 
 func TestJitterBuffer(t *testing.T) {
-	b := NewJitterBuffer(8)
+	b := NewJitterBuffer(8, 100, context.Background())
 
 	wantAdd(t, b, testAdd{seq: 100, payload: "0", wantAdded: true})
 	wantBuffer(t, b, testBuffer{wantNextStart: 100, wantEnd: 100, wantPayload: "-,-,-,-,0,-,-,-"})
@@ -59,7 +60,8 @@ func TestJitterBuffer(t *testing.T) {
 
 func wantNextPackets(t *testing.T, b *JitterBuffer, wantPayload string) {
 	t.Helper()
-	gotPayload := packetsPayload(b.NextPackets())
+	packets, _ := b.NextPackets()
+	gotPayload := packetsPayload(packets)
 	errors := make([]string, 0)
 	if wantPayload != gotPayload {
 		errors = append(errors, fmt.Sprintf("payload want/got: %s/%s", wantPayload, gotPayload))
