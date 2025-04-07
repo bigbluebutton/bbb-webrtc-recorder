@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.8.1
+
+* build: Automatic build pipeline for docker images
+* build: update Dockerfile to match bigbluebutton/docker's
+* build: remove broken package workflow
+
 ### v0.8.0
 
 * fix: multiple adjusments to VP8 sample building in the WebM recorder
@@ -25,7 +31,7 @@ All notable changes to this project will be documented in this file.
 ### v0.6.0
 
 * feat: recorder.writeToDevNull option to write files to /dev/null (testing)
-* fix: panic due to negative seqnums in sequence unwrapper 
+* fix: panic due to negative seqnums in sequence unwrapper
 
 ### v0.5.2
 
