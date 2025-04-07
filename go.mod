@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/AlekSi/pointer v1.2.0
-	github.com/at-wat/ebml-go v0.16.0
+	github.com/at-wat/ebml-go v0.17.1
 	github.com/crazy-max/gonfig v0.7.1
 	github.com/gomodule/redigo v1.9.2
 	github.com/google/uuid v1.6.0
@@ -24,8 +24,6 @@ require (
 	github.com/titanous/json5 v1.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-replace github.com/bigbluebutton/bbb-webrtc-recorder/pkg/ebml-go => ./pkg/ebml-go
 
 require (
 	github.com/BurntSushi/toml v1.2.1 // indirect
