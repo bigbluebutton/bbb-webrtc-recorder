@@ -11,6 +11,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	log "github.com/sirupsen/logrus"
 )
@@ -62,7 +63,7 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 
 		switch e.Adapter {
 		case "livekit":
-			file, fileMode, err := recorder.ValidateAndPrepareFile(ctx, s.cfg.Recorder, e.FileName)
+			rec, err = recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName)
 
 			if err != nil {
 				log.WithField("session", ctx.Value("session")).Error(err)
@@ -70,25 +71,9 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 				return
 			}
 
-			// TODO: clean up and move to recorder.go
-			rec, err = recorder.NewLiveKitRecorder(
-				ctx,
-				s.cfg.LiveKit,
-				file,
-				fileMode,
-				s.cfg.Recorder.VideoPacketQueueSize,
-				s.cfg.Recorder.AudioPacketQueueSize,
-				s.cfg.Recorder.UseCustomSampler,
-				s.cfg.Recorder.WriteIVFCopy,
-			)
+			wrtc := livekit.NewLiveKitWebRTC(ctx, s.cfg.LiveKit, rec.(*recorder.WebmRecorder))
 
-			if err != nil {
-				log.WithField("session", ctx.Value("session")).Error(err)
-				s.PublishPubSub(e.Fail(err))
-				return
-			}
-
-			if err := rec.(*recorder.LiveKitRecorder).Connect(e.AdapterOptions.LiveKit.Room, e.AdapterOptions.LiveKit.TrackIDs); err != nil {
+			if err := wrtc.Connect(e.AdapterOptions.LiveKit.Room, e.AdapterOptions.LiveKit.TrackIDs); err != nil {
 				log.WithField("session", ctx.Value("session")).Error(err)
 				s.PublishPubSub(e.Fail(err))
 				return

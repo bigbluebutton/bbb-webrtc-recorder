@@ -10,6 +10,7 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/server-sdk-go/v2/pkg/jitter"
 	"github.com/pion/rtp"
@@ -32,13 +33,6 @@ const (
 	TrackKindAudio TrackKind = "audio"
 )
 
-type PacketHandler interface {
-	SetHasVideo(hasVideo bool)
-	SetHasAudio(hasAudio bool)
-	HandleVideoPacket(packet *rtp.Packet)
-	HandleAudioPacket(packet *rtp.Packet)
-}
-
 type PLITracker struct {
 	count     int
 	timestamp time.Time
@@ -51,7 +45,7 @@ type LiveKitWebRTC struct {
 	room               *lksdk.Room
 	tracks             map[string]*lksdk.Track
 	remoteParticipants map[string]*lksdk.RemoteParticipant
-	handler            PacketHandler
+	handler            recorder.Recorder
 	roomName           string
 	trackIDs           []string
 	pliStats           map[uint32]PLITracker
@@ -60,12 +54,12 @@ type LiveKitWebRTC struct {
 	hasVideo           bool
 }
 
-func NewLiveKitWebRTC(ctx context.Context, cfg config.LiveKit, handler PacketHandler) *LiveKitWebRTC {
+func NewLiveKitWebRTC(ctx context.Context, cfg config.LiveKit, recorder *recorder.WebmRecorder) *LiveKitWebRTC {
 	return &LiveKitWebRTC{
 		ctx:           ctx,
 		cfg:           cfg,
 		tracks:        make(map[string]*lksdk.Track),
-		handler:       handler,
+		handler:       recorder,
 		pliStats:      make(map[uint32]PLITracker),
 		jitterBuffers: make(map[string]*jitter.Buffer),
 	}
@@ -313,9 +307,9 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 			for _, p := range packets {
 				switch trackKind {
 				case TrackKindVideo:
-					w.handler.HandleVideoPacket(p)
+					w.handler.PushVideo(p)
 				case TrackKindAudio:
-					w.handler.HandleAudioPacket(p)
+					w.handler.PushAudio(p)
 				}
 			}
 		}

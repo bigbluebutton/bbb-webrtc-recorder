@@ -83,7 +83,6 @@ func ValidateAndPrepareFile(ctx context.Context, cfg config.Recorder, file strin
 
 func NewRecorder(ctx context.Context, cfg config.Recorder, file string) (Recorder, error) {
 	ext := filepath.Ext(file)
-
 	file, fileMode, err := ValidateAndPrepareFile(ctx, cfg, file)
 
 	if err != nil {
