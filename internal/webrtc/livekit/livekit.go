@@ -388,6 +388,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	go func() {
 		for {
 			packet, _, err := track.ReadRTP()
+
 			if err != nil {
 				log.WithField("session", w.ctx.Value("session")).
 					Errorf("Error reading from track %s: %v", trackID, err)
@@ -395,7 +396,11 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 			}
 
 			buffer.Push(packet)
-			packets := buffer.Pop(true)
+			packets := buffer.Pop(false)
+
+			if len(packets) == 0 {
+				continue
+			}
 
 			for _, p := range packets {
 				w.updateFlowState(
