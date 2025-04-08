@@ -52,8 +52,8 @@ type LiveKitWebRTC struct {
 	tracks             map[string]*lksdk.Track
 	remoteParticipants map[string]*lksdk.RemoteParticipant
 	handler            recorder.Recorder
-	roomName           string
-	trackIDs           []string
+	roomId             string
+	trackIds           []string
 	pliStats           map[uint32]PLITracker
 	jitterBuffers      map[string]*jitter.Buffer
 	hasAudio           bool
@@ -62,19 +62,35 @@ type LiveKitWebRTC struct {
 	flowCallback       func(bool, time.Duration, bool)
 }
 
-func NewLiveKitWebRTC(ctx context.Context, cfg config.LiveKit, recorder *recorder.WebmRecorder) *LiveKitWebRTC {
+func NewLiveKitWebRTC(
+	ctx context.Context,
+	cfg config.LiveKit,
+	roomId string,
+	trackIds []string,
+) *LiveKitWebRTC {
 	return &LiveKitWebRTC{
 		ctx:           ctx,
 		cfg:           cfg,
+		roomId:        roomId,
+		trackIds:      trackIds,
 		tracks:        make(map[string]*lksdk.Track),
-		handler:       recorder,
 		pliStats:      make(map[uint32]PLITracker),
 		jitterBuffers: make(map[string]*jitter.Buffer),
 		flowState:     make(map[string]*TrackFlowState),
 	}
 }
 
-func (w *LiveKitWebRTC) Connect(room string, trackIDs []string) error {
+func (w *LiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
+	w.flowCallback = callback
+}
+
+func (w *LiveKitWebRTC) Init(rec recorder.Recorder) error {
+	w.handler = rec
+
+	if err := w.validateInitParams(); err != nil {
+		return err
+	}
+
 	sessionID, ok := w.ctx.Value("session").(string)
 
 	if !ok {
@@ -84,12 +100,12 @@ func (w *LiveKitWebRTC) Connect(room string, trackIDs []string) error {
 	identity := fmt.Sprintf("bbb-webrtc-recorder-%s", sessionID)
 
 	log.WithField("session", w.ctx.Value("session")).
-		Debugf("Connecting to LiveKit room %s with identity %s", room, identity)
+		Debugf("Connecting to LiveKit room %s with identity %s", w.roomId, identity)
 
 	roomClient, err := lksdk.ConnectToRoom(w.cfg.Host, lksdk.ConnectInfo{
 		APIKey:              w.cfg.APIKey,
 		APISecret:           w.cfg.APISecret,
-		RoomName:            room,
+		RoomName:            w.roomId,
 		ParticipantIdentity: identity,
 		ParticipantKind:     lksdk.ParticipantEgress,
 	}, &lksdk.RoomCallback{
@@ -109,11 +125,9 @@ func (w *LiveKitWebRTC) Connect(room string, trackIDs []string) error {
 	}
 
 	w.room = roomClient
-	w.roomName = room
-	w.trackIDs = trackIDs
 
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Connected to LiveKit room %s", w.roomName)
+		Infof("Connected to LiveKit room %s", w.roomId)
 
 	if _, err := w.subscribeToTracks(); err != nil {
 		log.WithField("session", w.ctx.Value("session")).
@@ -141,7 +155,7 @@ func (w *LiveKitWebRTC) subscribeToTracks() (subscribedTracks []lksdk.TrackPubli
 
 	for _, remoteParticipant := range w.room.GetRemoteParticipants() {
 		for _, trackPublication := range remoteParticipant.TrackPublications() {
-			if slices.Contains(w.trackIDs, trackPublication.SID()) {
+			if slices.Contains(w.trackIds, trackPublication.SID()) {
 				kind := TrackKind(trackPublication.Kind())
 
 				if kind == TrackKindVideo {
@@ -224,10 +238,6 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 				newCount, ssrc, participant.Identity(), now.Sub(w.pliStats[ssrc].timestamp))
 		w.pliStats[ssrc] = PLITracker{count: newCount, timestamp: now}
 	}
-}
-
-func (w *LiveKitWebRTC) SetFlowCallback(callback func(bool, time.Duration, bool)) {
-	w.flowCallback = callback
 }
 
 func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, timestamp time.Duration) {
@@ -432,5 +442,17 @@ func (w *LiveKitWebRTC) onTrackMuted(
 
 func (w *LiveKitWebRTC) onDisconnected() {
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Disconnected from LiveKit room %s", w.roomName)
+		Infof("Disconnected from LiveKit room %s", w.roomId)
+}
+
+func (w *LiveKitWebRTC) validateInitParams() error {
+	if w.flowCallback == nil {
+		return fmt.Errorf("flowCallback is not set")
+	}
+
+	if w.handler == nil {
+		return fmt.Errorf("handler is not set")
+	}
+
+	return nil
 }
