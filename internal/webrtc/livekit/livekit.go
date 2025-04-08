@@ -38,6 +38,12 @@ type PLITracker struct {
 	timestamp time.Time
 }
 
+type TrackFlowState struct {
+	lastSeqNum    uint16
+	lastTimestamp time.Duration
+	isFlowing     bool
+}
+
 type LiveKitWebRTC struct {
 	m                  sync.Mutex
 	ctx                context.Context
@@ -52,6 +58,8 @@ type LiveKitWebRTC struct {
 	jitterBuffers      map[string]*jitter.Buffer
 	hasAudio           bool
 	hasVideo           bool
+	flowState          map[string]*TrackFlowState
+	flowCallback       func(bool, time.Duration, bool)
 }
 
 func NewLiveKitWebRTC(ctx context.Context, cfg config.LiveKit, recorder *recorder.WebmRecorder) *LiveKitWebRTC {
@@ -62,6 +70,7 @@ func NewLiveKitWebRTC(ctx context.Context, cfg config.LiveKit, recorder *recorde
 		handler:       recorder,
 		pliStats:      make(map[uint32]PLITracker),
 		jitterBuffers: make(map[string]*jitter.Buffer),
+		flowState:     make(map[string]*TrackFlowState),
 	}
 }
 
@@ -217,6 +226,48 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	}
 }
 
+func (w *LiveKitWebRTC) SetFlowCallback(callback func(bool, time.Duration, bool)) {
+	w.flowCallback = callback
+}
+
+func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, timestamp time.Duration) {
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	state, exists := w.flowState[trackID]
+
+	if !exists {
+		state = &TrackFlowState{
+			lastSeqNum:    seqNum,
+			lastTimestamp: timestamp,
+			isFlowing:     false,
+		}
+		w.flowState[trackID] = state
+
+		return
+	}
+
+	wasFlowing := state.isFlowing
+	state.isFlowing = state.lastSeqNum != seqNum
+	state.lastSeqNum = seqNum
+	state.lastTimestamp = timestamp
+
+	if state.isFlowing != wasFlowing && w.flowCallback != nil {
+		var latestTimestamp time.Duration
+
+		for _, s := range w.flowState {
+			if s.lastTimestamp > latestTimestamp {
+				latestTimestamp = s.lastTimestamp
+			}
+		}
+
+		w.flowCallback(state.isFlowing, latestTimestamp, false)
+		log.WithField("session", w.ctx.Value("session")).
+			Tracef("Flow state changed for track %s: flowing=%v latestTimestamp=%s",
+				trackID, state.isFlowing, latestTimestamp)
+	}
+}
+
 func (w *LiveKitWebRTC) onTrackSubscribed(
 	track *webrtc.TrackRemote,
 	pub *lksdk.RemoteTrackPublication,
@@ -291,6 +342,39 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	}
 	w.m.Unlock()
 
+	flowCheckDone := make(chan bool)
+	defer func() {
+		flowCheckDone <- true
+	}()
+	go func() {
+		ticker := time.NewTicker(time.Millisecond * 100)
+		var lastSeqNum uint16
+		for {
+			select {
+			case <-flowCheckDone:
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				w.m.Lock()
+				state, exists := w.flowState[trackID]
+
+				if exists && state.lastSeqNum == lastSeqNum {
+					// No new packets received == not flowing
+					w.updateFlowState(trackID, state.lastSeqNum, state.lastTimestamp)
+				}
+
+				if state.isFlowing {
+					ticker.Reset(time.Millisecond * 1000)
+				} else {
+					ticker.Reset(time.Millisecond * 100)
+				}
+
+				lastSeqNum = state.lastSeqNum
+				w.m.Unlock()
+			}
+		}
+	}()
+
 	go func() {
 		for {
 			packet, _, err := track.ReadRTP()
@@ -301,10 +385,15 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 			}
 
 			buffer.Push(packet)
-
 			packets := buffer.Pop(true)
 
 			for _, p := range packets {
+				w.updateFlowState(
+					trackID,
+					p.SequenceNumber,
+					time.Duration(p.Timestamp)*time.Millisecond/time.Duration(clockRate),
+				)
+
 				switch trackKind {
 				case TrackKindVideo:
 					w.handler.PushVideo(p)

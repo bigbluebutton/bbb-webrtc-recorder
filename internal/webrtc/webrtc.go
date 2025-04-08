@@ -255,6 +255,7 @@ func (w WebRTC) Init(
 		}
 
 		var s1, s2 uint16
+		var lastTimestamp time.Duration
 
 		if true {
 			done := make(chan bool)
@@ -268,9 +269,21 @@ func (w WebRTC) Init(
 					select {
 					case <-done:
 						ticker.Stop()
-						if isVideo {
-							flowCallbackFn(false, rec.VideoTimestamp(), true)
+
+						ts := lastTimestamp
+
+						// Use the most recent timestamp from video or audio since
+						// we can't differentiate them in status events right now.
+						// FIXME this isn't ideal for screen sharing with bundled audio
+						if ts == 0 {
+							if isVideo {
+								ts = rec.VideoTimestamp()
+							} else {
+								ts = rec.AudioTimestamp()
+							}
 						}
+
+						flowCallbackFn(false, ts, true)
 						return
 					case <-ticker.C:
 						if s1 == s2 {
@@ -279,14 +292,23 @@ func (w WebRTC) Init(
 							isFlowing = true
 						}
 						s1 = s2
-						if isVideo {
-							if isFlowing != wasFlowing {
-								flowCallbackFn(isFlowing, rec.VideoTimestamp(), false)
-								if isFlowing {
-									ticker.Reset(time.Millisecond * 1000)
+						if isFlowing != wasFlowing {
+							ts := lastTimestamp
+
+							// FIXME see comment above
+							if ts == 0 {
+								if isVideo {
+									ts = rec.VideoTimestamp()
 								} else {
-									ticker.Reset(time.Millisecond * 100)
+									ts = rec.AudioTimestamp()
 								}
+							}
+							flowCallbackFn(isFlowing, ts, false)
+
+							if isFlowing {
+								ticker.Reset(time.Millisecond * 1000)
+							} else {
+								ticker.Reset(time.Millisecond * 100)
 							}
 						}
 						wasFlowing = isFlowing
@@ -363,8 +385,10 @@ func (w WebRTC) Init(
 				switch {
 				case isAudio:
 					rec.PushAudio(p)
+					lastTimestamp = rec.AudioTimestamp()
 				case isVideo:
 					rec.PushVideo(p)
+					lastTimestamp = rec.VideoTimestamp()
 				}
 			}
 		}

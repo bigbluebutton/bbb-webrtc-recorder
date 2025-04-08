@@ -72,14 +72,15 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 			}
 
 			wrtc := livekit.NewLiveKitWebRTC(ctx, s.cfg.LiveKit, rec.(*recorder.WebmRecorder))
+			sess := NewSession(e.SessionId, s, nil, wrtc, rec)
+			s.sessions.Store(e.SessionId, sess)
 
-			if err := wrtc.Connect(e.AdapterOptions.LiveKit.Room, e.AdapterOptions.LiveKit.TrackIDs); err != nil {
+			if _, err := sess.StartRecording(e); err != nil {
 				log.WithField("session", ctx.Value("session")).Error(err)
 				s.PublishPubSub(e.Fail(err))
 				return
 			}
 
-			s.sessions.Store(e.SessionId, NewSession(e.SessionId, s, nil, rec))
 			s.PublishPubSub(e.Success("", rec.GetFilePath()))
 
 		case "mediasoup", "":
@@ -100,11 +101,12 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 				}()
 
 				wrtc := webrtc.NewWebRTC(ctx, s.cfg.WebRTC)
-				sess := NewSession(e.SessionId, s, wrtc, rec)
+				sess := NewSession(e.SessionId, s, wrtc, nil, rec)
 				s.sessions.Store(e.SessionId, sess)
-				sdp = sess.StartRecording(e.GetSDP())
+				sdp, err = sess.StartRecording(e)
 				s.PublishPubSub(e.Success(sdp, rec.GetFilePath()))
 			}()
+
 			if err != nil {
 				log.WithField("session", ctx.Value("session")).Error(err)
 				s.PublishPubSub(e.Fail(err))

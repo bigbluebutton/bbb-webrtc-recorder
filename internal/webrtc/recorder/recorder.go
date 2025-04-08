@@ -24,6 +24,7 @@ type Recorder interface {
 	NotifySkippedPacket(seq uint16)
 	WithContext(ctx context.Context)
 	VideoTimestamp() time.Duration
+	AudioTimestamp() time.Duration
 	SetHasAudio(hasAudio bool)
 	SetHasVideo(hasVideo bool)
 	SetKeyframeRequester(requester KeyframeRequester)
