@@ -25,7 +25,6 @@ func (r *Redis) Subscribe(channel string, handler PubSubHandler, onStart func() 
 			return nil
 		},
 		func(channel string, message []byte) error {
-			//log.Debugf("channel: %s, message: %s\n", channel, message)
 			handler(r.ctx, message)
 			return nil
 		},

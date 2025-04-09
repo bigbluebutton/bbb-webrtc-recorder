@@ -2,12 +2,13 @@ package app
 
 import (
 	"fmt"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
-	log "github.com/sirupsen/logrus"
 	"os"
 	"path"
 	"runtime"
 	"strings"
+
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
+	log "github.com/sirupsen/logrus"
 )
 
 func configureLog() {
@@ -16,9 +17,9 @@ func configureLog() {
 	if isTty() {
 		log.SetFormatter(&log.TextFormatter{
 			CallerPrettyfier: func(f *runtime.Frame) (string, string) {
-			filename := path.Base(f.File)
-			return fmt.Sprintf("%s:%d", filename, f.Line),
-				fmt.Sprintf("> %s()", strings.Replace(f.Function, internal.ModName, ".", 1))
+				filename := path.Base(f.File)
+				return fmt.Sprintf("%s:%d", filename, f.Line),
+					fmt.Sprintf("> %s()", strings.Replace(f.Function, internal.ModName, ".", 1))
 			},
 			FullTimestamp: true,
 		})
@@ -29,19 +30,15 @@ func configureLog() {
 		}})
 	}
 
-	if flags.debug || cfg.Debug {
-		if log.GetLevel() != log.DebugLevel {
-			log.SetReportCaller(true)
-			log.SetLevel(log.DebugLevel)
-			log.Debug("debug log enabled")
-		}
-	} else {
-		if log.GetLevel() == log.DebugLevel {
-			log.Debug("debug log disabled")
-		}
-		log.SetReportCaller(false)
-		log.SetLevel(log.InfoLevel)
+	level, err := log.ParseLevel(cfg.Log.Level)
+
+	if err != nil {
+		level = log.InfoLevel
+		log.Warnf("Invalid log level '%s', defaulting to INFO", cfg.Log.Level)
 	}
+
+	log.SetLevel(level)
+	log.SetReportCaller(level >= log.InfoLevel)
 }
 
 func isTty() bool {

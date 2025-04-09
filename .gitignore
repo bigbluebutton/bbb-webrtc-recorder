@@ -4,4 +4,4 @@ release/*
 *swo
 *swp
 *~
-*log.*
+*.log

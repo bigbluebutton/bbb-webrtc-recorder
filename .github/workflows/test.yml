@@ -1,0 +1,50 @@
+name: Recorder Go Tests
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  test:
+    name: Run Go Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go mods
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Get dependencies
+        run: go mod tidy
+
+      - name: Run tests with coverage
+        run: |
+          go test -v -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out
+        env:
+          BBBRECORDER_LOG_LEVEL: DEBUG
+          BBBRECORDER_RECORDER_DIRECTORY: /tmp/bbb-webrtc-recorder
+          BBBRECORDER_RECORDER_DIRFILEMODE: "0700"
+          BBBRECORDER_RECORDER_FILEMODE: "0600"
+          BBBRECORDER_PUBSUB_ADAPTER: redis
+          BBBRECORDER_PUBSUB_ADAPTERS_REDIS_ADDRESS: ":6379"
+          BBBRECORDER_PUBSUB_ADAPTERS_REDIS_NETWORK: tcp

@@ -20,7 +20,6 @@ var (
 	app config.App
 
 	flags struct {
-		debug   bool
 		config  string
 		dump    string
 		help    bool
@@ -38,7 +37,6 @@ func init() {
 
 	flag.StringVarP(&flags.config, "config", "c", flags.config, "load configuration file")
 	flag.StringVar(&flags.dump, "dump", "", "print config value (e.g. 'recorder.directory')")
-	flag.BoolVarP(&flags.debug, "debug", "d", flags.debug, "enable debug log")
 	flag.BoolVarP(&flags.help, "help", "h", flags.help, "print help")
 	flag.BoolVarP(&flags.version, "version", "v", flags.version, "print version")
 	flag.Parse()
@@ -68,7 +66,6 @@ func init() {
 func Init() {
 	cfg = initConfig()
 	log.Infof("Starting %s PID: %d", app.Name, os.Getpid())
-	configureLog()
 	loadConfig()
 	configureLog()
 	sigintHandler()

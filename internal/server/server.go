@@ -11,6 +11,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	log "github.com/sirupsen/logrus"
 )
@@ -51,13 +52,52 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 			return
 		}
 
-		var sdp string
-		if rec, err := recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName); err != nil {
-			log.WithField("session", ctx.Value("session")).
-				Error(err)
+		if err := e.Validate(); err != nil {
+			log.WithField("session", ctx.Value("session")).Error(err)
 			s.PublishPubSub(e.Fail(err))
-		} else {
-			var err error
+			return
+		}
+
+		var rec recorder.Recorder
+		var err error
+
+		switch e.Adapter {
+		case "livekit":
+			rec, err = recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName)
+
+			if err != nil {
+				log.WithField("session", ctx.Value("session")).Error(err)
+				s.PublishPubSub(e.Fail(err))
+				return
+			}
+
+			wrtc := livekit.NewLiveKitWebRTC(
+				ctx,
+				s.cfg.LiveKit,
+				e.AdapterOptions.LiveKit.Room,
+				e.AdapterOptions.LiveKit.TrackIDs,
+			)
+			sess := NewSession(e.SessionId, s, nil, wrtc, rec)
+			s.sessions.Store(e.SessionId, sess)
+
+			if _, err := sess.StartRecording(e); err != nil {
+				log.WithField("session", ctx.Value("session")).Error(err)
+				s.PublishPubSub(e.Fail(err))
+				return
+			}
+
+			s.PublishPubSub(e.Success("", rec.GetFilePath()))
+
+		case "mediasoup", "":
+			rec, err = recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName)
+
+			if err != nil {
+				log.WithField("session", ctx.Value("session")).Error(err)
+				s.PublishPubSub(e.Fail(err))
+				return
+			}
+
+			var sdp string
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -66,31 +106,39 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 				}()
 
 				wrtc := webrtc.NewWebRTC(ctx, s.cfg.WebRTC)
-				sess := NewSession(e.SessionId, s, wrtc, rec)
+				sess := NewSession(e.SessionId, s, wrtc, nil, rec)
 				s.sessions.Store(e.SessionId, sess)
-				sdp = sess.StartRecording(e.SDP)
+				sdp, err = sess.StartRecording(e)
 				s.PublishPubSub(e.Success(sdp, rec.GetFilePath()))
 			}()
+
 			if err != nil {
-				log.WithField("session", ctx.Value("session")).
-					Error(err)
+				log.WithField("session", ctx.Value("session")).Error(err)
 				s.PublishPubSub(e.Fail(err))
 			}
+
+		default:
+			err := fmt.Errorf("unknown adapter type: %s", e.Adapter)
+			log.WithField("session", ctx.Value("session")).Error(err)
+			s.PublishPubSub(e.Fail(err))
+			return
 		}
+
 	case "stopRecording":
 		e := event.StopRecording()
-		if sess, ok := s.sessions.Load(e.SessionId); !ok {
-			s.PublishPubSub(e.Stopped("session not found", 0))
-		} else {
+
+		if e == nil {
+			return
+		}
+
+		if sess, ok := s.sessions.Load(e.SessionId); ok {
 			ts := sess.(*Session).StopRecording() / time.Millisecond
-			s.sessions.Delete(e.SessionId)
-			s.PublishPubSub(e.Stopped("stop requested", ts))
+			s.PublishPubSub(e.Stopped("stopped", ts))
+			s.CloseSession(e.SessionId)
 		}
+
 	case "getRecorderStatus":
-		e := event.GetRecorderStatus()
-		if e != nil {
-			s.PublishPubSub(e.Status(s.cfg.App.Version, s.cfg.App.InstanceId))
-		}
+		s.PublishPubSub(events.NewRecorderStatus(s.cfg.App.Version, s.cfg.App.InstanceId))
 	}
 }
 

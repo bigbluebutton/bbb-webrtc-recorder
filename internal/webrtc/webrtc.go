@@ -2,6 +2,11 @@ package webrtc
 
 import (
 	"context"
+	"errors"
+	"io"
+	"math/rand"
+	"time"
+
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
@@ -10,9 +15,6 @@ import (
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 	log "github.com/sirupsen/logrus"
-	"io"
-	"math/rand"
-	"time"
 )
 
 type NACKTracker struct {
@@ -30,23 +32,60 @@ type WebRTC struct {
 	cfg config.WebRTC
 	pc  *webrtc.PeerConnection
 
-	videoTrackSSRCs []uint32
-	pliStats map[uint32]PLITracker
+	connStateCallbackFn func(state webrtc.ICEConnectionState)
+	flowCallback        func(isFlowing bool, videoTimestamp time.Duration, closed bool)
+	videoTrackSSRCs     []uint32
+	pliStats            map[uint32]PLITracker
+	sdpOffer            webrtc.SessionDescription
 }
 
 func NewWebRTC(ctx context.Context, cfg config.WebRTC) *WebRTC {
-	return &WebRTC{ctx: ctx, cfg: cfg}
+	return &WebRTC{
+		ctx:                 ctx,
+		cfg:                 cfg,
+		sdpOffer:            webrtc.SessionDescription{},
+		connStateCallbackFn: nil,
+		flowCallback:        nil,
+		videoTrackSSRCs:     make([]uint32, 0),
+		pliStats:            make(map[uint32]PLITracker),
+	}
+}
+
+func (w WebRTC) SetConnectionStateCallback(fn func(state webrtc.ICEConnectionState)) {
+	w.connStateCallbackFn = fn
+}
+
+func (w WebRTC) SetFlowCallback(fn func(isFlowing bool, videoTimestamp time.Duration, closed bool)) {
+	w.flowCallback = fn
+}
+
+func (w WebRTC) SetSDPOffer(offer webrtc.SessionDescription) {
+	w.sdpOffer = offer
+}
+
+func (w WebRTC) validateInitParams() error {
+	if w.connStateCallbackFn == nil {
+		return errors.New("connStateCallbackFn is not set")
+	}
+
+	if w.flowCallback == nil {
+		return errors.New("flowCallback is not set")
+	}
+
+	if w.sdpOffer == (webrtc.SessionDescription{}) {
+		return errors.New("sdpOffer is not set")
+	}
+
+	return nil
 }
 
 func (w WebRTC) Init(
-	offer webrtc.SessionDescription,
 	rec recorder.Recorder,
-	connStateCallbackFn func(state webrtc.ICEConnectionState),
-	flowCallbackFn func(isFlowing bool, videoTimestamp time.Duration, closed bool),
-) webrtc.SessionDescription {
-	w.pliStats = make(map[uint32]PLITracker)
+) (webrtc.SessionDescription, error) {
+	if err := w.validateInitParams(); err != nil {
+		return webrtc.SessionDescription{}, err
+	}
 
-	// Prepare the configuration
 	cfg := webrtc.Configuration{
 		ICEServers:   w.cfg.ICEServers,
 		SDPSemantics: webrtc.SDPSemanticsUnifiedPlanWithFallback,
@@ -57,7 +96,7 @@ func (w WebRTC) Init(
 
 	sdpOffer := sdp.SessionDescription{}
 
-	if err := sdpOffer.Unmarshal([]byte(offer.SDP)); err != nil {
+	if err := sdpOffer.Unmarshal([]byte(w.sdpOffer.SDP)); err != nil {
 		panic(err)
 	}
 
@@ -123,6 +162,8 @@ func (w WebRTC) Init(
 
 		if isAudio {
 			rec.SetHasAudio(true)
+		} else if isVideo {
+			rec.SetHasVideo(true)
 		}
 
 		log.WithField("session", w.ctx.Value("session")).
@@ -134,7 +175,7 @@ func (w WebRTC) Init(
 			w.videoTrackSSRCs = append(w.videoTrackSSRCs, uint32(track.SSRC()))
 			w.pliStats[uint32(track.SSRC())] = PLITracker{count: 0, timestamp: time.Now()}
 
-			if kfr, ok := rec.(interface{
+			if kfr, ok := rec.(interface {
 				SetKeyframeRequester(recorder.KeyframeRequester)
 			}); ok {
 				kfr.SetKeyframeRequester(w)
@@ -149,12 +190,12 @@ func (w WebRTC) Init(
 				ticker := time.NewTicker(time.Second * 3)
 				for {
 					select {
-						case <-done:
-							ticker.Stop()
-							return
-						case <-ticker.C:
-							w.RequestKeyframeForSSRC(uint32(track.SSRC()))
-						}
+					case <-done:
+						ticker.Stop()
+						return
+					case <-ticker.C:
+						w.RequestKeyframeForSSRC(uint32(track.SSRC()))
+					}
 				}
 			}()
 		}
@@ -178,8 +219,8 @@ func (w WebRTC) Init(
 				done <- true
 			}()
 			go func() {
-				nackedPackets := make(map[uint16]NACKTracker) // Track NACK'ed packets
-				maxNackAttempts := 10 // NACK retries - 10 is what mediasoup uses, copy them >:)
+				nackedPackets := make(map[uint16]NACKTracker)   // Track NACK'ed packets
+				maxNackAttempts := 10                           // NACK retries - 10 is what mediasoup uses, copy them >:)
 				ticker := time.NewTicker(time.Millisecond * 40) // 40ms is also ms
 
 				for {
@@ -243,7 +284,7 @@ func (w WebRTC) Init(
 							errSend := peerConnection.WriteRTCP([]rtcp.Packet{nack})
 							if errSend != nil {
 								log.WithField("session", w.ctx.Value("session")).
-								Error(errSend)
+									Error(errSend)
 							}
 						}
 					}
@@ -252,6 +293,7 @@ func (w WebRTC) Init(
 		}
 
 		var s1, s2 uint16
+		var lastTimestamp time.Duration
 
 		if true {
 			done := make(chan bool)
@@ -265,9 +307,21 @@ func (w WebRTC) Init(
 					select {
 					case <-done:
 						ticker.Stop()
-						if isVideo {
-							flowCallbackFn(false, rec.VideoTimestamp(), true)
+
+						ts := lastTimestamp
+
+						// Use the most recent timestamp from video or audio since
+						// we can't differentiate them in status events right now.
+						// FIXME this isn't ideal for screen sharing with bundled audio
+						if ts == 0 {
+							if isVideo {
+								ts = rec.VideoTimestamp()
+							} else {
+								ts = rec.AudioTimestamp()
+							}
 						}
+
+						w.flowCallback(false, ts, true)
 						return
 					case <-ticker.C:
 						if s1 == s2 {
@@ -276,14 +330,23 @@ func (w WebRTC) Init(
 							isFlowing = true
 						}
 						s1 = s2
-						if isVideo {
-							if isFlowing != wasFlowing {
-								flowCallbackFn(isFlowing, rec.VideoTimestamp(), false)
-								if isFlowing {
-									ticker.Reset(time.Millisecond * 1000)
+						if isFlowing != wasFlowing {
+							ts := lastTimestamp
+
+							// FIXME see comment above
+							if ts == 0 {
+								if isVideo {
+									ts = rec.VideoTimestamp()
 								} else {
-									ticker.Reset(time.Millisecond * 100)
+									ts = rec.AudioTimestamp()
 								}
+							}
+							w.flowCallback(isFlowing, ts, false)
+
+							if isFlowing {
+								ticker.Reset(time.Millisecond * 1000)
+							} else {
+								ticker.Reset(time.Millisecond * 100)
 							}
 						}
 						wasFlowing = isFlowing
@@ -313,10 +376,10 @@ func (w WebRTC) Init(
 
 			packetCounter++
 
-			if packetCounter > 1 && (rtp.SequenceNumber - prevSeq) > 1 {
+			if packetCounter > 1 && (rtp.SequenceNumber-prevSeq) > 1 {
 				log.WithField("session", w.ctx.Value("session")).
 					Debugf("Sequence gap detected: expected=%d, got=%d, diff=%d",
-				prevSeq+1, rtp.SequenceNumber, rtp.SequenceNumber-prevSeq-1)
+						prevSeq+1, rtp.SequenceNumber, rtp.SequenceNumber-prevSeq-1)
 			}
 			prevSeq = rtp.SequenceNumber
 
@@ -360,8 +423,10 @@ func (w WebRTC) Init(
 				switch {
 				case isAudio:
 					rec.PushAudio(p)
+					lastTimestamp = rec.AudioTimestamp()
 				case isVideo:
 					rec.PushVideo(p)
+					lastTimestamp = rec.VideoTimestamp()
 				}
 			}
 		}
@@ -378,15 +443,15 @@ func (w WebRTC) Init(
 					Error(err)
 			}
 		}
-		connStateCallbackFn(connectionState)
+		w.connStateCallbackFn(connectionState)
 	})
 
 	// Set the remote SessionDescription
-	err = peerConnection.SetRemoteDescription(offer)
+	err = peerConnection.SetRemoteDescription(w.sdpOffer)
 	if err != nil {
 		log.WithField("session", w.ctx.Value("session")).
 			Error(err)
-		return webrtc.SessionDescription{}
+		return webrtc.SessionDescription{}, err
 	}
 
 	// Create an answer
@@ -394,7 +459,7 @@ func (w WebRTC) Init(
 	if err != nil {
 		log.WithField("session", w.ctx.Value("session")).
 			Error(err)
-		return webrtc.SessionDescription{}
+		return webrtc.SessionDescription{}, err
 	}
 
 	// Create channel that is blocked until ICE Gathering is complete
@@ -412,7 +477,7 @@ func (w WebRTC) Init(
 	<-gatherComplete
 
 	// Output the answer in base64
-	return *peerConnection.LocalDescription()
+	return *peerConnection.LocalDescription(), nil
 }
 
 func (w WebRTC) RequestKeyframe() {
