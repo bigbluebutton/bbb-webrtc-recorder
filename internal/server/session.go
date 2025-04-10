@@ -9,7 +9,9 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/signal"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	pwebrtc "github.com/pion/webrtc/v3"
+	log "github.com/sirupsen/logrus"
 )
 
 type Session struct {
@@ -19,6 +21,7 @@ type Session struct {
 	livekit  *livekit.LiveKitWebRTC
 	recorder recorder.Recorder
 	stopped  bool
+	stats    *utils.StatsFileWriter
 }
 
 func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWebRTC, recorder recorder.Recorder) *Session {
@@ -28,6 +31,7 @@ func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWe
 		webrtc:   wrtc,
 		livekit:  lk,
 		recorder: recorder,
+		stats:    utils.NewStatsFileWriter(s.cfg.Recorder.Directory),
 	}
 }
 
@@ -57,7 +61,7 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 			s.server.PublishPubSub(message)
 		})
 		s.webrtc.SetSDPOffer(offer)
-		answer, err := s.webrtc.Init(s.recorder)
+		answer, err := s.webrtc.Init()
 
 		if err != nil {
 			return "", err
@@ -79,7 +83,7 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 			s.server.PublishPubSub(message)
 		})
 
-		if err := s.livekit.Init(s.recorder); err != nil {
+		if err := s.livekit.Init(); err != nil {
 			return "", err
 		}
 	}
@@ -91,7 +95,24 @@ func (s *Session) StopRecording() time.Duration {
 	if !s.stopped {
 		s.stopped = true
 		prometheus.Sessions.Dec()
-		return s.recorder.Close()
+
+		if s.livekit != nil {
+			mediaStats := s.livekit.GetStats()
+
+			stats := &utils.Stats{
+				MediaAdapter: mediaStats,
+				Timestamp:    time.Now().Unix(),
+			}
+
+			if err := s.stats.WriteStats(s.recorder.GetFilePath(), stats); err != nil {
+				log.WithError(err).Error("Failed to write recording stats")
+			}
+		}
+
+		if s.webrtc != nil {
+			return s.webrtc.Close()
+		}
 	}
+
 	return 0
 }

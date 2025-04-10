@@ -28,10 +28,10 @@ type PLITracker struct {
 }
 
 type WebRTC struct {
-	ctx context.Context
-	cfg config.WebRTC
-	pc  *webrtc.PeerConnection
-
+	ctx                 context.Context
+	cfg                 config.WebRTC
+	pc                  *webrtc.PeerConnection
+	rec                 recorder.Recorder
 	connStateCallbackFn func(state webrtc.ICEConnectionState)
 	flowCallback        func(isFlowing bool, videoTimestamp time.Duration, closed bool)
 	videoTrackSSRCs     []uint32
@@ -39,10 +39,11 @@ type WebRTC struct {
 	sdpOffer            webrtc.SessionDescription
 }
 
-func NewWebRTC(ctx context.Context, cfg config.WebRTC) *WebRTC {
+func NewWebRTC(ctx context.Context, cfg config.WebRTC, rec recorder.Recorder) *WebRTC {
 	return &WebRTC{
 		ctx:                 ctx,
 		cfg:                 cfg,
+		rec:                 rec,
 		sdpOffer:            webrtc.SessionDescription{},
 		connStateCallbackFn: nil,
 		flowCallback:        nil,
@@ -79,9 +80,7 @@ func (w WebRTC) validateInitParams() error {
 	return nil
 }
 
-func (w WebRTC) Init(
-	rec recorder.Recorder,
-) (webrtc.SessionDescription, error) {
+func (w WebRTC) Init() (webrtc.SessionDescription, error) {
 	if err := w.validateInitParams(); err != nil {
 		return webrtc.SessionDescription{}, err
 	}
@@ -161,9 +160,9 @@ func (w WebRTC) Init(
 		isVideo := track.Kind() == webrtc.RTPCodecTypeVideo
 
 		if isAudio {
-			rec.SetHasAudio(true)
+			w.rec.SetHasAudio(true)
 		} else if isVideo {
-			rec.SetHasVideo(true)
+			w.rec.SetHasVideo(true)
 		}
 
 		log.WithField("session", w.ctx.Value("session")).
@@ -175,7 +174,7 @@ func (w WebRTC) Init(
 			w.videoTrackSSRCs = append(w.videoTrackSSRCs, uint32(track.SSRC()))
 			w.pliStats[uint32(track.SSRC())] = PLITracker{count: 0, timestamp: time.Now()}
 
-			if kfr, ok := rec.(interface {
+			if kfr, ok := w.rec.(interface {
 				SetKeyframeRequester(recorder.KeyframeRequester)
 			}); ok {
 				kfr.SetKeyframeRequester(w)
@@ -230,7 +229,8 @@ func (w WebRTC) Init(
 						return
 					case <-ticker.C:
 						missing := rl.MissingSeqNumbers(10)
-						if missing == nil || len(missing) == 0 {
+
+						if len(missing) == 0 {
 							continue
 						}
 
@@ -315,9 +315,9 @@ func (w WebRTC) Init(
 						// FIXME this isn't ideal for screen sharing with bundled audio
 						if ts == 0 {
 							if isVideo {
-								ts = rec.VideoTimestamp()
+								ts = w.rec.VideoTimestamp()
 							} else {
-								ts = rec.AudioTimestamp()
+								ts = w.rec.AudioTimestamp()
 							}
 						}
 
@@ -336,9 +336,9 @@ func (w WebRTC) Init(
 							// FIXME see comment above
 							if ts == 0 {
 								if isVideo {
-									ts = rec.VideoTimestamp()
+									ts = w.rec.VideoTimestamp()
 								} else {
-									ts = rec.AudioTimestamp()
+									ts = w.rec.AudioTimestamp()
 								}
 							}
 							w.flowCallback(isFlowing, ts, false)
@@ -411,8 +411,8 @@ func (w WebRTC) Init(
 			if skipped {
 				skippedSeq, ok := jb.GetAndClearLastSkipped()
 				if ok {
-					if rec != nil {
-						rec.NotifySkippedPacket(uint16(skippedSeq))
+					if w.rec != nil {
+						w.rec.NotifySkippedPacket(uint16(skippedSeq))
 						log.Debugf("Notified recorder of skipped packet: seq=%d", skippedSeq)
 					}
 				}
@@ -422,11 +422,11 @@ func (w WebRTC) Init(
 				s2 = p.SequenceNumber
 				switch {
 				case isAudio:
-					rec.PushAudio(p)
-					lastTimestamp = rec.AudioTimestamp()
+					w.rec.PushAudio(p)
+					lastTimestamp = w.rec.AudioTimestamp()
 				case isVideo:
-					rec.PushVideo(p)
-					lastTimestamp = rec.VideoTimestamp()
+					w.rec.PushVideo(p)
+					lastTimestamp = w.rec.VideoTimestamp()
 				}
 			}
 		}
@@ -506,8 +506,16 @@ func (w WebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	w.pliStats[ssrc] = PLITracker{count: w.pliStats[ssrc].count + 1, timestamp: time.Now()}
 }
 
-func (w WebRTC) Close() error {
-	return w.pc.Close()
+func (w WebRTC) Close() time.Duration {
+	if w.pc != nil {
+		w.pc.Close()
+	}
+
+	if w.rec != nil {
+		return w.rec.Close()
+	}
+
+	return 0
 }
 
 var _ recorder.KeyframeRequester = (*WebRTC)(nil)

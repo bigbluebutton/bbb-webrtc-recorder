@@ -74,6 +74,7 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 			wrtc := livekit.NewLiveKitWebRTC(
 				ctx,
 				s.cfg.LiveKit,
+				rec,
 				e.AdapterOptions.LiveKit.Room,
 				e.AdapterOptions.LiveKit.TrackIDs,
 			)
@@ -105,7 +106,7 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 					}
 				}()
 
-				wrtc := webrtc.NewWebRTC(ctx, s.cfg.WebRTC)
+				wrtc := webrtc.NewWebRTC(ctx, s.cfg.WebRTC, rec)
 				sess := NewSession(e.SessionId, s, wrtc, nil, rec)
 				s.sessions.Store(e.SessionId, sess)
 				sdp, err = sess.StartRecording(e)
