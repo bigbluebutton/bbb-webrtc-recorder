@@ -20,7 +20,7 @@ func TestStatsFileWriter(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Create a test writer
-	writer := NewStatsFileWriter(tmpDir)
+	writer := NewStatsFileWriter(tmpDir, 0600)
 
 	// Test data
 	testStats := &Stats{
