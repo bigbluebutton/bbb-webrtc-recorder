@@ -45,11 +45,12 @@ type TrackFlowState struct {
 }
 
 type AdapterTrackStats struct {
-	StartTime   int64
-	EndTime     int64
-	FirstSeqNum int64
-	LastSeqNum  int64
-	PLIRequests int
+	StartTime         int64
+	EndTime           int64
+	FirstSeqNum       int64
+	LastSeqNum        int64
+	SeqNumWrapArounds int
+	PLIRequests       int
 }
 
 type TrackStats struct {
@@ -525,6 +526,12 @@ func (w *LiveKitWebRTC) processPacketStats(trackID string, packets []*rtp.Packet
 	}
 
 	stats.LastSeqNum = int64(lastPacket.SequenceNumber)
+	// This method receives packets from unforced jitter buffer packet pops, which means they're
+	// properly ordered. We can just check if the last seqnum is less than the first seqnum
+	// to determine if there was a wraparound
+	if stats.LastSeqNum < stats.FirstSeqNum {
+		stats.SeqNumWrapArounds++
+	}
 
 	w.m.Unlock()
 }
