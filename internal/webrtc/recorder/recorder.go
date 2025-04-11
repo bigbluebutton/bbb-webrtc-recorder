@@ -19,6 +19,7 @@ type KeyframeRequester = interfaces.KeyframeRequester
 
 type Recorder interface {
 	GetFilePath() string
+	GetStats() *RecorderStats
 	PushVideo(rtp *rtp.Packet)
 	PushAudio(rtp *rtp.Packet)
 	NotifySkippedPacket(seq uint16)

@@ -10,9 +10,8 @@ import (
 )
 
 type Stats struct {
-	MediaAdapter *livekit.MediaAdapterStats
-	Writer       interface{} // TODO
-	Timestamp    int64
+	MediaAdapter *livekit.MediaAdapterStats `json:"mediaAdapter"`
+	Timestamp    int64                      `json:"timestamp"`
 }
 
 type StatsFileWriter struct {
@@ -40,7 +39,9 @@ func (w *StatsFileWriter) WriteStats(webmFilePath string, stats *Stats) error {
 		return fmt.Errorf("failed to write stats file: %w", err)
 	}
 
-	log.WithField("path", statsFilePath).Debug("Wrote recording stats to file")
+	log.WithField("path", statsFilePath).
+		WithField("stats", string(jsonData)).
+		Tracef("Wrote recording stats to file")
 
 	return nil
 }

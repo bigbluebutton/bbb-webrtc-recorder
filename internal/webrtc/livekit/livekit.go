@@ -45,26 +45,36 @@ type TrackFlowState struct {
 }
 
 type AdapterTrackStats struct {
-	StartTime         int64
-	EndTime           int64
-	FirstSeqNum       int64
-	LastSeqNum        int64
-	SeqNumWrapArounds int
-	PLIRequests       int
+	StartTime         int64 `json:"startTime"`
+	EndTime           int64 `json:"endTime"`
+	FirstSeqNum       int64 `json:"firstSeqNum"`
+	LastSeqNum        int64 `json:"lastSeqNum"`
+	SeqNumWrapArounds int   `json:"seqNumWrapArounds"`
+	PLIRequests       int   `json:"pliRequests"`
+}
+
+type BufferStatsWrapper struct {
+	PacketsPushed  uint64 `json:"packetsPushed"`
+	PacketsPopped  uint64 `json:"packetsPopped"`
+	PacketsDropped uint64 `json:"packetsDropped"`
+	PaddingPushed  uint64 `json:"paddingPushed"`
+	SamplesPopped  uint64 `json:"samplesPopped"`
 }
 
 type TrackStats struct {
-	ParticipantID string
-	Source        string
-	Buffer        *jitter.BufferStats
-	Adapter       *AdapterTrackStats
-	TrackKind     string
-	MimeType      string
+	ParticipantID      string                    `json:"participantId"`
+	Source             string                    `json:"source"`
+	Buffer             *BufferStatsWrapper       `json:"buffer"`
+	Adapter            *AdapterTrackStats        `json:"adapter"`
+	RecorderVideoStats *recorder.VideoTrackStats `json:"recorderVideoStats,omitempty"`
+	RecorderAudioStats *recorder.AudioTrackStats `json:"recorderAudioStats,omitempty"`
+	TrackKind          string                    `json:"trackKind"`
+	MimeType           string                    `json:"mimeType"`
 }
 
 type MediaAdapterStats struct {
-	RoomID string
-	Tracks map[string]*TrackStats
+	RoomID string                 `json:"roomId"`
+	Tracks map[string]*TrackStats `json:"tracks"`
 }
 
 type LiveKitWebRTC struct {
@@ -189,6 +199,8 @@ func (w *LiveKitWebRTC) GetStats() *MediaAdapterStats {
 	w.m.Lock()
 	defer w.m.Unlock()
 
+	recStats := w.rec.GetStats()
+
 	for trackID, remoteTrackPub := range w.remoteTrackPubs {
 		trackInfo := remoteTrackPub.TrackInfo()
 		mimeType := trackInfo.MimeType
@@ -216,10 +228,25 @@ func (w *LiveKitWebRTC) GetStats() *MediaAdapterStats {
 		adapterStats.Tracks[trackID] = &TrackStats{
 			ParticipantID: w.participantIDs[trackID],
 			Source:        remoteTrackPub.Source().String(),
-			Buffer:        bufferStats,
-			Adapter:       stats,
-			TrackKind:     string(remoteTrackPub.Kind()),
-			MimeType:      mimeType,
+			Buffer: &BufferStatsWrapper{
+				PacketsPushed:  bufferStats.PacketsPushed,
+				PacketsPopped:  bufferStats.PacketsPopped,
+				PacketsDropped: bufferStats.PacketsDropped,
+				PaddingPushed:  bufferStats.PaddingPushed,
+				SamplesPopped:  bufferStats.SamplesPopped,
+			},
+			Adapter:   stats,
+			TrackKind: string(remoteTrackPub.Kind()),
+			MimeType:  mimeType,
+		}
+
+		// TODO - in the future, propagate track ID data down the chain to get
+		// the correct stats for the right track when there are multiple tracks
+		// of the same kind
+		if remoteTrackPub.Kind() == lksdk.TrackKindVideo {
+			adapterStats.Tracks[trackID].RecorderVideoStats = recStats.Video
+		} else if remoteTrackPub.Kind() == lksdk.TrackKindAudio {
+			adapterStats.Tracks[trackID].RecorderAudioStats = recStats.Audio
 		}
 	}
 

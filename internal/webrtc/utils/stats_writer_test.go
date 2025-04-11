@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
-	"github.com/livekit/server-sdk-go/v2/pkg/jitter"
 )
 
 func TestStatsFileWriter(t *testing.T) {
@@ -30,7 +29,13 @@ func TestStatsFileWriter(t *testing.T) {
 				"track1": {
 					ParticipantID: "participant1",
 					Source:        "camera",
-					Buffer:        &jitter.BufferStats{},
+					Buffer: &livekit.BufferStatsWrapper{
+						PacketsPushed:  100,
+						PacketsPopped:  50,
+						PacketsDropped: 10,
+						PaddingPushed:  5,
+						SamplesPopped:  20,
+					},
 					Adapter: &livekit.AdapterTrackStats{
 						StartTime:   time.Now().Unix(),
 						EndTime:     time.Now().Unix() + 1000,
@@ -43,7 +48,6 @@ func TestStatsFileWriter(t *testing.T) {
 				},
 			},
 		},
-		Writer:    nil,
 		Timestamp: time.Now().Unix(),
 	}
 
@@ -97,22 +101,6 @@ func TestStatsFileWriter(t *testing.T) {
 		err := writer.WriteStats(webmPath, testStats)
 		if err == nil {
 			t.Error("Expected error for read-only directory, got nil")
-		}
-	})
-
-	t.Run("WriteStats_InvalidJSON", func(t *testing.T) {
-		// Create a stats object that can't be marshaled to JSON
-		invalidStats := &Stats{
-			MediaAdapter: &livekit.MediaAdapterStats{
-				Tracks: make(map[string]*livekit.TrackStats),
-			},
-			Writer: make(chan int), // Channels can't be marshaled to JSON
-		}
-
-		webmPath := filepath.Join(tmpDir, "invalid.webm")
-		err := writer.WriteStats(webmPath, invalidStats)
-		if err == nil {
-			t.Error("Expected error for invalid JSON, got nil")
 		}
 	})
 }
