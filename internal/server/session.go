@@ -119,13 +119,17 @@ func (s *Session) StopRecording() time.Duration {
 		prometheus.Sessions.Dec()
 
 		if s.livekit != nil {
-			stats := &utils.Stats{
-				MediaAdapter: s.livekit.GetStats(),
-				Timestamp:    time.Now().Unix(),
-			}
+			stats := s.livekit.GetStats()
+			prometheus.UpdateMediaMetrics(stats)
 
+			// Write detailed stats to file if enabled
 			if s.statsWriter != nil {
-				if err := s.statsWriter.WriteStats(s.recorder.GetFilePath(), stats); err != nil {
+				fileStats := &utils.Stats{
+					MediaAdapter: stats,
+					Timestamp:    time.Now().Unix(),
+				}
+
+				if err := s.statsWriter.WriteStats(s.recorder.GetFilePath(), fileStats); err != nil {
 					log.WithError(err).Error("Failed to write recording stats")
 				}
 			}
@@ -136,7 +140,6 @@ func (s *Session) StopRecording() time.Duration {
 		if s.webrtc != nil {
 			duration = s.webrtc.Close()
 		}
-
 	}
 
 	return duration
