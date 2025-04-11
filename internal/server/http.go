@@ -85,7 +85,7 @@ func (s *HTTPServer) serve(handler func(string) string) {
 			return
 		}
 		response := handler(string(body))
-		fmt.Fprintf(w, response)
+		fmt.Fprint(w, response)
 	})
 
 	http.Handle("/media/", http.StripPrefix("/media", http.FileServer(http.Dir(s.mediaRoot))))
