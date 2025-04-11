@@ -32,6 +32,13 @@ recorder:
   fileMode: 0700
   # Whether to write to /dev/null instead of a file (for testing)
   writeToDevNull: false
+  # Whether an IVF copy of WebM recordings should be generated
+  writeIVFCopy: false
+  # Write a stats file for each recording
+  writeStatsFile: false
+  videoPacketQueueSize: 256
+  audioPacketQueueSize: 32
+  useCustomSampler: true
 
 pubsub:
   channels:

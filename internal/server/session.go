@@ -1,34 +1,58 @@
 package server
 
 import (
+	"os"
+	"strconv"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/signal"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	pwebrtc "github.com/pion/webrtc/v3"
+	log "github.com/sirupsen/logrus"
 )
 
 type Session struct {
-	id       string
-	server   *Server
-	webrtc   *webrtc.WebRTC
-	livekit  *livekit.LiveKitWebRTC
-	recorder recorder.Recorder
-	stopped  bool
+	id          string
+	server      *Server
+	cfg         *config.Config
+	webrtc      *webrtc.WebRTC
+	livekit     *livekit.LiveKitWebRTC
+	recorder    recorder.Recorder
+	stopped     bool
+	statsWriter *utils.StatsFileWriter
 }
 
 func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWebRTC, recorder recorder.Recorder) *Session {
-	return &Session{
+	sess := &Session{
 		id:       id,
 		server:   s,
 		webrtc:   wrtc,
 		livekit:  lk,
 		recorder: recorder,
+		cfg:      s.cfg,
 	}
+
+	if s.cfg.Recorder.WriteStatsFile {
+		var fileMode os.FileMode
+
+		if parsedFileMode, err := strconv.ParseUint(s.cfg.Recorder.FileMode, 0, 32); err == nil {
+			fileMode = os.FileMode(parsedFileMode)
+		} else {
+			log.WithField("session", id).
+				Warnf("Invalid stats file mode %s, using 0600", s.cfg.Recorder.FileMode)
+			fileMode = 0600
+		}
+
+		sess.statsWriter = utils.NewStatsFileWriter(s.cfg.Recorder.Directory, fileMode)
+	}
+
+	return sess
 }
 
 func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
@@ -57,7 +81,7 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 			s.server.PublishPubSub(message)
 		})
 		s.webrtc.SetSDPOffer(offer)
-		answer, err := s.webrtc.Init(s.recorder)
+		answer, err := s.webrtc.Init()
 
 		if err != nil {
 			return "", err
@@ -79,7 +103,7 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 			s.server.PublishPubSub(message)
 		})
 
-		if err := s.livekit.Init(s.recorder); err != nil {
+		if err := s.livekit.Init(); err != nil {
 			return "", err
 		}
 	}
@@ -88,10 +112,35 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 }
 
 func (s *Session) StopRecording() time.Duration {
+	var duration time.Duration
+
 	if !s.stopped {
 		s.stopped = true
 		prometheus.Sessions.Dec()
-		return s.recorder.Close()
+
+		if s.livekit != nil {
+			stats := s.livekit.GetStats()
+			prometheus.UpdateMediaMetrics(stats)
+
+			// Write detailed stats to file if enabled
+			if s.statsWriter != nil {
+				fileStats := &utils.Stats{
+					MediaAdapter: stats,
+					Timestamp:    time.Now().Unix(),
+				}
+
+				if err := s.statsWriter.WriteStats(s.recorder.GetFilePath(), fileStats); err != nil {
+					log.WithError(err).Error("Failed to write recording stats")
+				}
+			}
+
+			duration = s.livekit.Close()
+		}
+
+		if s.webrtc != nil {
+			duration = s.webrtc.Close()
+		}
 	}
-	return 0
+
+	return duration
 }

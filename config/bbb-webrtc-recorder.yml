@@ -7,6 +7,8 @@ recorder:
   fileMode: 0600
   writeToDevNull: false
   writeIVFCopy: false
+  # Write a stats file for each recording
+  writeStatsFile: false
   videoPacketQueueSize: 256
   audioPacketQueueSize: 32
   useCustomSampler: true

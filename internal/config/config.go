@@ -45,6 +45,7 @@ func (cfg *Config) SetDefaults() {
 	cfg.Recorder.FileMode = "0600"
 	cfg.Recorder.WriteToDevNull = false
 	cfg.Recorder.WriteIVFCopy = false
+	cfg.Recorder.WriteStatsFile = false
 	cfg.Recorder.VideoPacketQueueSize = 256
 	cfg.Recorder.AudioPacketQueueSize = 32
 	cfg.Recorder.UseCustomSampler = true
@@ -87,6 +88,7 @@ type Recorder struct {
 	VideoPacketQueueSize uint16 `yaml:"videoPacketQueueSize,omitempty"`
 	AudioPacketQueueSize uint16 `yaml:"audioPacketQueueSize,omitempty"`
 	UseCustomSampler     bool   `yaml:"useCustomSampler,omitempty"`
+	WriteStatsFile       bool   `yaml:"writeStatsFile,omitempty"`
 }
 
 type Redis struct {

@@ -42,9 +42,51 @@ type VP8FrameInfo struct {
 	size          int
 }
 
+type DiscontinuityInfo struct {
+	Count    int    `json:"count"`
+	MinGap   uint16 `json:"minGap"`
+	MaxGap   uint16 `json:"maxGap"`
+	AvgGap   uint16 `json:"avgGap"`
+	TotalGap uint16 `json:"totalGap"`
+}
+
+// BaseTrackStats contains metrics common to both audio and video tracks
+type BaseTrackStats struct {
+	StartTime           int64             `json:"startTime"`
+	EndTime             int64             `json:"endTime"`
+	StartPTS            int64             `json:"startPts"`
+	EndPTS              int64             `json:"endPts"`
+	AvgSampleDurationMs time.Duration     `json:"avgSampleDurationMs"`
+	MaxSampleDurationMs time.Duration     `json:"maxSampleDurationMs"`
+	TotalSamples        int               `json:"totalSamples"`
+	WrittenSamples      int               `json:"writtenSamples"`
+	RTPDiscontInfo      DiscontinuityInfo `json:"rtpDiscontInfo"`
+
+	sampleDurationAcc time.Duration
+}
+
+// AudioTrackStats contains audio-specific metrics
+type AudioTrackStats struct {
+	BaseTrackStats
+}
+
+// VideoTrackStats contains video-specific metrics
+type VideoTrackStats struct {
+	BaseTrackStats
+	CorruptedFrames     int               `json:"corruptedFrames"`
+	AvgFrameSizeBytes   int               `json:"avgFrameSizeBytes"`
+	MaxFrameSizeBytes   int               `json:"maxFrameSizeBytes"`
+	KeyframeCount       int               `json:"keyframeCount"`
+	VP8PicIDDiscontInfo DiscontinuityInfo `json:"vp8PicIdDiscontInfo,omitempty"`
+}
+
+type RecorderStats struct {
+	Audio *AudioTrackStats `json:"audio"`
+	Video *VideoTrackStats `json:"video"`
+}
+
 type WebmRecorder struct {
-	m                     sync.Mutex
-	ctx                   context.Context
+	// Configuration fields
 	file                  string
 	fileMode              os.FileMode
 	videoPacketQueueSize  uint16
@@ -53,41 +95,45 @@ type WebmRecorder struct {
 	useCustomSampler      bool
 	writeIVFCopy          bool
 
+	// State tracking
 	hasAudio      bool
 	hasVideo      bool
 	hasValidAudio bool
 	hasValidVideo bool
+	started       bool
+	closed        bool
 
+	// Synchronization
+	m   sync.Mutex
+	ctx context.Context
+
+	// Writers and builders
 	audioWriter, videoWriter       webm.BlockWriteCloser
 	audioBuilder, videoBuilder     *samplebuilder.SampleBuilder
 	audioTimestamp, videoTimestamp time.Duration
 
-	started bool
-	closed  bool
-
-	// Seen at least one keyframe
-	seenKeyFrame bool
-	// Has a valid keyframe to keep recording
-	hasKeyFrame             bool
+	// Keyframe tracking
+	seenKeyFrame            bool // Seen at least one keyframe
+	hasKeyFrame             bool // Has a valid keyframe to keep recording
 	currKeyFrame            *rtp.Packet
 	lastKeyFrameTime        time.Time
 	keyframeRequester       KeyframeRequester
 	lastKeyframeRequestTime time.Time
 
-	currentFrame []byte
-	// Again, more debugging than anything else
-	currentFrameInfo *VP8FrameInfo
+	// Frame processing
+	currentFrame     []byte
+	currentFrameInfo *VP8FrameInfo // Again, more debugging than anything else
 	packetTimestamp  uint32
-	// Last PTS (presentation timestamp) *written* to the WebM file
-	pts int64
+	pts              int64 // Last PTS (presentation timestamp) *written* to the WebM file
 
-	// Last PictureID received in any VP8 packet, not necessarily written
-	lastPictureID    uint16
+	// Sequence tracking
+	lastPictureID    uint16 // Last PictureID received in any VP8 packet, not necessarily written
 	lastSkippedSeq   uint16
 	skipSignaled     bool
 	lastProcessedSeq uint16
 	expectedNextSeq  uint16
 
+	// Frame statistics
 	corruptedFrameCount int
 	lastFrameSize       int
 	frameTimeout        time.Duration
@@ -95,6 +141,11 @@ type WebmRecorder struct {
 	maxFrameSize        int
 	vp8Tracker          VP8PartitionTracker
 	ivfWriter           *IVFWriter
+
+	// Stats tracking
+	stats        RecorderStats
+	lastAudioPTS int64
+	lastVideoPTS int64
 }
 
 func NewWebmRecorder(
@@ -170,6 +221,57 @@ func (r *WebmRecorder) AudioTimestamp() time.Duration {
 	return r.audioTimestamp
 }
 
+func (r *WebmRecorder) GetStats() *RecorderStats {
+	r.m.Lock()
+	defer r.m.Unlock()
+
+	stats := r.stats
+
+	if stats.Audio != nil {
+		stats.Audio.EndTime = time.Now().Unix()
+		stats.Audio.EndPTS = r.lastAudioPTS
+
+		if stats.Audio.TotalSamples > 0 {
+			stats.Audio.AvgSampleDurationMs = stats.Audio.sampleDurationAcc /
+				time.Duration(stats.Audio.TotalSamples)
+		}
+
+		if stats.Audio.RTPDiscontInfo.Count > 0 {
+			stats.Audio.RTPDiscontInfo.AvgGap = uint16(
+				stats.Audio.RTPDiscontInfo.TotalGap / uint16(stats.Audio.RTPDiscontInfo.Count),
+			)
+		}
+	}
+
+	if stats.Video != nil {
+		stats.Video.EndTime = time.Now().Unix()
+		stats.Video.EndPTS = r.pts
+
+		if stats.Video.TotalSamples > 0 {
+			stats.Video.AvgFrameSizeBytes = stats.Video.AvgFrameSizeBytes / stats.Video.TotalSamples
+		}
+
+		if stats.Video.TotalSamples > 0 {
+			stats.Video.AvgSampleDurationMs = stats.Video.sampleDurationAcc /
+				time.Duration(stats.Video.TotalSamples)
+		}
+
+		if stats.Video.RTPDiscontInfo.Count > 0 {
+			stats.Video.RTPDiscontInfo.AvgGap = uint16(
+				stats.Video.RTPDiscontInfo.TotalGap / uint16(stats.Video.RTPDiscontInfo.Count),
+			)
+		}
+
+		if stats.Video.VP8PicIDDiscontInfo.Count > 0 {
+			stats.Video.VP8PicIDDiscontInfo.AvgGap = uint16(
+				stats.Video.VP8PicIDDiscontInfo.TotalGap / uint16(stats.Video.VP8PicIDDiscontInfo.Count),
+			)
+		}
+	}
+
+	return &stats
+}
+
 func (r *WebmRecorder) PushVideo(p *rtp.Packet) {
 	if !r.hasVideo {
 		return
@@ -224,14 +326,6 @@ func (r *WebmRecorder) NotifySkippedPacket(seq uint16) {
 	}
 }
 
-func isSequenceInRange(seq, start, end uint16) bool {
-	if start <= end {
-		return seq >= start && seq <= end
-	}
-
-	return seq >= start || seq <= end
-}
-
 // Locked
 func (r *WebmRecorder) close() time.Duration {
 	if r.closed {
@@ -280,6 +374,40 @@ func (r *WebmRecorder) Close() time.Duration {
 	return ts
 }
 
+func (r *WebmRecorder) initVideoStats() {
+	if r.stats.Video == nil {
+		r.stats.Video = &VideoTrackStats{
+			BaseTrackStats: BaseTrackStats{
+				StartTime: time.Now().Unix(),
+				StartPTS:  r.lastVideoPTS,
+				RTPDiscontInfo: DiscontinuityInfo{
+					Count:    0,
+					MinGap:   0,
+					MaxGap:   0,
+					TotalGap: 0,
+				},
+			},
+		}
+	}
+}
+
+func (r *WebmRecorder) initAudioStats() {
+	if r.stats.Audio == nil {
+		r.stats.Audio = &AudioTrackStats{
+			BaseTrackStats: BaseTrackStats{
+				StartTime: time.Now().Unix(),
+				StartPTS:  r.lastAudioPTS,
+				RTPDiscontInfo: DiscontinuityInfo{
+					Count:    0,
+					MinGap:   0,
+					MaxGap:   0,
+					TotalGap: 0,
+				},
+			},
+		}
+	}
+}
+
 func (r *WebmRecorder) pushVP8Builtin(packet *rtp.Packet) {
 	if !r.hasVideo {
 		return
@@ -292,6 +420,7 @@ func (r *WebmRecorder) pushVP8Builtin(packet *rtp.Packet) {
 		return
 	}
 
+	r.initVideoStats()
 	isKeyFrame := IsVP8KeyFrame(packet)
 
 	if isKeyFrame {
@@ -299,6 +428,16 @@ func (r *WebmRecorder) pushVP8Builtin(packet *rtp.Packet) {
 		r.lastKeyFrameTime = time.Now()
 	}
 
+	if r.expectedNextSeq > 0 && packet.SequenceNumber != r.expectedNextSeq {
+		gap := calculateSequenceGap(packet.SequenceNumber, r.expectedNextSeq)
+		r.trackRTPDiscontinuity(&r.stats.Video.BaseTrackStats, gap)
+
+		log.WithField("session", r.ctx.Value("session")).
+			Debugf("Video sequence discontinuity detected: expected=%d, got=%d, gap=%d",
+				r.expectedNextSeq, packet.SequenceNumber, gap)
+	}
+
+	r.setExpectedNextSeq(packet.SequenceNumber)
 	r.videoBuilder.Push(packet)
 	log.WithField("session", r.ctx.Value("session")).
 		Tracef("BUILTIN: VP8 RTP-DEPAY: seq=%d, ts=%d, marker=%v, S=%v, PictureID=%d, KeyFrame=%v, size=%d, PartID=%d",
@@ -327,23 +466,35 @@ func (r *WebmRecorder) pushVP8Builtin(packet *rtp.Packet) {
 			r.initWriter(width, height)
 		}
 
+		// Track frame stats when frame is complete, regardless of whether it's written
+		duration := sample.Duration
+		r.trackFrameStats(r.stats.Video, len(sample.Data), isKf, duration)
+
 		if r.videoWriter != nil {
+			r.videoTimestamp += duration
 			log.WithField("session", r.ctx.Value("session")).
 				Tracef("Writing VP8 frame: ts=%d, size=%d, KF=%v", ts, len(sample.Data), isKf)
-			r.videoTimestamp += sample.Duration
 
 			if _, err := r.videoWriter.Write(isKf, int64(r.videoTimestamp/time.Millisecond), sample.Data); err != nil {
-				panic(err)
+				log.WithField("session", r.ctx.Value("session")).
+					Errorf("Error writing video frame: %v", err)
+				r.hasKeyFrame = false
+				r.RequestKeyframe()
+			} else {
+				r.stats.Video.WrittenSamples++
+				log.WithField("session", r.ctx.Value("session")).
+					Tracef("VP8 frame written: ts=%d, size=%d, KF=%v", ts, len(sample.Data), isKf)
 			}
-
-			log.WithField("session", r.ctx.Value("session")).
-				Tracef("VP8 frame written: ts=%d, size=%d, KF=%v", ts, len(sample.Data), isKf)
 		}
 
 		if r.writeIVFCopy {
 			r.pushToIVFWriter(sample.Data, packet)
 		}
 	}
+}
+
+func (r *WebmRecorder) setExpectedNextSeq(currentSeq uint16) {
+	r.expectedNextSeq = currentSeq + 1
 }
 
 func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
@@ -358,10 +509,23 @@ func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
 		return
 	}
 
+	r.initAudioStats()
+
+	if r.expectedNextSeq > 0 && p.SequenceNumber != r.expectedNextSeq {
+		gap := calculateSequenceGap(p.SequenceNumber, r.expectedNextSeq)
+		r.trackRTPDiscontinuity(&r.stats.Audio.BaseTrackStats, gap)
+
+		log.WithField("session", r.ctx.Value("session")).
+			Debugf("Audio sequence discontinuity detected: expected=%d, got=%d, gap=%d",
+				r.expectedNextSeq, p.SequenceNumber, gap)
+	}
+
+	r.setExpectedNextSeq(p.SequenceNumber)
 	r.audioBuilder.Push(p)
 
 	for {
 		sample := r.audioBuilder.Pop()
+
 		if sample == nil {
 			return
 		}
@@ -373,14 +537,21 @@ func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
 		}
 
 		if r.audioWriter != nil {
-			r.audioTimestamp += sample.Duration
-			if _, err := r.audioWriter.Write(true, int64(r.audioTimestamp/time.Millisecond), sample.Data); err != nil {
-				panic(err)
-			}
+			duration := sample.Duration
+			r.trackSampleStats(&r.stats.Audio.BaseTrackStats, duration)
+			r.audioTimestamp += duration
 
-			log.WithField("session", r.ctx.Value("session")).
-				Tracef("Audio frame written: ts=%d, size=%d", int64(r.audioTimestamp/time.Millisecond), len(sample.Data))
-			r.hasValidAudio = true
+			if _, err := r.audioWriter.Write(true, int64(r.audioTimestamp/time.Millisecond), sample.Data); err != nil {
+				log.WithField("session", r.ctx.Value("session")).
+					Errorf("Error writing audio frame: %v", err)
+				r.hasValidAudio = false
+				r.RequestKeyframe()
+			} else {
+				r.stats.Audio.WrittenSamples++
+				r.hasValidAudio = true
+				log.WithField("session", r.ctx.Value("session")).
+					Tracef("Audio frame written: ts=%d, size=%d", int64(r.audioTimestamp/time.Millisecond), len(sample.Data))
+			}
 		}
 	}
 }
@@ -494,11 +665,16 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 		return
 	}
 
+	r.initVideoStats()
+
 	if r.expectedNextSeq > 0 && p.SequenceNumber != r.expectedNextSeq {
+		gap := calculateSequenceGap(p.SequenceNumber, r.expectedNextSeq)
+		r.trackRTPDiscontinuity(&r.stats.Video.BaseTrackStats, gap)
+
 		if !r.skipSignaled {
 			log.WithField("session", r.ctx.Value("session")).
-				Debugf("Sequence discontinuity detected: expected=%d, got=%d",
-					r.expectedNextSeq, p.SequenceNumber)
+				Debugf("Sequence discontinuity detected: expected=%d, got=%d, gap=%d",
+					r.expectedNextSeq, p.SequenceNumber, gap)
 		}
 
 		if r.skipSignaled && r.lastSkippedSeq+1 == p.SequenceNumber {
@@ -524,7 +700,7 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 		r.skipSignaled = false
 	}
 
-	r.expectedNextSeq = p.SequenceNumber + 1
+	r.setExpectedNextSeq(p.SequenceNumber)
 	r.lastProcessedSeq = p.SequenceNumber
 
 	vp8Packet := codecs.VP8Packet{}
@@ -603,6 +779,7 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 			expectedID := (r.lastPictureID + 1) & 0x7FFF
 			pidDiff := (pictureID - r.lastPictureID) & 0x7FFF
 			if pidDiff > 1 && pidDiff < 0x7000 {
+				r.trackPicIDDiscontinuity(r.stats.Video, pidDiff-1)
 				log.WithField("session", r.ctx.Value("session")).
 					Debugf("VP8 Picture ID gap detected: expected=%d, got=%d (missing %d frames), seq=%d",
 						expectedID, pictureID, pidDiff-1, p.SequenceNumber)
@@ -770,6 +947,9 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 			Tracef("VP8 partition stats: started=%d, complete=%d, lastSize=%d",
 				r.vp8Tracker.partitionsStarted, r.vp8Tracker.partitionsComplete,
 				r.vp8Tracker.currentPartitionSize)
+
+		// Track frame stats when frame is complete, regardless of whether it's written
+		r.trackFrameStats(r.stats.Video, len(r.currentFrame), isKeyFrame, time.Since(r.frameStartTime))
 	}
 
 	if valid, reason := validateVP8Frame(r.currentFrame, r.currentFrameInfo); !valid {
@@ -866,6 +1046,8 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 			r.RequestKeyframe()
 		} else {
 			var sSeq, eSeq, pktCount, stime, pictureID, timestamp int = 0, 0, 0, 0, 0, 0
+
+			r.stats.Video.WrittenSamples++
 
 			if r.currentFrameInfo != nil {
 				sSeq = int(r.currentFrameInfo.startSequence)
@@ -1042,4 +1224,91 @@ func (r *WebmRecorder) initWriter(width, height int) {
 				Warnf("Error starting RTP ivf: %v", err)
 		}
 	}
+}
+
+//  ----- Stats tracking methods -----
+
+func (r *WebmRecorder) trackRTPDiscontinuity(stats *BaseTrackStats, gap uint16) {
+	if stats == nil {
+		return
+	}
+
+	stats.RTPDiscontInfo.Count++
+	stats.RTPDiscontInfo.TotalGap += gap
+
+	if gap < stats.RTPDiscontInfo.MinGap || stats.RTPDiscontInfo.MinGap == 0 {
+		stats.RTPDiscontInfo.MinGap = gap
+	}
+
+	if gap > stats.RTPDiscontInfo.MaxGap {
+		stats.RTPDiscontInfo.MaxGap = gap
+	}
+}
+
+func (r *WebmRecorder) trackPicIDDiscontinuity(stats *VideoTrackStats, gap uint16) {
+	if stats == nil {
+		return
+	}
+
+	stats.VP8PicIDDiscontInfo.Count++
+	stats.VP8PicIDDiscontInfo.TotalGap += gap
+
+	if gap < stats.VP8PicIDDiscontInfo.MinGap || stats.VP8PicIDDiscontInfo.MinGap == 0 {
+		stats.VP8PicIDDiscontInfo.MinGap = gap
+	}
+
+	if gap > stats.VP8PicIDDiscontInfo.MaxGap {
+		stats.VP8PicIDDiscontInfo.MaxGap = gap
+	}
+}
+
+func (r *WebmRecorder) trackFrameStats(stats *VideoTrackStats, size int, isKeyFrame bool, duration time.Duration) {
+	if stats == nil {
+		return
+	}
+
+	r.trackSampleStats(&stats.BaseTrackStats, duration)
+	stats.AvgFrameSizeBytes += size
+
+	if size > stats.MaxFrameSizeBytes {
+		stats.MaxFrameSizeBytes = size
+	}
+
+	if isKeyFrame {
+		stats.KeyframeCount++
+	}
+}
+
+func (r *WebmRecorder) trackSampleStats(stats *BaseTrackStats, duration time.Duration) {
+	// Duration is in ns, convert to ms
+	durationMs := duration / time.Millisecond
+
+	if stats == nil {
+		return
+	}
+
+	stats.TotalSamples++
+	stats.sampleDurationAcc += durationMs
+
+	if durationMs > stats.MaxSampleDurationMs {
+		stats.MaxSampleDurationMs = durationMs
+	}
+}
+
+//  ----- Helpers -----
+
+func calculateSequenceGap(current, expected uint16) uint16 {
+	if current >= expected {
+		return current - expected
+	}
+
+	return (65535 - expected) + current + 1
+}
+
+func isSequenceInRange(seq, start, end uint16) bool {
+	if start <= end {
+		return seq >= start && seq <= end
+	}
+
+	return seq >= start || seq <= end
 }
