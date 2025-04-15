@@ -10,8 +10,8 @@ import (
 )
 
 type PubSub interface {
-	Subscribe(channel string, handler PubSubHandler, onStart func() error)
-	Publish(channel string, message []byte)
+	Subscribe(channel string, handler PubSubHandler, onStart func() error) error
+	Publish(channel string, message []byte) error
 	Close() error
 }
 

@@ -88,7 +88,10 @@ func Run() {
 	}
 
 	sv = server.NewServer(cfg, ps)
-	ps.Subscribe(cfg.PubSub.Channels.Subscribe, sv.HandlePubSub, sv.OnStart)
+
+	if err := ps.Subscribe(cfg.PubSub.Channels.Subscribe, sv.HandlePubSub, sv.OnStart); err != nil {
+		log.Fatalf("failed to subscribe to pubsub %s: %s", cfg.PubSub.Channels.Subscribe, err)
+	}
 }
 
 func shutdown(code int) {
