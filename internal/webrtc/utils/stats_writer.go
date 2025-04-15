@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	log "github.com/sirupsen/logrus"
 )
 
 type Stats struct {
-	MediaAdapter *livekit.MediaAdapterStats `json:"mediaAdapter"`
-	Timestamp    int64                      `json:"timestamp"`
+	MediaAdapter *appstats.MediaAdapterStats `json:"mediaAdapter"`
+	Timestamp    int64                       `json:"timestamp"`
 }
 
 type StatsFileWriter struct {

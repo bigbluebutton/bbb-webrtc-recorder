@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 )
 
 func TestStatsFileWriter(t *testing.T) {
@@ -23,20 +23,20 @@ func TestStatsFileWriter(t *testing.T) {
 
 	// Test data
 	testStats := &Stats{
-		MediaAdapter: &livekit.MediaAdapterStats{
+		MediaAdapter: &appstats.MediaAdapterStats{
 			RoomID: "test-room",
-			Tracks: map[string]*livekit.TrackStats{
+			Tracks: map[string]*appstats.TrackStats{
 				"track1": {
 					ParticipantID: "participant1",
 					Source:        "camera",
-					Buffer: &livekit.BufferStatsWrapper{
+					Buffer: &appstats.BufferStatsWrapper{
 						PacketsPushed:  100,
 						PacketsPopped:  50,
 						PacketsDropped: 10,
 						PaddingPushed:  5,
 						SamplesPopped:  20,
 					},
-					Adapter: &livekit.AdapterTrackStats{
+					Adapter: &appstats.AdapterTrackStats{
 						StartTime:   time.Now().Unix(),
 						EndTime:     time.Now().Unix() + 1000,
 						FirstSeqNum: 1,

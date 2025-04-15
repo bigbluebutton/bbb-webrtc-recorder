@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -44,39 +46,6 @@ type TrackFlowState struct {
 	isFlowing     bool
 }
 
-type AdapterTrackStats struct {
-	StartTime         int64 `json:"startTime"`
-	EndTime           int64 `json:"endTime"`
-	FirstSeqNum       int64 `json:"firstSeqNum"`
-	LastSeqNum        int64 `json:"lastSeqNum"`
-	SeqNumWrapArounds int   `json:"seqNumWrapArounds"`
-	PLIRequests       int   `json:"pliRequests"`
-}
-
-type BufferStatsWrapper struct {
-	PacketsPushed  uint64 `json:"packetsPushed"`
-	PacketsPopped  uint64 `json:"packetsPopped"`
-	PacketsDropped uint64 `json:"packetsDropped"`
-	PaddingPushed  uint64 `json:"paddingPushed"`
-	SamplesPopped  uint64 `json:"samplesPopped"`
-}
-
-type TrackStats struct {
-	ParticipantID      string                    `json:"participantId"`
-	Source             string                    `json:"source"`
-	Buffer             *BufferStatsWrapper       `json:"buffer"`
-	Adapter            *AdapterTrackStats        `json:"adapter"`
-	RecorderVideoStats *recorder.VideoTrackStats `json:"recorderVideoStats,omitempty"`
-	RecorderAudioStats *recorder.AudioTrackStats `json:"recorderAudioStats,omitempty"`
-	TrackKind          string                    `json:"trackKind"`
-	MimeType           string                    `json:"mimeType"`
-}
-
-type MediaAdapterStats struct {
-	RoomID string                 `json:"roomId"`
-	Tracks map[string]*TrackStats `json:"tracks"`
-}
-
 type LiveKitWebRTC struct {
 	m                  sync.Mutex
 	ctx                context.Context
@@ -94,7 +63,7 @@ type LiveKitWebRTC struct {
 	hasVideo           bool
 	flowState          map[string]*TrackFlowState
 	flowCallback       func(isFlowing bool, timestamp time.Duration, closed bool)
-	trackStats         map[string]*AdapterTrackStats
+	trackStats         map[string]*appstats.AdapterTrackStats
 }
 
 func NewLiveKitWebRTC(
@@ -114,7 +83,7 @@ func NewLiveKitWebRTC(
 		pliStats:        make(map[uint32]PLITracker),
 		jitterBuffers:   make(map[string]*jitter.Buffer),
 		flowState:       make(map[string]*TrackFlowState),
-		trackStats:      make(map[string]*AdapterTrackStats),
+		trackStats:      make(map[string]*appstats.AdapterTrackStats),
 		participantIDs:  make(map[string]string),
 	}
 }
@@ -190,10 +159,10 @@ func (w *LiveKitWebRTC) Close() time.Duration {
 	return 0
 }
 
-func (w *LiveKitWebRTC) GetStats() *MediaAdapterStats {
-	adapterStats := &MediaAdapterStats{
+func (w *LiveKitWebRTC) GetStats() *appstats.MediaAdapterStats {
+	adapterStats := &appstats.MediaAdapterStats{
 		RoomID: w.roomId,
-		Tracks: make(map[string]*TrackStats),
+		Tracks: make(map[string]*appstats.TrackStats),
 	}
 
 	w.m.Lock()
@@ -225,10 +194,10 @@ func (w *LiveKitWebRTC) GetStats() *MediaAdapterStats {
 			stats.PLIRequests = pliCount
 		}
 
-		adapterStats.Tracks[trackID] = &TrackStats{
+		adapterStats.Tracks[trackID] = &appstats.TrackStats{
 			ParticipantID: w.participantIDs[trackID],
 			Source:        remoteTrackPub.Source().String(),
-			Buffer: &BufferStatsWrapper{
+			Buffer: &appstats.BufferStatsWrapper{
 				PacketsPushed:  bufferStats.PacketsPushed,
 				PacketsPopped:  bufferStats.PacketsPopped,
 				PacketsDropped: bufferStats.PacketsDropped,
@@ -394,7 +363,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 ) {
 	trackID := pub.SID()
 	w.m.Lock()
-	w.trackStats[trackID] = &AdapterTrackStats{
+	w.trackStats[trackID] = &appstats.AdapterTrackStats{
 		StartTime:   time.Now().Unix(),
 		EndTime:     time.Now().Unix(),
 		FirstSeqNum: -1,
@@ -437,6 +406,8 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		}),
 		// TODO: plug logger
 	)
+
+	prometheus.TrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
 
 	w.m.Lock()
 	w.jitterBuffers[trackID] = buffer
@@ -569,6 +540,8 @@ func (w *LiveKitWebRTC) onTrackUnsubscribed(
 	rp *lksdk.RemoteParticipant,
 ) {
 	trackID := pub.SID()
+	trackKind := TrackKind(pub.Kind())
+	mimeType := MimeType(strings.ToLower(track.Codec().MimeType))
 
 	w.m.Lock()
 
@@ -579,7 +552,10 @@ func (w *LiveKitWebRTC) onTrackUnsubscribed(
 	w.m.Unlock()
 
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Track %s unsubscribed", pub.SID())
+		Infof("Unsubscribed from track %s source=%s kind=%s participant=%s ssrc=%d",
+			trackID, pub.Source(), trackKind, rp.Identity(), track.SSRC())
+
+	prometheus.TrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
 }
 
 func (w *LiveKitWebRTC) onTrackUnmuted(
