@@ -29,6 +29,11 @@ const (
 	GetRecorderStatusKey         = "getRecorderStatus"
 )
 
+const (
+	StopReasonAppShutdown = "application_shutdown"
+	StopReasonNormal      = "stopped"
+)
+
 type AdapterOptions struct {
 	Mediasoup *MediasoupConfig `json:"mediasoup,omitempty"`
 	LiveKit   *LiveKitConfig   `json:"livekit,omitempty"`

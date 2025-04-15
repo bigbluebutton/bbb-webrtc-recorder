@@ -12,6 +12,7 @@ import (
 type PubSub interface {
 	Subscribe(channel string, handler PubSubHandler, onStart func() error)
 	Publish(channel string, message []byte)
+	Close() error
 }
 
 type PubSubHandler func(ctx context.Context, message []byte)

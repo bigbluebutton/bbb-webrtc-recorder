@@ -28,7 +28,7 @@ func NewPubSub(network, address string, password string) (*PubSub, error) {
 	if conn, err := p.dial(); err != nil {
 		return nil, err
 	} else {
-		//p.conn = conn
+		p.conn = conn
 		defer conn.Close()
 	}
 	return p, nil
@@ -131,4 +131,8 @@ func (p *PubSub) Publish(channel string, message []byte) error {
 	}
 
 	return nil
+}
+
+func (p *PubSub) Close() error {
+	return p.conn.Close()
 }

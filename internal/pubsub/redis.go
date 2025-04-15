@@ -49,3 +49,7 @@ func NewRedis(cfg config.Redis) *Redis {
 	}
 	return r
 }
+
+func (r *Redis) Close() error {
+	return r.pubsub.Close()
+}
