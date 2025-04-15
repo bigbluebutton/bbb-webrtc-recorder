@@ -187,10 +187,18 @@ func (w *LiveKitWebRTC) GetStats() *appstats.MediaAdapterStats {
 			}
 		}
 
-		stats := w.trackStats[trackID]
+		trackStats := w.trackStats[trackID]
 
-		if stats != nil {
-			stats.PLIRequests = pliCount
+		if trackStats != nil {
+			trackStats.PLIRequests = pliCount
+		} else {
+			trackStats = &appstats.AdapterTrackStats{
+				StartTime:   time.Now().Unix(),
+				EndTime:     time.Now().Unix(),
+				FirstSeqNum: 0,
+				LastSeqNum:  0,
+				PLIRequests: pliCount,
+			}
 		}
 
 		adapterStats.Tracks[trackID] = &appstats.TrackStats{
@@ -203,7 +211,7 @@ func (w *LiveKitWebRTC) GetStats() *appstats.MediaAdapterStats {
 				PaddingPushed:  bufferStats.PaddingPushed,
 				SamplesPopped:  bufferStats.SamplesPopped,
 			},
-			Adapter:   stats,
+			Adapter:   trackStats,
 			TrackKind: string(remoteTrackPub.Kind()),
 			MimeType:  mimeType,
 		}
@@ -361,15 +369,6 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	rp *lksdk.RemoteParticipant,
 ) {
 	trackID := pub.SID()
-	w.m.Lock()
-	w.trackStats[trackID] = &appstats.AdapterTrackStats{
-		StartTime:   time.Now().Unix(),
-		EndTime:     time.Now().Unix(),
-		FirstSeqNum: -1,
-		LastSeqNum:  -1,
-		PLIRequests: 0,
-	}
-	w.m.Unlock()
 
 	trackKind := TrackKind(pub.Kind())
 	trackID = pub.SID()
@@ -514,21 +513,38 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 func (w *LiveKitWebRTC) processPacketStats(trackID string, packets []*rtp.Packet) {
 	w.m.Lock()
-	stats := w.trackStats[trackID]
+
 	firstPacket := packets[0]
 	lastPacket := packets[len(packets)-1]
+	stats := w.trackStats[trackID]
 
-	if stats != nil && stats.FirstSeqNum == -1 {
-		stats.FirstSeqNum = int64(firstPacket.SequenceNumber)
+	if stats == nil {
+		stats = &appstats.AdapterTrackStats{
+			StartTime:   time.Now().Unix(),
+			EndTime:     time.Now().Unix(),
+			FirstSeqNum: firstPacket.SequenceNumber,
+			LastSeqNum:  lastPacket.SequenceNumber,
+			PLIRequests: 0,
+		}
+
+		// This method receives packets from unforced jitter buffer packet pops, which means they're
+		// properly ordered. Check is simpler this way. TODO review gaps larger than 2^16/2
+		if lastPacket.SequenceNumber < firstPacket.SequenceNumber {
+			stats.SeqNumWrapArounds = 1
+		}
+
+		w.trackStats[trackID] = stats
+	} else {
+		if lastPacket.SequenceNumber < firstPacket.SequenceNumber ||
+			firstPacket.SequenceNumber < stats.LastSeqNum {
+			stats.SeqNumWrapArounds++
+		}
 	}
 
-	stats.LastSeqNum = int64(lastPacket.SequenceNumber)
-	// This method receives packets from unforced jitter buffer packet pops, which means they're
-	// properly ordered. We can just check if the last seqnum is less than the first seqnum
-	// to determine if there was a wraparound
-	if stats.LastSeqNum < stats.FirstSeqNum {
-		stats.SeqNumWrapArounds++
-	}
+	stats.LastSeqNum = lastPacket.SequenceNumber
+
+	log.Tracef("Processed packet batch for track %s: lastSeqNum: %d, firstSeqNum: %d, wraparound: %d, firstPacket: %d, lastPacket: %d",
+		trackID, stats.LastSeqNum, stats.FirstSeqNum, stats.SeqNumWrapArounds, firstPacket.SequenceNumber, lastPacket.SequenceNumber)
 
 	w.m.Unlock()
 }

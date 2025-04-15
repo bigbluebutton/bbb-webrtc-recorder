@@ -5,12 +5,12 @@ import (
 )
 
 type AdapterTrackStats struct {
-	StartTime         int64 `json:"startTime"`
-	EndTime           int64 `json:"endTime"`
-	FirstSeqNum       int64 `json:"firstSeqNum"`
-	LastSeqNum        int64 `json:"lastSeqNum"`
-	SeqNumWrapArounds int   `json:"seqNumWrapArounds"`
-	PLIRequests       int   `json:"pliRequests"`
+	StartTime         int64  `json:"startTime"`
+	EndTime           int64  `json:"endTime"`
+	FirstSeqNum       uint16 `json:"firstSeqNum"`
+	LastSeqNum        uint16 `json:"lastSeqNum"`
+	SeqNumWrapArounds int    `json:"seqNumWrapArounds"`
+	PLIRequests       int    `json:"pliRequests"`
 }
 
 type BufferStatsWrapper struct {
