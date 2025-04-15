@@ -419,25 +419,6 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		}); ok {
 			kfr.SetKeyframeRequester(w)
 		}
-
-		// Start periodic PLI requests - 3s to be similar to the other adapter,
-		// but LK is smarter than this. TODO remove later
-		done := make(chan bool)
-		defer func() {
-			done <- true
-		}()
-		go func() {
-			ticker := time.NewTicker(time.Second * 3)
-			for {
-				select {
-				case <-done:
-					ticker.Stop()
-					return
-				case <-ticker.C:
-					w.RequestKeyframeForSSRC(ssrc)
-				}
-			}
-		}()
 	}
 	w.m.Unlock()
 
