@@ -7,8 +7,8 @@ import (
 	"syscall"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/server"
 	"github.com/google/uuid"
@@ -74,8 +74,8 @@ func Init() {
 
 func Run() {
 	if cfg.Prometheus.Enable {
-		prometheus.Init()
-		prometheus.ServePromMetrics(cfg.Prometheus)
+		appstats.Init()
+		appstats.ServePromMetrics(cfg.Prometheus)
 	}
 
 	if cfg.HTTP.Enable {

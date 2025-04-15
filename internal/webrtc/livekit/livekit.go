@@ -10,7 +10,6 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -407,7 +406,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		// TODO: plug logger
 	)
 
-	prometheus.TrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
+	appstats.TrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
 
 	w.m.Lock()
 	w.jitterBuffers[trackID] = buffer
@@ -555,7 +554,7 @@ func (w *LiveKitWebRTC) onTrackUnsubscribed(
 		Infof("Unsubscribed from track %s source=%s kind=%s participant=%s ssrc=%d",
 			trackID, pub.Source(), trackKind, rp.Identity(), track.SSRC())
 
-	prometheus.TrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
+	appstats.TrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
 }
 
 func (w *LiveKitWebRTC) onTrackUnmuted(

@@ -1,9 +1,8 @@
-package prometheus
+package appstats
 
 import (
 	"net/http"
 
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -12,7 +11,7 @@ import (
 
 type metricsHandler struct {
 	next      http.Handler
-	statsChan chan *appstats.MediaAdapterStats
+	statsChan chan *MediaAdapterStats
 }
 
 var (
@@ -174,7 +173,7 @@ func Init() {
 func newMetricsHandler() *metricsHandler {
 	return &metricsHandler{
 		next:      promhttp.Handler(),
-		statsChan: make(chan *appstats.MediaAdapterStats, 1),
+		statsChan: make(chan *MediaAdapterStats, 1),
 	}
 }
 
@@ -188,7 +187,7 @@ func (h *metricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateStats sends new stats to be processed during the next metrics scrape
-func (h *metricsHandler) UpdateStats(stats *appstats.MediaAdapterStats) {
+func (h *metricsHandler) UpdateStats(stats *MediaAdapterStats) {
 	select {
 	case h.statsChan <- stats:
 	default:
@@ -232,7 +231,7 @@ func TrackRecordingStopped(kind string, mime string, source string) {
 	}).Dec()
 }
 
-func UpdateMediaMetrics(stats *appstats.MediaAdapterStats) {
+func UpdateMediaMetrics(stats *MediaAdapterStats) {
 	if stats == nil {
 		return
 	}

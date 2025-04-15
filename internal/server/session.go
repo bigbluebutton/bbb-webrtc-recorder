@@ -5,14 +5,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/signal"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	pwebrtc "github.com/pion/webrtc/v3"
 	log "github.com/sirupsen/logrus"
 )
@@ -25,7 +24,7 @@ type Session struct {
 	livekit     *livekit.LiveKitWebRTC
 	recorder    recorder.Recorder
 	stopped     bool
-	statsWriter *utils.StatsFileWriter
+	statsWriter *appstats.StatsFileWriter
 }
 
 func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWebRTC, recorder recorder.Recorder) *Session {
@@ -49,14 +48,14 @@ func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWe
 			fileMode = 0600
 		}
 
-		sess.statsWriter = utils.NewStatsFileWriter(s.cfg.Recorder.Directory, fileMode)
+		sess.statsWriter = appstats.NewStatsFileWriter(s.cfg.Recorder.Directory, fileMode)
 	}
 
 	return sess
 }
 
 func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
-	prometheus.Sessions.Inc()
+	appstats.Sessions.Inc()
 	// Only initialize WebRTC if we're using mediasoup
 	if s.webrtc != nil {
 		offer := pwebrtc.SessionDescription{}
@@ -116,15 +115,15 @@ func (s *Session) StopRecording() time.Duration {
 
 	if !s.stopped {
 		s.stopped = true
-		prometheus.Sessions.Dec()
+		appstats.Sessions.Dec()
 
 		if s.livekit != nil {
 			stats := s.livekit.GetStats()
-			prometheus.UpdateMediaMetrics(stats)
+			appstats.UpdateMediaMetrics(stats)
 
 			// Write detailed stats to file if enabled
 			if s.statsWriter != nil {
-				fileStats := &utils.Stats{
+				fileStats := &appstats.StatsFileOutput{
 					MediaAdapter: stats,
 					Timestamp:    time.Now().Unix(),
 				}

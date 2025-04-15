@@ -1,17 +1,16 @@
-package utils
+package appstats
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	log "github.com/sirupsen/logrus"
 )
 
-type Stats struct {
-	MediaAdapter *appstats.MediaAdapterStats `json:"mediaAdapter"`
-	Timestamp    int64                       `json:"timestamp"`
+type StatsFileOutput struct {
+	MediaAdapter *MediaAdapterStats `json:"mediaAdapter"`
+	Timestamp    int64              `json:"timestamp"`
 }
 
 type StatsFileWriter struct {
@@ -26,7 +25,7 @@ func NewStatsFileWriter(basePath string, fileMode os.FileMode) *StatsFileWriter 
 	}
 }
 
-func (w *StatsFileWriter) WriteStats(webmFilePath string, stats *Stats) error {
+func (w *StatsFileWriter) WriteStats(webmFilePath string, stats *StatsFileOutput) error {
 	statsFilePath := fmt.Sprintf("%s-stats.json", webmFilePath[:len(webmFilePath)-5])
 
 	jsonData, err := json.MarshalIndent(stats, "", "  ")

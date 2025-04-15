@@ -1,4 +1,4 @@
-package utils
+package appstats
 
 import (
 	"encoding/json"
@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 )
 
 func TestStatsFileWriter(t *testing.T) {
@@ -22,21 +20,21 @@ func TestStatsFileWriter(t *testing.T) {
 	writer := NewStatsFileWriter(tmpDir, 0600)
 
 	// Test data
-	testStats := &Stats{
-		MediaAdapter: &appstats.MediaAdapterStats{
+	testStats := &StatsFileOutput{
+		MediaAdapter: &MediaAdapterStats{
 			RoomID: "test-room",
-			Tracks: map[string]*appstats.TrackStats{
+			Tracks: map[string]*TrackStats{
 				"track1": {
 					ParticipantID: "participant1",
 					Source:        "camera",
-					Buffer: &appstats.BufferStatsWrapper{
+					Buffer: &BufferStatsWrapper{
 						PacketsPushed:  100,
 						PacketsPopped:  50,
 						PacketsDropped: 10,
 						PaddingPushed:  5,
 						SamplesPopped:  20,
 					},
-					Adapter: &appstats.AdapterTrackStats{
+					Adapter: &AdapterTrackStats{
 						StartTime:   time.Now().Unix(),
 						EndTime:     time.Now().Unix() + 1000,
 						FirstSeqNum: 1,
@@ -69,7 +67,7 @@ func TestStatsFileWriter(t *testing.T) {
 			t.Errorf("Failed to read stats file: %v", err)
 		}
 
-		var readStats Stats
+		var readStats StatsFileOutput
 		if err := json.Unmarshal(content, &readStats); err != nil {
 			t.Errorf("Failed to unmarshal stats file: %v", err)
 		}
