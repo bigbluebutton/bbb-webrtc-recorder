@@ -2,15 +2,20 @@ package livekit
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/server-sdk-go/v2/pkg/jitter"
 	"github.com/pion/rtp"
@@ -33,48 +38,20 @@ const (
 	TrackKindAudio TrackKind = "audio"
 )
 
+const (
+	notFlowingTicker = time.Millisecond * 100
+	flowingTicker    = time.Millisecond * 1000
+)
+
 type PLITracker struct {
 	count     int
 	timestamp time.Time
 }
 
 type TrackFlowState struct {
-	lastSeqNum    uint16
-	lastTimestamp time.Duration
-	isFlowing     bool
-}
-
-type AdapterTrackStats struct {
-	StartTime         int64 `json:"startTime"`
-	EndTime           int64 `json:"endTime"`
-	FirstSeqNum       int64 `json:"firstSeqNum"`
-	LastSeqNum        int64 `json:"lastSeqNum"`
-	SeqNumWrapArounds int   `json:"seqNumWrapArounds"`
-	PLIRequests       int   `json:"pliRequests"`
-}
-
-type BufferStatsWrapper struct {
-	PacketsPushed  uint64 `json:"packetsPushed"`
-	PacketsPopped  uint64 `json:"packetsPopped"`
-	PacketsDropped uint64 `json:"packetsDropped"`
-	PaddingPushed  uint64 `json:"paddingPushed"`
-	SamplesPopped  uint64 `json:"samplesPopped"`
-}
-
-type TrackStats struct {
-	ParticipantID      string                    `json:"participantId"`
-	Source             string                    `json:"source"`
-	Buffer             *BufferStatsWrapper       `json:"buffer"`
-	Adapter            *AdapterTrackStats        `json:"adapter"`
-	RecorderVideoStats *recorder.VideoTrackStats `json:"recorderVideoStats,omitempty"`
-	RecorderAudioStats *recorder.AudioTrackStats `json:"recorderAudioStats,omitempty"`
-	TrackKind          string                    `json:"trackKind"`
-	MimeType           string                    `json:"mimeType"`
-}
-
-type MediaAdapterStats struct {
-	RoomID string                 `json:"roomId"`
-	Tracks map[string]*TrackStats `json:"tracks"`
+	lastSeqNum uint16
+	lastRecvTs time.Time
+	isFlowing  bool
 }
 
 type LiveKitWebRTC struct {
@@ -94,7 +71,9 @@ type LiveKitWebRTC struct {
 	hasVideo           bool
 	flowState          map[string]*TrackFlowState
 	flowCallback       func(isFlowing bool, timestamp time.Duration, closed bool)
-	trackStats         map[string]*AdapterTrackStats
+	trackStats         map[string]*appstats.AdapterTrackStats
+	startTs            time.Time
+	connStateCallback  func(state utils.ConnectionState)
 }
 
 func NewLiveKitWebRTC(
@@ -104,7 +83,7 @@ func NewLiveKitWebRTC(
 	roomId string,
 	trackIds []string,
 ) *LiveKitWebRTC {
-	return &LiveKitWebRTC{
+	w := &LiveKitWebRTC{
 		ctx:             ctx,
 		cfg:             cfg,
 		rec:             rec,
@@ -114,9 +93,18 @@ func NewLiveKitWebRTC(
 		pliStats:        make(map[uint32]PLITracker),
 		jitterBuffers:   make(map[string]*jitter.Buffer),
 		flowState:       make(map[string]*TrackFlowState),
-		trackStats:      make(map[string]*AdapterTrackStats),
+		trackStats:      make(map[string]*appstats.AdapterTrackStats),
 		participantIDs:  make(map[string]string),
+		startTs:         time.Now(),
 	}
+
+	w.initTrackStats()
+
+	return w
+}
+
+func (w *LiveKitWebRTC) SetConnectionStateCallback(callback func(state utils.ConnectionState)) {
+	w.connStateCallback = callback
 }
 
 func (w *LiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
@@ -152,7 +140,7 @@ func (w *LiveKitWebRTC) Init() error {
 			OnTrackUnmuted:      w.onTrackUnmuted,
 			OnTrackMuted:        w.onTrackMuted,
 		},
-		OnDisconnected: w.onDisconnected,
+		OnDisconnectedWithReason: w.onDisconnected,
 	},
 		lksdk.WithAutoSubscribe(false),
 	)
@@ -162,7 +150,6 @@ func (w *LiveKitWebRTC) Init() error {
 	}
 
 	w.room = room
-
 	log.WithField("session", w.ctx.Value("session")).
 		Infof("Connected to LiveKit room %s", w.roomId)
 
@@ -190,10 +177,10 @@ func (w *LiveKitWebRTC) Close() time.Duration {
 	return 0
 }
 
-func (w *LiveKitWebRTC) GetStats() *MediaAdapterStats {
-	adapterStats := &MediaAdapterStats{
+func (w *LiveKitWebRTC) GetStats() *appstats.MediaAdapterStats {
+	adapterStats := &appstats.MediaAdapterStats{
 		RoomID: w.roomId,
-		Tracks: make(map[string]*TrackStats),
+		Tracks: make(map[string]*appstats.TrackStats),
 	}
 
 	w.m.Lock()
@@ -219,23 +206,23 @@ func (w *LiveKitWebRTC) GetStats() *MediaAdapterStats {
 			}
 		}
 
-		stats := w.trackStats[trackID]
+		trackStats := w.trackStats[trackID]
 
-		if stats != nil {
-			stats.PLIRequests = pliCount
+		if trackStats != nil {
+			trackStats.PLIRequests = pliCount
 		}
 
-		adapterStats.Tracks[trackID] = &TrackStats{
+		adapterStats.Tracks[trackID] = &appstats.TrackStats{
 			ParticipantID: w.participantIDs[trackID],
 			Source:        remoteTrackPub.Source().String(),
-			Buffer: &BufferStatsWrapper{
+			Buffer: &appstats.BufferStatsWrapper{
 				PacketsPushed:  bufferStats.PacketsPushed,
 				PacketsPopped:  bufferStats.PacketsPopped,
 				PacketsDropped: bufferStats.PacketsDropped,
 				PaddingPushed:  bufferStats.PaddingPushed,
 				SamplesPopped:  bufferStats.SamplesPopped,
 			},
-			Adapter:   stats,
+			Adapter:   trackStats,
 			TrackKind: string(remoteTrackPub.Kind()),
 			MimeType:  mimeType,
 		}
@@ -296,6 +283,19 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	}
 }
 
+func (w *LiveKitWebRTC) initTrackStats() {
+	for _, trackID := range w.trackIds {
+		w.trackStats[trackID] = &appstats.AdapterTrackStats{
+			StartTime:         time.Now().Unix(),
+			FirstSeqNum:       0,
+			LastSeqNum:        0,
+			SeqNumWrapArounds: 0,
+			PLIRequests:       0,
+			RTPReadErrors:     0,
+		}
+	}
+}
+
 func (w *LiveKitWebRTC) subscribeToTracks() (subscribedTrackPubs map[string]*lksdk.RemoteTrackPublication, err error) {
 	subscribedTrackPubs = make(map[string]*lksdk.RemoteTrackPublication)
 	remoteParticipants := make(map[string]*lksdk.RemoteParticipant)
@@ -343,13 +343,20 @@ func (w *LiveKitWebRTC) subscribe(track lksdk.TrackPublication) error {
 		log.WithField("session", w.ctx.Value("session")).
 			Debugf("Subscribing to track %s", pub.SID())
 
+		if pub.Kind() == lksdk.TrackKindVideo {
+			log.WithField("session", w.ctx.Value("session")).
+				Debugf("Setting video quality to %s for track %s", w.cfg.PreferredVideoQuality, pub.SID())
+			// Ignore error - only throws when video quality = OFF which we do not care about
+			_ = pub.SetVideoQuality(w.cfg.PreferredVideoQuality)
+		}
+
 		return pub.SetSubscribed(true)
 	}
 
 	return fmt.Errorf("unsupported track publication type: %T", track)
 }
 
-func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, timestamp time.Duration) {
+func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, recvTs time.Time) {
 	w.m.Lock()
 	defer w.m.Unlock()
 
@@ -357,9 +364,9 @@ func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, timestamp
 
 	if !exists {
 		state = &TrackFlowState{
-			lastSeqNum:    seqNum,
-			lastTimestamp: timestamp,
-			isFlowing:     false,
+			lastSeqNum: seqNum,
+			lastRecvTs: recvTs,
+			isFlowing:  false,
 		}
 		w.flowState[trackID] = state
 
@@ -369,21 +376,21 @@ func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, timestamp
 	wasFlowing := state.isFlowing
 	state.isFlowing = state.lastSeqNum != seqNum
 	state.lastSeqNum = seqNum
-	state.lastTimestamp = timestamp
+	state.lastRecvTs = recvTs
 
 	if state.isFlowing != wasFlowing && w.flowCallback != nil {
-		var latestTimestamp time.Duration
+		var latestRecvTs time.Time
 
 		for _, s := range w.flowState {
-			if s.lastTimestamp > latestTimestamp {
-				latestTimestamp = s.lastTimestamp
+			if s.lastRecvTs.After(latestRecvTs) {
+				latestRecvTs = s.lastRecvTs
 			}
 		}
 
-		w.flowCallback(state.isFlowing, latestTimestamp, false)
+		w.flowCallback(state.isFlowing, latestRecvTs.Sub(w.startTs), false)
 		log.WithField("session", w.ctx.Value("session")).
-			Tracef("Flow state changed for track %s: flowing=%v latestTimestamp=%s",
-				trackID, state.isFlowing, latestTimestamp)
+			Tracef("Flow state changed for track %s: flowing=%v latestRecvTs=%s",
+				trackID, state.isFlowing, latestRecvTs)
 	}
 }
 
@@ -393,18 +400,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	rp *lksdk.RemoteParticipant,
 ) {
 	trackID := pub.SID()
-	w.m.Lock()
-	w.trackStats[trackID] = &AdapterTrackStats{
-		StartTime:   time.Now().Unix(),
-		EndTime:     time.Now().Unix(),
-		FirstSeqNum: -1,
-		LastSeqNum:  -1,
-		PLIRequests: 0,
-	}
-	w.m.Unlock()
-
 	trackKind := TrackKind(pub.Kind())
-	trackID = pub.SID()
 	isVideo := trackKind == TrackKindVideo
 	clockRate := track.Codec().ClockRate
 	mimeType := MimeType(strings.ToLower(track.Codec().MimeType))
@@ -438,6 +434,8 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		// TODO: plug logger
 	)
 
+	appstats.TrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
+
 	w.m.Lock()
 	w.jitterBuffers[trackID] = buffer
 
@@ -450,25 +448,6 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		}); ok {
 			kfr.SetKeyframeRequester(w)
 		}
-
-		// Start periodic PLI requests - 3s to be similar to the other adapter,
-		// but LK is smarter than this. TODO remove later
-		done := make(chan bool)
-		defer func() {
-			done <- true
-		}()
-		go func() {
-			ticker := time.NewTicker(time.Second * 3)
-			for {
-				select {
-				case <-done:
-					ticker.Stop()
-					return
-				case <-ticker.C:
-					w.RequestKeyframeForSSRC(ssrc)
-				}
-			}
-		}()
 	}
 	w.m.Unlock()
 
@@ -477,7 +456,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		flowCheckDone <- true
 	}()
 	go func() {
-		ticker := time.NewTicker(time.Millisecond * 100)
+		ticker := time.NewTicker(notFlowingTicker)
 		var lastSeqNum uint16
 		for {
 			select {
@@ -490,13 +469,13 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 				if exists && state.lastSeqNum == lastSeqNum {
 					// No new packets received == not flowing
-					w.updateFlowState(trackID, state.lastSeqNum, state.lastTimestamp)
+					w.updateFlowState(trackID, state.lastSeqNum, state.lastRecvTs)
 				}
 
 				if state.isFlowing {
-					ticker.Reset(time.Millisecond * 1000)
+					ticker.Reset(flowingTicker)
 				} else {
-					ticker.Reset(time.Millisecond * 100)
+					ticker.Reset(notFlowingTicker)
 				}
 
 				lastSeqNum = state.lastSeqNum
@@ -507,12 +486,29 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 	go func() {
 		for {
+			readDeadline := time.Now().Add(w.cfg.PacketReadTimeout)
+			// Ignore error from SetReadDeadline - it comes from pion/packetio
+			// but it'll never throw - probably conforming to some interface
+			_ = track.SetReadDeadline(readDeadline)
 			packet, _, err := track.ReadRTP()
 
 			if err != nil {
-				log.WithField("session", w.ctx.Value("session")).
-					Errorf("Error reading from track %s: %v", trackID, err)
-				return
+				if procErr := w.handleReadRTPError(err, trackID, pub); procErr != nil {
+					if procErr == io.EOF {
+						log.WithField("session", w.ctx.Value("session")).
+							Infof("%s track=%s stopped", pub.MimeType(), trackID)
+					} else {
+						log.WithField("session", w.ctx.Value("session")).
+							Errorf("Unexpected error handling RTP packet from track %s: %v", trackID, procErr)
+						// TODO this should be a panic-like situation
+					}
+
+					return
+				}
+			}
+
+			if packet == nil {
+				continue
 			}
 
 			buffer.Push(packet)
@@ -522,15 +518,9 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 				continue
 			}
 
-			w.processPacketStats(trackID, packets)
+			recvTs := time.Now()
 
 			for _, p := range packets {
-				w.updateFlowState(
-					trackID,
-					p.SequenceNumber,
-					time.Duration(p.Timestamp)*time.Millisecond/time.Duration(clockRate),
-				)
-
 				switch trackKind {
 				case TrackKindVideo:
 					w.rec.PushVideo(p)
@@ -538,27 +528,82 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 					w.rec.PushAudio(p)
 				}
 			}
+
+			w.updateFlowState(trackID, packets[0].SequenceNumber, recvTs)
+			w.processPacketStats(trackID, packets)
 		}
 	}()
 }
 
+func (w *LiveKitWebRTC) trackReadErrorStats(err error, trackID string, pub *lksdk.RemoteTrackPublication) {
+	if err != io.EOF {
+		appstats.OnRTPReadError(pub.Source().String(), string(pub.Kind()), string(pub.MimeType()), err.Error())
+		w.m.Lock()
+		w.trackStats[trackID].RTPReadErrors++
+		w.m.Unlock()
+	}
+}
+
+func (w *LiveKitWebRTC) handleReadRTPError(err error, trackID string, pub *lksdk.RemoteTrackPublication) error {
+	var netErr net.Error
+	flowState := w.flowState[trackID]
+
+	log.WithField("session", w.ctx.Value("session")).
+		Tracef("Error reading RTP packet from track %s: %+v", trackID, err)
+	w.trackReadErrorStats(err, trackID, pub)
+
+	switch {
+	case errors.As(err, &netErr) && netErr.Timeout():
+		// If the flow state is nil, it means the track is not being tracked yet,
+		// so it's not flowing - skip
+		if flowState == nil || !flowState.isFlowing {
+			return nil
+		}
+
+		log.WithField("session", w.ctx.Value("session")).
+			Warnf("Network error reading RTP packet from track %s: %v", trackID, err)
+		// Update the flow state to indicate the track is not flowing. Nothing much
+		// else we can do here.
+		w.updateFlowState(trackID, flowState.lastSeqNum, flowState.lastRecvTs)
+
+	case err.Error() == "buffer too small":
+		log.WithField("session", w.ctx.Value("session")).
+			Warnf("Buffer too small reading RTP packet from track %s", trackID)
+
+	case err.Error() == "EOF" || err == io.EOF:
+		log.WithField("session", w.ctx.Value("session")).
+			Infof("%s track stopped", pub.MimeType())
+		return err
+
+	default:
+		log.WithField("session", w.ctx.Value("session")).
+			Errorf("Unexpected error handling RTP packet from track %s: %v", trackID, err)
+
+		return err
+	}
+
+	return nil
+}
+
 func (w *LiveKitWebRTC) processPacketStats(trackID string, packets []*rtp.Packet) {
 	w.m.Lock()
-	stats := w.trackStats[trackID]
+
 	firstPacket := packets[0]
 	lastPacket := packets[len(packets)-1]
+	stats := w.trackStats[trackID]
 
-	if stats != nil && stats.FirstSeqNum == -1 {
-		stats.FirstSeqNum = int64(firstPacket.SequenceNumber)
-	}
-
-	stats.LastSeqNum = int64(lastPacket.SequenceNumber)
 	// This method receives packets from unforced jitter buffer packet pops, which means they're
-	// properly ordered. We can just check if the last seqnum is less than the first seqnum
-	// to determine if there was a wraparound
-	if stats.LastSeqNum < stats.FirstSeqNum {
+	// properly ordered. Check is simpler this way. TODO review gaps larger than 2^16/2
+	if lastPacket.SequenceNumber < firstPacket.SequenceNumber ||
+		firstPacket.SequenceNumber < stats.LastSeqNum {
 		stats.SeqNumWrapArounds++
 	}
+
+	stats.LastSeqNum = lastPacket.SequenceNumber
+
+	log.WithField("session", w.ctx.Value("session")).
+		Tracef("Processed packet batch for track %s: lastSeqNum: %d, firstSeqNum: %d, wraparound: %d, firstPacket: %d, lastPacket: %d",
+			trackID, stats.LastSeqNum, stats.FirstSeqNum, stats.SeqNumWrapArounds, firstPacket.SequenceNumber, lastPacket.SequenceNumber)
 
 	w.m.Unlock()
 }
@@ -569,6 +614,8 @@ func (w *LiveKitWebRTC) onTrackUnsubscribed(
 	rp *lksdk.RemoteParticipant,
 ) {
 	trackID := pub.SID()
+	trackKind := TrackKind(pub.Kind())
+	mimeType := MimeType(strings.ToLower(track.Codec().MimeType))
 
 	w.m.Lock()
 
@@ -579,7 +626,10 @@ func (w *LiveKitWebRTC) onTrackUnsubscribed(
 	w.m.Unlock()
 
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Track %s unsubscribed", pub.SID())
+		Infof("Unsubscribed from track %s source=%s kind=%s participant=%s ssrc=%d",
+			trackID, pub.Source(), trackKind, rp.Identity(), track.SSRC())
+
+	appstats.TrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
 }
 
 func (w *LiveKitWebRTC) onTrackUnmuted(
@@ -598,9 +648,20 @@ func (w *LiveKitWebRTC) onTrackMuted(
 		Infof("Track %s muted", pub.SID())
 }
 
-func (w *LiveKitWebRTC) onDisconnected() {
+func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Disconnected from LiveKit room %s", w.roomId)
+		Infof("Disconnected from LiveKit room %s with reason: %v", w.roomId, reason)
+
+	state := utils.NormalizeLiveKitDisconnectReason(reason)
+
+	if w.connStateCallback != nil {
+		w.connStateCallback(state)
+	}
+
+	// If this is a terminal state, also notify via flow callback
+	if state.IsTerminalState() && w.flowCallback != nil {
+		w.flowCallback(false, time.Since(w.startTs), true)
+	}
 }
 
 func (w *LiveKitWebRTC) validateInitParams() error {

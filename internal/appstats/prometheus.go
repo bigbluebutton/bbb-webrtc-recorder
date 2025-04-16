@@ -1,10 +1,9 @@
-package prometheus
+package appstats
 
 import (
 	"net/http"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
@@ -12,7 +11,7 @@ import (
 
 type metricsHandler struct {
 	next      http.Handler
-	statsChan chan *livekit.MediaAdapterStats
+	statsChan chan *MediaAdapterStats
 }
 
 var (
@@ -153,6 +152,18 @@ var (
 			"kind",   // audio/video
 			"mime",   // mime type
 		})
+
+	RTPReadErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "rtp_read_errors_total",
+		Help:      "Total number of RTP read errors",
+	},
+		[]string{
+			"source", // track source (e.g. camera, screen)
+			"kind",   // audio/video
+			"mime",   // mime type
+			"error",  // error string
+		})
 )
 
 func Init() {
@@ -169,12 +180,13 @@ func Init() {
 	prometheus.MustRegister(KeyframeCount)
 	prometheus.MustRegister(CorruptedFrames)
 	prometheus.MustRegister(WrittenSamples)
+	prometheus.MustRegister(RTPReadErrors)
 }
 
 func newMetricsHandler() *metricsHandler {
 	return &metricsHandler{
 		next:      promhttp.Handler(),
-		statsChan: make(chan *livekit.MediaAdapterStats, 1),
+		statsChan: make(chan *MediaAdapterStats, 1),
 	}
 }
 
@@ -188,7 +200,7 @@ func (h *metricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateStats sends new stats to be processed during the next metrics scrape
-func (h *metricsHandler) UpdateStats(stats *livekit.MediaAdapterStats) {
+func (h *metricsHandler) UpdateStats(stats *MediaAdapterStats) {
 	select {
 	case h.statsChan <- stats:
 	default:
@@ -210,13 +222,40 @@ func ServePromMetrics(cfg config.Prometheus) {
 	http.Handle("/metrics", metricsHandlerInstance)
 
 	go func() {
-		http.ListenAndServe(cfg.ListenAddress, nil)
+		if err := http.ListenAndServe(cfg.ListenAddress, nil); err != nil {
+			log.Errorf("failed to start metrics server: %s", err)
+		}
 	}()
 
 	log.Infof("Prometheus metrics exported on %s", cfg.ListenAddress)
 }
 
-func UpdateMediaMetrics(stats *livekit.MediaAdapterStats) {
+func TrackRecordingStarted(kind string, mime string, source string) {
+	ActiveTracks.With(prometheus.Labels{
+		"kind":   kind,
+		"mime":   mime,
+		"source": source,
+	}).Inc()
+}
+
+func TrackRecordingStopped(kind string, mime string, source string) {
+	ActiveTracks.With(prometheus.Labels{
+		"kind":   kind,
+		"mime":   mime,
+		"source": source,
+	}).Dec()
+}
+
+func OnRTPReadError(source string, kind string, mime string, error string) {
+	RTPReadErrors.With(prometheus.Labels{
+		"source": source,
+		"kind":   kind,
+		"mime":   mime,
+		"error":  error,
+	}).Inc()
+}
+
+func UpdateMediaMetrics(stats *MediaAdapterStats) {
 	if stats == nil {
 		return
 	}

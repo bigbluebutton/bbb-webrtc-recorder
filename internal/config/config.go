@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"time"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/pion/webrtc/v3"
 	log "github.com/sirupsen/logrus"
 )
@@ -73,9 +75,11 @@ func (cfg *Config) SetDefaults() {
 		ListenAddress: "127.0.0.1:3200",
 	}
 	cfg.LiveKit = LiveKit{
-		Host:      "ws://localhost:7880",
-		APIKey:    "",
-		APISecret: "",
+		Host:                  "ws://localhost:7880",
+		APIKey:                "",
+		APISecret:             "",
+		PacketReadTimeout:     500 * time.Millisecond,
+		PreferredVideoQuality: livekit.VideoQuality_HIGH,
 	}
 }
 
@@ -127,9 +131,11 @@ type Prometheus struct {
 }
 
 type LiveKit struct {
-	Host      string `mapstructure:"host"`
-	APIKey    string `mapstructure:"api_key"`
-	APISecret string `mapstructure:"api_secret"`
+	Host                  string               `mapstructure:"host"`
+	APIKey                string               `mapstructure:"api_key"`
+	APISecret             string               `mapstructure:"api_secret"`
+	PacketReadTimeout     time.Duration        `mapstructure:"packet_read_timeout"`
+	PreferredVideoQuality livekit.VideoQuality `mapstructure:"preferred_video_quality"`
 }
 
 type LogConfig struct {

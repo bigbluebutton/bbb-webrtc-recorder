@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
@@ -25,7 +25,7 @@ type Session struct {
 	livekit     *livekit.LiveKitWebRTC
 	recorder    recorder.Recorder
 	stopped     bool
-	statsWriter *utils.StatsFileWriter
+	statsWriter *appstats.StatsFileWriter
 }
 
 func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWebRTC, recorder recorder.Recorder) *Session {
@@ -49,20 +49,20 @@ func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWe
 			fileMode = 0600
 		}
 
-		sess.statsWriter = utils.NewStatsFileWriter(s.cfg.Recorder.Directory, fileMode)
+		sess.statsWriter = appstats.NewStatsFileWriter(s.cfg.Recorder.Directory, fileMode)
 	}
 
 	return sess
 }
 
 func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
-	prometheus.Sessions.Inc()
+	appstats.Sessions.Inc()
 	// Only initialize WebRTC if we're using mediasoup
 	if s.webrtc != nil {
 		offer := pwebrtc.SessionDescription{}
 		signal.Decode(e.GetSDP(), &offer)
-		s.webrtc.SetConnectionStateCallback(func(state pwebrtc.ICEConnectionState) {
-			if state > pwebrtc.ICEConnectionStateConnected {
+		s.webrtc.SetConnectionStateCallback(func(state utils.ConnectionState) {
+			if state.IsTerminalState() {
 				if !s.stopped {
 					ts := s.StopRecording() / time.Millisecond
 					s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
@@ -92,6 +92,15 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 
 	// For LiveKit, we don't need to return an SDP answer
 	if s.livekit != nil {
+		s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {
+			if state.IsTerminalState() {
+				if !s.stopped {
+					ts := s.StopRecording() / time.Millisecond
+					s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
+					s.server.CloseSession(s.id)
+				}
+			}
+		})
 		s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {
 			var message interface{}
 			if !closed {
@@ -116,15 +125,15 @@ func (s *Session) StopRecording() time.Duration {
 
 	if !s.stopped {
 		s.stopped = true
-		prometheus.Sessions.Dec()
+		appstats.Sessions.Dec()
 
 		if s.livekit != nil {
 			stats := s.livekit.GetStats()
-			prometheus.UpdateMediaMetrics(stats)
+			appstats.UpdateMediaMetrics(stats)
 
 			// Write detailed stats to file if enabled
 			if s.statsWriter != nil {
-				fileStats := &utils.Stats{
+				fileStats := &appstats.StatsFileOutput{
 					MediaAdapter: stats,
 					Timestamp:    time.Now().Unix(),
 				}

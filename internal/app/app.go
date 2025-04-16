@@ -7,8 +7,8 @@ import (
 	"syscall"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/prometheus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/server"
 	"github.com/google/uuid"
@@ -27,6 +27,8 @@ var (
 	}
 
 	cfg *config.Config
+	ps  pubsub.PubSub
+	sv  *server.Server
 )
 
 func init() {
@@ -44,12 +46,12 @@ func init() {
 	if flags.help {
 		fmt.Printf("%s\n\n", app.LongName)
 		flag.PrintDefaults()
-		os.Exit(0)
+		shutdown(0)
 	}
 
 	if flags.version {
 		fmt.Println(app.LongName)
-		os.Exit(0)
+		shutdown(0)
 	}
 
 	if flags.dump != "" {
@@ -74,18 +76,38 @@ func Init() {
 
 func Run() {
 	if cfg.Prometheus.Enable {
-		prometheus.Init()
-		prometheus.ServePromMetrics(cfg.Prometheus)
+		appstats.Init()
+		appstats.ServePromMetrics(cfg.Prometheus)
 	}
 
+	ps = pubsub.NewPubSub(cfg.PubSub)
+
 	if cfg.HTTP.Enable {
-		ps := pubsub.NewPubSub(cfg.PubSub)
-		h := server.NewHTTPServer(cfg, ps)
-		h.Serve()
+		hs := server.NewHTTPServer(cfg, ps)
+		hs.Serve()
 	}
-	ps := pubsub.NewPubSub(cfg.PubSub)
-	s := server.NewServer(cfg, ps)
-	ps.Subscribe(cfg.PubSub.Channels.Subscribe, s.HandlePubSub, s.OnStart)
+
+	sv = server.NewServer(cfg, ps)
+
+	if err := ps.Subscribe(cfg.PubSub.Channels.Subscribe, sv.HandlePubSub, sv.OnStart); err != nil {
+		log.Fatalf("failed to subscribe to pubsub %s: %s", cfg.PubSub.Channels.Subscribe, err)
+	}
+}
+
+func shutdown(code int) {
+	if ps != nil {
+		if err := ps.Close(); err != nil {
+			log.Errorf("failed to close pubsub: %s", err)
+		}
+	}
+
+	if sv != nil {
+		if err := sv.Close(); err != nil {
+			log.Errorf("failed to close server: %s", err)
+		}
+	}
+
+	os.Exit(code)
 }
 
 func sighupHandler() {
@@ -108,6 +130,6 @@ func sigintHandler() {
 	signal.Notify(sigint, os.Interrupt)
 	go func() {
 		<-sigint
-		os.Exit(0)
+		shutdown(0)
 	}()
 }

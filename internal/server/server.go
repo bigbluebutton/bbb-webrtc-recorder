@@ -134,7 +134,7 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 
 		if sess, ok := s.sessions.Load(e.SessionId); ok {
 			ts := sess.(*Session).StopRecording() / time.Millisecond
-			s.PublishPubSub(e.Stopped("stopped", ts))
+			s.PublishPubSub(e.Stopped(events.StopReasonNormal, ts))
 			s.CloseSession(e.SessionId)
 		}
 
@@ -156,4 +156,17 @@ func (s *Server) OnStart() error {
 
 func (s *Server) CloseSession(id string) {
 	s.sessions.Delete(id)
+}
+
+func (s *Server) Close() error {
+	// Close all sessions gracefully
+	s.sessions.Range(func(key, value interface{}) bool {
+		sess := value.(*Session)
+		ts := sess.StopRecording() / time.Millisecond
+		s.PublishPubSub(events.NewRecordingStopped(sess.id, events.StopReasonAppShutdown, ts))
+		s.CloseSession(sess.id)
+		return true
+	})
+
+	return nil
 }
