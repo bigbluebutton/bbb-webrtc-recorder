@@ -337,6 +337,13 @@ func (w *LiveKitWebRTC) subscribe(track lksdk.TrackPublication) error {
 		log.WithField("session", w.ctx.Value("session")).
 			Debugf("Subscribing to track %s", pub.SID())
 
+		if pub.Kind() == lksdk.TrackKindVideo {
+			log.WithField("session", w.ctx.Value("session")).
+				Debugf("Setting video quality to %s for track %s", w.cfg.PreferredVideoQuality, pub.SID())
+			// Ignore error - only throws when video quality = OFF which we do not care about
+			_ = pub.SetVideoQuality(w.cfg.PreferredVideoQuality)
+		}
+
 		return pub.SetSubscribed(true)
 	}
 
