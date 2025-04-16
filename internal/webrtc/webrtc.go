@@ -52,19 +52,19 @@ func NewWebRTC(ctx context.Context, cfg config.WebRTC, rec recorder.Recorder) *W
 	}
 }
 
-func (w WebRTC) SetConnectionStateCallback(fn func(state utils.ConnectionState)) {
+func (w *WebRTC) SetConnectionStateCallback(fn func(state utils.ConnectionState)) {
 	w.connStateCallbackFn = fn
 }
 
-func (w WebRTC) SetFlowCallback(fn func(isFlowing bool, videoTimestamp time.Duration, closed bool)) {
+func (w *WebRTC) SetFlowCallback(fn func(isFlowing bool, videoTimestamp time.Duration, closed bool)) {
 	w.flowCallback = fn
 }
 
-func (w WebRTC) SetSDPOffer(offer webrtc.SessionDescription) {
+func (w *WebRTC) SetSDPOffer(offer webrtc.SessionDescription) {
 	w.sdpOffer = offer
 }
 
-func (w WebRTC) validateInitParams() error {
+func (w *WebRTC) validateInitParams() error {
 	if w.connStateCallbackFn == nil {
 		return errors.New("connStateCallbackFn is not set")
 	}
@@ -80,7 +80,7 @@ func (w WebRTC) validateInitParams() error {
 	return nil
 }
 
-func (w WebRTC) Init() (webrtc.SessionDescription, error) {
+func (w *WebRTC) Init() (webrtc.SessionDescription, error) {
 	if err := w.validateInitParams(); err != nil {
 		return webrtc.SessionDescription{}, err
 	}
@@ -486,7 +486,7 @@ func (w WebRTC) Init() (webrtc.SessionDescription, error) {
 	return *peerConnection.LocalDescription(), nil
 }
 
-func (w WebRTC) RequestKeyframe() {
+func (w *WebRTC) RequestKeyframe() {
 	for _, ssrc := range w.videoTrackSSRCs {
 		w.RequestKeyframeForSSRC(ssrc)
 	}
@@ -512,7 +512,7 @@ func (w WebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	w.pliStats[ssrc] = PLITracker{count: w.pliStats[ssrc].count + 1, timestamp: time.Now()}
 }
 
-func (w WebRTC) Close() time.Duration {
+func (w *WebRTC) Close() time.Duration {
 	if w.pc != nil {
 		w.pc.Close()
 	}
