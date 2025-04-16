@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
@@ -48,21 +49,11 @@ func (m *mockRecorder) Close() time.Duration                                    
 func TestProcessPacketStats_SequenceNumberWraparound(t *testing.T) {
 	lk, _ := setupMockLK()
 	trackIds := lk.trackIds
-	packets := make([]*rtp.Packet, 65535)
-
-	for i := 0; i < 65535; i++ {
-		packets[i] = &rtp.Packet{
-			Header: rtp.Header{
-				SequenceNumber: uint16(i),
-				Timestamp:      uint32(i * 40),
-			},
-		}
-	}
-
-	lk.processPacketStats(trackIds[0], packets[:65531])
-	trackStats := lk.trackStats[trackIds[0]]
+	packets := makeFullRangePackets(0)
 
 	// Verify wraparound count 0 - we should be at 65530
+	lk.processPacketStats(trackIds[0], packets[:65531])
+	trackStats := lk.trackStats[trackIds[0]]
 	assert.Equal(t, 0, trackStats.SeqNumWrapArounds,
 		"Should detect no sequence number wraparounds")
 
@@ -91,6 +82,31 @@ func TestProcessPacketStats_SequenceNumberWraparound(t *testing.T) {
 		"Should detect 3 sequence number wraparounds")
 }
 
+// Test wraparound detection with pre-initialized track stats
+func TestProcessPacketStats_PreInitializedTrackStatsWraparound(t *testing.T) {
+	lk, _ := setupMockLK()
+	trackIds := lk.trackIds
+	packets := makeFullRangePackets(0)
+	lk.trackStats[trackIds[0]] = &appstats.AdapterTrackStats{
+		StartTime:         time.Now().Unix(),
+		EndTime:           time.Now().Unix(),
+		FirstSeqNum:       0,
+		LastSeqNum:        0,
+		SeqNumWrapArounds: 0,
+		PLIRequests:       0,
+		RTPReadErrors:     0,
+	}
+	// Process all initial packets (no wraparounds)
+	lk.processPacketStats(trackIds[0], packets)
+	assert.Equal(t, 0, lk.trackStats[trackIds[0]].SeqNumWrapArounds,
+		"Should detect no sequence number wraparound")
+
+	// Process packets with wraparound - from 65530 to 0 to 65531
+	lk.processPacketStats(trackIds[0], append(packets[65530:], packets[:65532]...))
+	assert.Equal(t, 1, lk.trackStats[trackIds[0]].SeqNumWrapArounds,
+		"Should detect one sequence number wraparound")
+}
+
 func setupMockLK() (*LiveKitWebRTC, *mockRecorder) {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "session", "test-session")
@@ -109,4 +125,19 @@ func setupMockLK() (*LiveKitWebRTC, *mockRecorder) {
 	lk := NewLiveKitWebRTC(ctx, cfg, rec, roomID, trackIDs)
 
 	return lk, rec
+}
+
+func makeFullRangePackets(start uint16) []*rtp.Packet {
+	packets := make([]*rtp.Packet, 65535)
+
+	for i := 0; i < 65535; i++ {
+		packets[i] = &rtp.Packet{
+			Header: rtp.Header{
+				SequenceNumber: uint16(i),
+				Timestamp:      uint32(i * 40),
+			},
+		}
+	}
+
+	return packets
 }

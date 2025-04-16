@@ -11,6 +11,7 @@ type AdapterTrackStats struct {
 	LastSeqNum        uint16 `json:"lastSeqNum"`
 	SeqNumWrapArounds int    `json:"seqNumWrapArounds"`
 	PLIRequests       int    `json:"pliRequests"`
+	RTPReadErrors     int    `json:"rtpReadErrors"`
 }
 
 type BufferStatsWrapper struct {
