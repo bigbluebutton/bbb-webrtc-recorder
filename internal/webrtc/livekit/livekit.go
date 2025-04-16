@@ -15,6 +15,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/server-sdk-go/v2/pkg/jitter"
 	"github.com/pion/rtp"
@@ -72,6 +73,7 @@ type LiveKitWebRTC struct {
 	flowCallback       func(isFlowing bool, timestamp time.Duration, closed bool)
 	trackStats         map[string]*appstats.AdapterTrackStats
 	startTs            time.Time
+	connStateCallback  func(state utils.ConnectionState)
 }
 
 func NewLiveKitWebRTC(
@@ -99,6 +101,10 @@ func NewLiveKitWebRTC(
 	w.initTrackStats()
 
 	return w
+}
+
+func (w *LiveKitWebRTC) SetConnectionStateCallback(callback func(state utils.ConnectionState)) {
+	w.connStateCallback = callback
 }
 
 func (w *LiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
@@ -134,7 +140,7 @@ func (w *LiveKitWebRTC) Init() error {
 			OnTrackUnmuted:      w.onTrackUnmuted,
 			OnTrackMuted:        w.onTrackMuted,
 		},
-		OnDisconnected: w.onDisconnected,
+		OnDisconnectedWithReason: w.onDisconnected,
 	},
 		lksdk.WithAutoSubscribe(false),
 	)
@@ -642,9 +648,20 @@ func (w *LiveKitWebRTC) onTrackMuted(
 		Infof("Track %s muted", pub.SID())
 }
 
-func (w *LiveKitWebRTC) onDisconnected() {
+func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Disconnected from LiveKit room %s", w.roomId)
+		Infof("Disconnected from LiveKit room %s with reason: %v", w.roomId, reason)
+
+	state := utils.NormalizeLiveKitDisconnectReason(reason)
+
+	if w.connStateCallback != nil {
+		w.connStateCallback(state)
+	}
+
+	// If this is a terminal state, also notify via flow callback
+	if state.IsTerminalState() && w.flowCallback != nil {
+		w.flowCallback(false, time.Since(w.startTs), true)
+	}
 }
 
 func (w *LiveKitWebRTC) validateInitParams() error {

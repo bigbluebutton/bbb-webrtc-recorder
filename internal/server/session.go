@@ -12,6 +12,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/signal"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	pwebrtc "github.com/pion/webrtc/v3"
 	log "github.com/sirupsen/logrus"
 )
@@ -60,8 +61,8 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 	if s.webrtc != nil {
 		offer := pwebrtc.SessionDescription{}
 		signal.Decode(e.GetSDP(), &offer)
-		s.webrtc.SetConnectionStateCallback(func(state pwebrtc.ICEConnectionState) {
-			if state > pwebrtc.ICEConnectionStateConnected {
+		s.webrtc.SetConnectionStateCallback(func(state utils.ConnectionState) {
+			if state.IsTerminalState() {
 				if !s.stopped {
 					ts := s.StopRecording() / time.Millisecond
 					s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
@@ -91,6 +92,15 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 
 	// For LiveKit, we don't need to return an SDP answer
 	if s.livekit != nil {
+		s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {
+			if state.IsTerminalState() {
+				if !s.stopped {
+					ts := s.StopRecording() / time.Millisecond
+					s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
+					s.server.CloseSession(s.id)
+				}
+			}
+		})
 		s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {
 			var message interface{}
 			if !closed {

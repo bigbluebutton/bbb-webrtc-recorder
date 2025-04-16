@@ -32,7 +32,7 @@ type WebRTC struct {
 	cfg                 config.WebRTC
 	pc                  *webrtc.PeerConnection
 	rec                 recorder.Recorder
-	connStateCallbackFn func(state webrtc.ICEConnectionState)
+	connStateCallbackFn func(state utils.ConnectionState)
 	flowCallback        func(isFlowing bool, videoTimestamp time.Duration, closed bool)
 	videoTrackSSRCs     []uint32
 	pliStats            map[uint32]PLITracker
@@ -52,7 +52,7 @@ func NewWebRTC(ctx context.Context, cfg config.WebRTC, rec recorder.Recorder) *W
 	}
 }
 
-func (w WebRTC) SetConnectionStateCallback(fn func(state webrtc.ICEConnectionState)) {
+func (w WebRTC) SetConnectionStateCallback(fn func(state utils.ConnectionState)) {
 	w.connStateCallbackFn = fn
 }
 
@@ -437,13 +437,19 @@ func (w WebRTC) Init() (webrtc.SessionDescription, error) {
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
 		log.WithField("session", w.ctx.Value("session")).
 			Infof("webrtc connection state changed: %s", connectionState.String())
-		if connectionState > webrtc.ICEConnectionStateConnected {
+
+		state := utils.NormalizeWebRTCState(connectionState)
+
+		if state.IsTerminalState() {
 			if err := peerConnection.Close(); err != nil {
 				log.WithField("session", w.ctx.Value("session")).
 					Error(err)
 			}
 		}
-		w.connStateCallbackFn(connectionState)
+
+		if w.connStateCallbackFn != nil {
+			w.connStateCallbackFn(state)
+		}
 	})
 
 	// Set the remote SessionDescription
