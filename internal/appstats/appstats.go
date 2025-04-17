@@ -23,17 +23,18 @@ type BufferStatsWrapper struct {
 }
 
 type TrackStats struct {
-	ParticipantID      string                    `json:"participantId"`
-	Source             string                    `json:"source"`
-	Buffer             *BufferStatsWrapper       `json:"buffer"`
-	Adapter            *AdapterTrackStats        `json:"adapter"`
-	RecorderVideoStats *recorder.VideoTrackStats `json:"recorderVideoStats,omitempty"`
-	RecorderAudioStats *recorder.AudioTrackStats `json:"recorderAudioStats,omitempty"`
-	TrackKind          string                    `json:"trackKind"`
-	MimeType           string                    `json:"mimeType"`
+	Source             string                       `json:"source"`
+	Buffer             *BufferStatsWrapper          `json:"buffer"`
+	Adapter            *AdapterTrackStats           `json:"adapter"`
+	RecorderTrackStats *recorder.RecorderTrackStats `json:"recorderTrackStats,omitempty"`
+	TrackKind          string                       `json:"trackKind"`
+	MimeType           string                       `json:"mimeType"`
 }
 
-type MediaAdapterStats struct {
-	RoomID string                 `json:"roomId"`
-	Tracks map[string]*TrackStats `json:"tracks"`
+type CaptureStats struct {
+	RecorderSessionUUID string                 `json:"recorderSessionId"`
+	RoomID              string                 `json:"roomId"`
+	ParticipantID       string                 `json:"participantId"`
+	Tracks              map[string]*TrackStats `json:"tracks"`
+	FileName            string                 `json:"fileName"`
 }

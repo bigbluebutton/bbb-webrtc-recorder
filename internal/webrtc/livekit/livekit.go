@@ -24,14 +24,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type MimeType string
-
 const (
 	MimeTypeVP8  MimeType = "video/vp8"
 	MimeTypeOpus MimeType = "audio/opus"
 )
-
-type TrackKind string
 
 const (
 	TrackKindVideo TrackKind = "video"
@@ -43,12 +39,16 @@ const (
 	flowingTicker    = time.Millisecond * 1000
 )
 
-type PLITracker struct {
+type MimeType string
+
+type TrackKind string
+
+type pliTracker struct {
 	count     int
 	timestamp time.Time
 }
 
-type TrackFlowState struct {
+type trackFlowState struct {
 	lastSeqNum uint16
 	lastRecvTs time.Time
 	isFlowing  bool
@@ -65,11 +65,11 @@ type LiveKitWebRTC struct {
 	participantIDs     map[string]string // trackID -> participantID
 	roomId             string
 	trackIds           []string
-	pliStats           map[uint32]PLITracker
+	pliStats           map[uint32]pliTracker
 	jitterBuffers      map[string]*jitter.Buffer
 	hasAudio           bool
 	hasVideo           bool
-	flowState          map[string]*TrackFlowState
+	flowState          map[string]*trackFlowState
 	flowCallback       func(isFlowing bool, timestamp time.Duration, closed bool)
 	trackStats         map[string]*appstats.AdapterTrackStats
 	startTs            time.Time
@@ -90,9 +90,9 @@ func NewLiveKitWebRTC(
 		roomId:          roomId,
 		trackIds:        trackIds,
 		remoteTrackPubs: make(map[string]*lksdk.RemoteTrackPublication),
-		pliStats:        make(map[uint32]PLITracker),
+		pliStats:        make(map[uint32]pliTracker),
 		jitterBuffers:   make(map[string]*jitter.Buffer),
-		flowState:       make(map[string]*TrackFlowState),
+		flowState:       make(map[string]*trackFlowState),
 		trackStats:      make(map[string]*appstats.AdapterTrackStats),
 		participantIDs:  make(map[string]string),
 		startTs:         time.Now(),
@@ -177,14 +177,22 @@ func (w *LiveKitWebRTC) Close() time.Duration {
 	return 0
 }
 
-func (w *LiveKitWebRTC) GetStats() *appstats.MediaAdapterStats {
-	adapterStats := &appstats.MediaAdapterStats{
-		RoomID: w.roomId,
-		Tracks: make(map[string]*appstats.TrackStats),
-	}
-
+func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 	w.m.Lock()
 	defer w.m.Unlock()
+
+	if len(w.trackIds) == 0 {
+		return nil
+	}
+
+	adapterStats := &appstats.CaptureStats{
+		RecorderSessionUUID: w.ctx.Value("session").(string),
+		RoomID:              w.roomId,
+		// All participants are the same right now for every track here
+		ParticipantID: w.participantIDs[w.trackIds[0]],
+		FileName:      w.rec.GetFilePath(),
+		Tracks:        make(map[string]*appstats.TrackStats),
+	}
 
 	recStats := w.rec.GetStats()
 
@@ -212,9 +220,10 @@ func (w *LiveKitWebRTC) GetStats() *appstats.MediaAdapterStats {
 			trackStats.PLIRequests = pliCount
 		}
 
-		adapterStats.Tracks[trackID] = &appstats.TrackStats{
-			ParticipantID: w.participantIDs[trackID],
-			Source:        remoteTrackPub.Source().String(),
+		source := remoteTrackPub.Source().String()
+
+		adapterStats.Tracks[source] = &appstats.TrackStats{
+			Source: source,
 			Buffer: &appstats.BufferStatsWrapper{
 				PacketsPushed:  bufferStats.PacketsPushed,
 				PacketsPopped:  bufferStats.PacketsPopped,
@@ -231,9 +240,9 @@ func (w *LiveKitWebRTC) GetStats() *appstats.MediaAdapterStats {
 		// the correct stats for the right track when there are multiple tracks
 		// of the same kind
 		if remoteTrackPub.Kind() == lksdk.TrackKindVideo {
-			adapterStats.Tracks[trackID].RecorderVideoStats = recStats.Video
+			adapterStats.Tracks[source].RecorderTrackStats = recStats.Video
 		} else if remoteTrackPub.Kind() == lksdk.TrackKindAudio {
-			adapterStats.Tracks[trackID].RecorderAudioStats = recStats.Audio
+			adapterStats.Tracks[source].RecorderTrackStats = recStats.Audio
 		}
 	}
 
@@ -271,7 +280,7 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 		participant.WritePLI(webrtc.SSRC(ssrc))
 
 		if _, exists := w.pliStats[ssrc]; !exists {
-			w.pliStats[ssrc] = PLITracker{count: 0, timestamp: time.Now()}
+			w.pliStats[ssrc] = pliTracker{count: 0, timestamp: time.Now()}
 		}
 
 		newCount := w.pliStats[ssrc].count + 1
@@ -279,7 +288,7 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 		log.WithField("session", w.ctx.Value("session")).
 			Tracef("Sending PLI #%d for SSRC %d to participant %s (sinceLast=%s)",
 				newCount, ssrc, participant.Identity(), now.Sub(w.pliStats[ssrc].timestamp))
-		w.pliStats[ssrc] = PLITracker{count: newCount, timestamp: now}
+		w.pliStats[ssrc] = pliTracker{count: newCount, timestamp: now}
 	}
 }
 
@@ -363,7 +372,7 @@ func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, recvTs ti
 	state, exists := w.flowState[trackID]
 
 	if !exists {
-		state = &TrackFlowState{
+		state = &trackFlowState{
 			lastSeqNum: seqNum,
 			lastRecvTs: recvTs,
 			isFlowing:  false,
@@ -441,7 +450,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 	if isVideo {
 		ssrc := uint32(track.SSRC())
-		w.pliStats[ssrc] = PLITracker{count: 0, timestamp: time.Now()}
+		w.pliStats[ssrc] = pliTracker{count: 0, timestamp: time.Now()}
 
 		if kfr, ok := w.rec.(interface {
 			SetKeyframeRequester(interfaces.KeyframeRequester)

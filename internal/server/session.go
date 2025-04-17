@@ -129,13 +129,13 @@ func (s *Session) StopRecording() time.Duration {
 
 		if s.livekit != nil {
 			stats := s.livekit.GetStats()
-			appstats.UpdateMediaMetrics(stats)
+			appstats.UpdateCaptureMetrics(stats)
 
 			// Write detailed stats to file if enabled
 			if s.statsWriter != nil {
 				fileStats := &appstats.StatsFileOutput{
-					MediaAdapter: stats,
-					Timestamp:    time.Now().Unix(),
+					CaptureStats:   stats,
+					StatsTimestamp: time.Now().Unix(),
 				}
 
 				if err := s.statsWriter.WriteStats(s.recorder.GetFilePath(), fileStats); err != nil {

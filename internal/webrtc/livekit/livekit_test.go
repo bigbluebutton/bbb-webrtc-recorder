@@ -15,8 +15,8 @@ import (
 
 // mockRecorder implements the recorder.Recorder interface for testing
 type mockRecorder struct {
-	videoStats *recorder.VideoTrackStats
-	audioStats *recorder.AudioTrackStats
+	videoStats *recorder.RecorderTrackStats
+	audioStats *recorder.RecorderTrackStats
 	hasAudio   bool
 	hasVideo   bool
 	filePath   string
@@ -116,8 +116,8 @@ func setupMockLK() (*LiveKitWebRTC, *mockRecorder) {
 		APISecret: "test-secret",
 	}
 	rec := &mockRecorder{
-		videoStats: &recorder.VideoTrackStats{},
-		audioStats: &recorder.AudioTrackStats{},
+		videoStats: &recorder.RecorderTrackStats{},
+		audioStats: &recorder.RecorderTrackStats{},
 		filePath:   "test.webm",
 	}
 	roomID := "test-room"

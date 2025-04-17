@@ -11,7 +11,7 @@ import (
 
 type metricsHandler struct {
 	next      http.Handler
-	statsChan chan *MediaAdapterStats
+	statsChan chan *CaptureStats
 }
 
 var (
@@ -55,7 +55,7 @@ var (
 
 	PLIRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Subsystem: "recorder",
-		Name:      "pli_requests",
+		Name:      "pli_requests_total",
 		Help:      "Total number of PLI (Picture Loss Indication) requests sent",
 	},
 		[]string{
@@ -65,7 +65,7 @@ var (
 
 	PacketLossBuffer = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Subsystem: "recorder",
-		Name:      "packet_loss_buffer",
+		Name:      "packet_loss_buffer_percentage",
 		Help:      "Packet loss percentage (buffer)",
 		Buckets:   []float64{0, 0.1, 0.3, 0.5, 0.7, 1, 5, 10, 40, 100},
 	},
@@ -186,21 +186,21 @@ func Init() {
 func newMetricsHandler() *metricsHandler {
 	return &metricsHandler{
 		next:      promhttp.Handler(),
-		statsChan: make(chan *MediaAdapterStats, 1),
+		statsChan: make(chan *CaptureStats, 1),
 	}
 }
 
 func (h *metricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	select {
 	case stats := <-h.statsChan:
-		UpdateMediaMetrics(stats)
+		UpdateCaptureMetrics(stats)
 	default:
 	}
 	h.next.ServeHTTP(w, r)
 }
 
 // UpdateStats sends new stats to be processed during the next metrics scrape
-func (h *metricsHandler) UpdateStats(stats *MediaAdapterStats) {
+func (h *metricsHandler) UpdateStats(stats *CaptureStats) {
 	select {
 	case h.statsChan <- stats:
 	default:
@@ -255,7 +255,7 @@ func OnRTPReadError(source string, kind string, mime string, error string) {
 	}).Inc()
 }
 
-func UpdateMediaMetrics(stats *MediaAdapterStats) {
+func UpdateCaptureMetrics(stats *CaptureStats) {
 	if stats == nil {
 		return
 	}
@@ -282,65 +282,65 @@ func UpdateMediaMetrics(stats *MediaAdapterStats) {
 				}).Observe(packetLoss)
 			}
 
-			if trackStats.RecorderVideoStats != nil {
+			if trackStats.RecorderTrackStats != nil {
 				SampleDuration.With(prometheus.Labels{
 					"source": trackStats.Source,
-					"kind":   "video",
+					"kind":   trackStats.TrackKind,
 					"mime":   trackStats.MimeType,
-				}).Observe(float64(trackStats.RecorderVideoStats.AvgSampleDurationMs))
+				}).Observe(float64(trackStats.RecorderTrackStats.AvgSampleDurationMs))
 
 				FrameSize.With(prometheus.Labels{
 					"source": trackStats.Source,
-					"kind":   "video",
+					"kind":   trackStats.TrackKind,
 					"mime":   trackStats.MimeType,
-				}).Observe(float64(trackStats.RecorderVideoStats.AvgFrameSizeBytes))
+				}).Observe(float64(trackStats.RecorderTrackStats.AvgFrameSizeBytes))
 
 				RTPDiscontinuities.With(prometheus.Labels{
 					"source": trackStats.Source,
-					"kind":   "video",
+					"kind":   trackStats.TrackKind,
 					"mime":   trackStats.MimeType,
-				}).Add(float64(trackStats.RecorderVideoStats.RTPDiscontInfo.Count))
+				}).Add(float64(trackStats.RecorderTrackStats.RTPDiscontInfo.Count))
 
 				VP8PictureIDDiscontinuities.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"mime":   trackStats.MimeType,
-				}).Add(float64(trackStats.RecorderVideoStats.VP8PicIDDiscontInfo.Count))
+				}).Add(float64(trackStats.RecorderTrackStats.VP8PicIDDiscontInfo.Count))
 
 				KeyframeCount.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"mime":   trackStats.MimeType,
-				}).Add(float64(trackStats.RecorderVideoStats.KeyframeCount))
+				}).Add(float64(trackStats.RecorderTrackStats.KeyframeCount))
 
 				CorruptedFrames.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"mime":   trackStats.MimeType,
-				}).Add(float64(trackStats.RecorderVideoStats.CorruptedFrames))
+				}).Add(float64(trackStats.RecorderTrackStats.CorruptedFrames))
 
 				WrittenSamples.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   "video",
 					"mime":   trackStats.MimeType,
-				}).Add(float64(trackStats.RecorderVideoStats.WrittenSamples))
+				}).Add(float64(trackStats.RecorderTrackStats.WrittenSamples))
 			}
 
-			if trackStats.RecorderAudioStats != nil {
+			if trackStats.RecorderTrackStats != nil {
 				SampleDuration.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   "audio",
 					"mime":   trackStats.MimeType,
-				}).Observe(float64(trackStats.RecorderAudioStats.AvgSampleDurationMs))
+				}).Observe(float64(trackStats.RecorderTrackStats.AvgSampleDurationMs))
 
 				RTPDiscontinuities.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   "audio",
 					"mime":   trackStats.MimeType,
-				}).Add(float64(trackStats.RecorderAudioStats.RTPDiscontInfo.Count))
+				}).Add(float64(trackStats.RecorderTrackStats.RTPDiscontInfo.Count))
 
 				WrittenSamples.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   "audio",
 					"mime":   trackStats.MimeType,
-				}).Add(float64(trackStats.RecorderAudioStats.WrittenSamples))
+				}).Add(float64(trackStats.RecorderTrackStats.WrittenSamples))
 			}
 		}
 	}

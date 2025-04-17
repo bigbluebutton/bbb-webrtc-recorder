@@ -9,8 +9,8 @@ import (
 )
 
 type StatsFileOutput struct {
-	MediaAdapter *MediaAdapterStats `json:"mediaAdapter"`
-	Timestamp    int64              `json:"timestamp"`
+	CaptureStats   *CaptureStats `json:"captureStats"`
+	StatsTimestamp int64         `json:"statsTimestamp"`
 }
 
 type StatsFileWriter struct {

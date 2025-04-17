@@ -71,18 +71,18 @@ type AudioTrackStats struct {
 }
 
 // VideoTrackStats contains video-specific metrics
-type VideoTrackStats struct {
+type RecorderTrackStats struct {
 	BaseTrackStats
-	CorruptedFrames     int               `json:"corruptedFrames"`
-	AvgFrameSizeBytes   int               `json:"avgFrameSizeBytes"`
-	MaxFrameSizeBytes   int               `json:"maxFrameSizeBytes"`
-	KeyframeCount       int               `json:"keyframeCount"`
+	CorruptedFrames     int               `json:"corruptedFrames,omitempty"`
+	AvgFrameSizeBytes   int               `json:"avgFrameSizeBytes,omitempty"`
+	MaxFrameSizeBytes   int               `json:"maxFrameSizeBytes,omitempty"`
+	KeyframeCount       int               `json:"keyframeCount,omitempty"`
 	VP8PicIDDiscontInfo DiscontinuityInfo `json:"vp8PicIdDiscontInfo,omitempty"`
 }
 
 type RecorderStats struct {
-	Audio *AudioTrackStats `json:"audio"`
-	Video *VideoTrackStats `json:"video"`
+	Audio *RecorderTrackStats `json:"audio,omitempty"`
+	Video *RecorderTrackStats `json:"video,omitempty"`
 }
 
 type WebmRecorder struct {
@@ -376,7 +376,7 @@ func (r *WebmRecorder) Close() time.Duration {
 
 func (r *WebmRecorder) initVideoStats() {
 	if r.stats.Video == nil {
-		r.stats.Video = &VideoTrackStats{
+		r.stats.Video = &RecorderTrackStats{
 			BaseTrackStats: BaseTrackStats{
 				StartTime: time.Now().Unix(),
 				StartPTS:  r.lastVideoPTS,
@@ -387,13 +387,19 @@ func (r *WebmRecorder) initVideoStats() {
 					TotalGap: 0,
 				},
 			},
+			VP8PicIDDiscontInfo: DiscontinuityInfo{
+				Count:    0,
+				MinGap:   0,
+				MaxGap:   0,
+				TotalGap: 0,
+			},
 		}
 	}
 }
 
 func (r *WebmRecorder) initAudioStats() {
 	if r.stats.Audio == nil {
-		r.stats.Audio = &AudioTrackStats{
+		r.stats.Audio = &RecorderTrackStats{
 			BaseTrackStats: BaseTrackStats{
 				StartTime: time.Now().Unix(),
 				StartPTS:  r.lastAudioPTS,
@@ -1245,7 +1251,7 @@ func (r *WebmRecorder) trackRTPDiscontinuity(stats *BaseTrackStats, gap uint16) 
 	}
 }
 
-func (r *WebmRecorder) trackPicIDDiscontinuity(stats *VideoTrackStats, gap uint16) {
+func (r *WebmRecorder) trackPicIDDiscontinuity(stats *RecorderTrackStats, gap uint16) {
 	if stats == nil {
 		return
 	}
@@ -1262,7 +1268,7 @@ func (r *WebmRecorder) trackPicIDDiscontinuity(stats *VideoTrackStats, gap uint1
 	}
 }
 
-func (r *WebmRecorder) trackFrameStats(stats *VideoTrackStats, size int, isKeyFrame bool, duration time.Duration) {
+func (r *WebmRecorder) trackFrameStats(stats *RecorderTrackStats, size int, isKeyFrame bool, duration time.Duration) {
 	if stats == nil {
 		return
 	}

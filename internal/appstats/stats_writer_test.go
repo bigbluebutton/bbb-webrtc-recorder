@@ -14,19 +14,23 @@ func TestStatsFileWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Fatalf("Failed to remove temp dir: %v", err)
+		}
+	}()
 
 	// Create a test writer
 	writer := NewStatsFileWriter(tmpDir, 0600)
 
 	// Test data
 	testStats := &StatsFileOutput{
-		MediaAdapter: &MediaAdapterStats{
-			RoomID: "test-room",
+		CaptureStats: &CaptureStats{
+			RoomID:        "test-room",
+			ParticipantID: "test-participant",
 			Tracks: map[string]*TrackStats{
-				"track1": {
-					ParticipantID: "participant1",
-					Source:        "camera",
+				"camera": {
+					Source: "camera",
 					Buffer: &BufferStatsWrapper{
 						PacketsPushed:  100,
 						PacketsPopped:  50,
@@ -46,7 +50,7 @@ func TestStatsFileWriter(t *testing.T) {
 				},
 			},
 		},
-		Timestamp: time.Now().Unix(),
+		StatsTimestamp: time.Now().Unix(),
 	}
 
 	t.Run("WriteStats_Success", func(t *testing.T) {
@@ -73,9 +77,19 @@ func TestStatsFileWriter(t *testing.T) {
 		}
 
 		// Verify content matches
-		if readStats.MediaAdapter.RoomID != testStats.MediaAdapter.RoomID {
+		if readStats.CaptureStats.RoomID != testStats.CaptureStats.RoomID {
 			t.Errorf("RoomID mismatch: got %s, want %s",
-				readStats.MediaAdapter.RoomID, testStats.MediaAdapter.RoomID)
+				readStats.CaptureStats.RoomID, testStats.CaptureStats.RoomID)
+		}
+
+		if readStats.CaptureStats.ParticipantID != testStats.CaptureStats.ParticipantID {
+			t.Errorf("ParticipantID mismatch: got %s, want %s",
+				readStats.CaptureStats.ParticipantID, testStats.CaptureStats.ParticipantID)
+		}
+
+		if readStats.CaptureStats.FileName != testStats.CaptureStats.FileName {
+			t.Errorf("FileName mismatch: got %s, want %s",
+				readStats.CaptureStats.FileName, testStats.CaptureStats.FileName)
 		}
 	})
 
