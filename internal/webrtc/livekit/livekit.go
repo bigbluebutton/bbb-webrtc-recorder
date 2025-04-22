@@ -163,9 +163,6 @@ func (w *LiveKitWebRTC) Init() error {
 }
 
 func (w *LiveKitWebRTC) Close() time.Duration {
-	w.m.Lock()
-	defer w.m.Unlock()
-
 	if w.room != nil {
 		w.room.Disconnect()
 	}
@@ -250,9 +247,6 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 }
 
 func (w *LiveKitWebRTC) RequestKeyframe() {
-	w.m.Lock()
-	defer w.m.Unlock()
-
 	ssrcs := make([]string, 0, len(w.pliStats))
 
 	for ssrc := range w.pliStats {
@@ -279,6 +273,8 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	for _, participant := range w.remoteParticipants {
 		participant.WritePLI(webrtc.SSRC(ssrc))
 
+		w.m.Lock()
+
 		if _, exists := w.pliStats[ssrc]; !exists {
 			w.pliStats[ssrc] = pliTracker{count: 0, timestamp: time.Now()}
 		}
@@ -289,6 +285,8 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 			Tracef("Sending PLI #%d for SSRC %d to participant %s (sinceLast=%s)",
 				newCount, ssrc, participant.Identity(), now.Sub(w.pliStats[ssrc].timestamp))
 		w.pliStats[ssrc] = pliTracker{count: newCount, timestamp: now}
+
+		w.m.Unlock()
 	}
 }
 
@@ -444,13 +442,16 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	)
 
 	appstats.TrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
-
-	w.m.Lock()
 	w.jitterBuffers[trackID] = buffer
 
 	if isVideo {
 		ssrc := uint32(track.SSRC())
-		w.pliStats[ssrc] = pliTracker{count: 0, timestamp: time.Now()}
+
+		w.m.Lock()
+		if _, exists := w.pliStats[ssrc]; !exists {
+			w.pliStats[ssrc] = pliTracker{count: 0, timestamp: time.Now()}
+		}
+		w.m.Unlock()
 
 		if kfr, ok := w.rec.(interface {
 			SetKeyframeRequester(interfaces.KeyframeRequester)
@@ -458,7 +459,6 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 			kfr.SetKeyframeRequester(w)
 		}
 	}
-	w.m.Unlock()
 
 	flowCheckDone := make(chan bool)
 	defer func() {
