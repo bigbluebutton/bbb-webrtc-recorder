@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
@@ -17,22 +18,26 @@ type metricsHandler struct {
 var (
 	Requests = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Subsystem: "recorder",
-		Name:      "requests",
-		Help:      "Number of requests to the server",
+		Name:      "in_requests",
+		Help:      "Number received by the recorder",
 	},
 		[]string{
 			"method",
-			"status",
 		})
+
+	InvalidRequests = prometheus.NewCounter(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "invalid_requests",
+		Help:      "Number of invalid requests",
+	})
 
 	Responses = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Subsystem: "recorder",
-		Name:      "responses",
-		Help:      "Number of responses from the server",
+		Name:      "out_responses",
+		Help:      "Number of responses from the recorder",
 	},
 		[]string{
 			"method",
-			"status",
 		})
 
 	Sessions = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -168,6 +173,7 @@ var (
 
 func Init() {
 	prometheus.MustRegister(Requests)
+	prometheus.MustRegister(InvalidRequests)
 	prometheus.MustRegister(Responses)
 	prometheus.MustRegister(Sessions)
 	prometheus.MustRegister(ActiveTracks)
@@ -253,6 +259,31 @@ func OnRTPReadError(source string, kind string, mime string, error string) {
 		"mime":   mime,
 		"error":  error,
 	}).Inc()
+}
+
+func OnServerRequest(event *events.Event) {
+	if event.IsValid() {
+		Requests.WithLabelValues(event.Id).Inc()
+	} else {
+		InvalidRequests.Inc()
+	}
+}
+
+func OnServerResponse(msg interface{}) {
+	switch v := msg.(type) {
+	case *events.Event:
+		Responses.WithLabelValues(v.Id).Inc()
+	case *events.StartRecordingResponse:
+		Responses.WithLabelValues(events.StartRecordingResponseKey).Inc()
+	case *events.RecordingRtpStatusChanged:
+		Responses.WithLabelValues(events.RecordingRtpStatusChangedKey).Inc()
+	case *events.RecordingStopped:
+		Responses.WithLabelValues(events.RecordingStoppedKey).Inc()
+	case *events.RecorderStatus:
+		Responses.WithLabelValues(events.RecorderStatusKey).Inc()
+	default:
+		Responses.WithLabelValues("unknown").Inc()
+	}
 }
 
 func UpdateCaptureMetrics(stats *CaptureStats) {
