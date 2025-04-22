@@ -201,6 +201,8 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 
 		if jb != nil {
 			bufferStats = jb.Stats()
+		} else {
+			bufferStats = &jitter.BufferStats{}
 		}
 
 		pliCount := 0
