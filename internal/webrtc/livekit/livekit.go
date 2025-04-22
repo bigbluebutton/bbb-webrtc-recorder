@@ -645,21 +645,33 @@ func (w *LiveKitWebRTC) onTrackUnmuted(
 	pub lksdk.TrackPublication,
 	p lksdk.Participant,
 ) {
+	trackID := pub.SID()
+
+	if _, exists := w.remoteTrackPubs[trackID]; !exists {
+		return
+	}
+
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Track %s unmuted", pub.SID())
+		Infof("Track unmuted: %s", trackID)
 }
 
 func (w *LiveKitWebRTC) onTrackMuted(
 	pub lksdk.TrackPublication,
 	p lksdk.Participant,
 ) {
+	trackID := pub.SID()
+
+	if _, exists := w.remoteTrackPubs[trackID]; !exists {
+		return
+	}
+
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Track %s muted", pub.SID())
+		Infof("Track muted: %s", trackID)
 }
 
 func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Disconnected from LiveKit room %s with reason: %v", w.roomId, reason)
+		Infof("Disconnected from LiveKit room=%s reason=%v", w.roomId, reason)
 
 	state := utils.NormalizeLiveKitDisconnectReason(reason)
 
