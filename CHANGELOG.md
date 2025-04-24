@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-### UNRELEASED
+### v0.9.0
 
 * feat: extend RPCs to support different recording adapters
 * feat(livekit): initial support for recording LiveKit tracks (audio, video, screen)
