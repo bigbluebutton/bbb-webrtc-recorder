@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* feat: extend RPCs to support different recording adapters
+* feat(livekit): initial support for recording LiveKit tracks (audio, video, screen)
+* feat(livekit): implement RTP status change events
+* feat: write capture stats to file
+* feat(livekit): add writer-level stats
+* feat(livekit): add extended Prometheus metrics for adapter/recorder stats
+* feat: implement active_tracks Prom metric
+* feat: implement in/out/invalid request metrics
+* fix: failing jitterbuffer tests
+* fix: startRecording did not reject unknown adapters
+* fix: add graceful shutdown
+* fix: retry Redis reconn if it drops
+* fix(livekit): properly handle RTP read errors, add metrics for them
+* fix: normalize webrtc.go to use receivers as pointers
+* fix: errcheck and log config unmarshal failures
+* build: remove ebml-go mirror, use upstream v0.17.1
+* build: add basic golangci-lint workflow
+* build: add a workflow for `go test`
+* refactor: make log.level configurable, remove debug var
+
 ### v0.8.1
 
 * build: Automatic build pipeline for docker images
