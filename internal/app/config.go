@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,7 +24,11 @@ func loadConfig() {
 func dumpConfig() {
 	var v interface{}
 	y, _ := yaml.Marshal(cfg)
-	yaml.Unmarshal(y, &v)
+
+	if err := yaml.Unmarshal(y, &v); err != nil {
+		log.Fatalf("failed to unmarshal config: %s", err)
+	}
+
 	if flags.dump != "all" {
 		for _, a := range strings.Split(flags.dump, ".") {
 			var i *int

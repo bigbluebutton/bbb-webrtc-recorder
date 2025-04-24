@@ -71,14 +71,16 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 			}
 		})
 		s.webrtc.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {
-			var message interface{}
 			if !closed {
-				message = events.NewRecordingRtpStatusChanged(s.id, isFlowing, timestamp/time.Millisecond)
+				s.server.PublishPubSub(
+					events.NewRecordingRtpStatusChanged(s.id, isFlowing, timestamp/time.Millisecond),
+				)
 			} else {
 				s.server.CloseSession(s.id)
-				message = events.NewRecordingStopped(s.id, "closed", timestamp/time.Millisecond)
+				s.server.PublishPubSub(
+					events.NewRecordingStopped(s.id, "closed", timestamp/time.Millisecond),
+				)
 			}
-			s.server.PublishPubSub(message)
 		})
 		s.webrtc.SetSDPOffer(offer)
 		answer, err := s.webrtc.Init()
@@ -102,14 +104,16 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 			}
 		})
 		s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {
-			var message interface{}
 			if !closed {
-				message = events.NewRecordingRtpStatusChanged(s.id, isFlowing, timestamp/time.Millisecond)
+				s.server.PublishPubSub(
+					events.NewRecordingRtpStatusChanged(s.id, isFlowing, timestamp/time.Millisecond),
+				)
 			} else {
 				s.server.CloseSession(s.id)
-				message = events.NewRecordingStopped(s.id, "closed", timestamp/time.Millisecond)
+				s.server.PublishPubSub(
+					events.NewRecordingStopped(s.id, "closed", timestamp/time.Millisecond),
+				)
 			}
-			s.server.PublishPubSub(message)
 		})
 
 		if err := s.livekit.Init(); err != nil {
@@ -129,13 +133,13 @@ func (s *Session) StopRecording() time.Duration {
 
 		if s.livekit != nil {
 			stats := s.livekit.GetStats()
-			appstats.UpdateMediaMetrics(stats)
+			appstats.UpdateCaptureMetrics(stats)
 
 			// Write detailed stats to file if enabled
 			if s.statsWriter != nil {
 				fileStats := &appstats.StatsFileOutput{
-					MediaAdapter: stats,
-					Timestamp:    time.Now().Unix(),
+					CaptureStats:   stats,
+					StatsTimestamp: time.Now().Unix(),
 				}
 
 				if err := s.statsWriter.WriteStats(s.recorder.GetFilePath(), fileStats); err != nil {

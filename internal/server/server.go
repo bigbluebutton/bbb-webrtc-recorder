@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
@@ -29,6 +30,8 @@ func NewServer(cfg *config.Config, ps pubsub.PubSub) *Server {
 func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 	log.Trace(string(msg))
 	event := events.Decode(msg)
+
+	appstats.OnServerRequest(event)
 
 	if !event.IsValid() {
 		return
@@ -146,6 +149,7 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 func (s *Server) PublishPubSub(msg interface{}) {
 	j, _ := json.Marshal(msg)
 	s.pubsub.Publish(s.cfg.PubSub.Channels.Publish, j)
+	appstats.OnServerResponse(msg)
 }
 
 func (s *Server) OnStart() error {
