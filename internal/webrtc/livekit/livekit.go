@@ -175,11 +175,8 @@ func (w *LiveKitWebRTC) Close() time.Duration {
 }
 
 func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
-	w.m.Lock()
-	defer w.m.Unlock()
-
 	if len(w.trackIds) == 0 {
-		return nil
+		return &appstats.CaptureStats{}
 	}
 
 	adapterStats := &appstats.CaptureStats{
@@ -191,13 +188,17 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 		Tracks:        make(map[string]*appstats.TrackStats),
 	}
 
+	// GetStats locks the recorder - don't call it while holding w.m
 	recStats := w.rec.GetStats()
 
 	for trackID, remoteTrackPub := range w.remoteTrackPubs {
 		trackInfo := remoteTrackPub.TrackInfo()
 		mimeType := trackInfo.MimeType
-		jb := w.jitterBuffers[trackID]
+
+		w.m.Lock()
 		var bufferStats *jitter.BufferStats
+		jb := w.jitterBuffers[trackID]
+		trackStats := w.trackStats[trackID]
 
 		if jb != nil {
 			bufferStats = jb.Stats()
@@ -213,14 +214,12 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 			}
 		}
 
-		trackStats := w.trackStats[trackID]
-
 		if trackStats != nil {
 			trackStats.PLIRequests = pliCount
 		}
+		w.m.Unlock()
 
 		source := remoteTrackPub.Source().String()
-
 		adapterStats.Tracks[source] = &appstats.TrackStats{
 			Source: source,
 			Buffer: &appstats.BufferStatsWrapper{
@@ -274,22 +273,19 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	// w.remoteParticipants contain all owners of the tracks we are subscribed to
 	for _, participant := range w.remoteParticipants {
 		participant.WritePLI(webrtc.SSRC(ssrc))
-
-		w.m.Lock()
-
-		if _, exists := w.pliStats[ssrc]; !exists {
-			w.pliStats[ssrc] = pliTracker{count: 0, timestamp: time.Now()}
-		}
-
-		newCount := w.pliStats[ssrc].count + 1
-		now := time.Now()
-		log.WithField("session", w.ctx.Value("session")).
-			Tracef("Sending PLI #%d for SSRC %d to participant %s (sinceLast=%s)",
-				newCount, ssrc, participant.Identity(), now.Sub(w.pliStats[ssrc].timestamp))
-		w.pliStats[ssrc] = pliTracker{count: newCount, timestamp: now}
-
-		w.m.Unlock()
 	}
+
+	w.m.Lock()
+
+	if _, exists := w.pliStats[ssrc]; !exists {
+		w.pliStats[ssrc] = pliTracker{count: 0, timestamp: time.Now()}
+	}
+
+	newCount := w.pliStats[ssrc].count + 1
+	now := time.Now()
+	w.pliStats[ssrc] = pliTracker{count: newCount, timestamp: now}
+
+	w.m.Unlock()
 }
 
 func (w *LiveKitWebRTC) initTrackStats() {
@@ -598,6 +594,7 @@ func (w *LiveKitWebRTC) handleReadRTPError(err error, trackID string, pub *lksdk
 
 func (w *LiveKitWebRTC) processPacketStats(trackID string, packets []*rtp.Packet) {
 	w.m.Lock()
+	defer w.m.Unlock()
 
 	firstPacket := packets[0]
 	lastPacket := packets[len(packets)-1]
@@ -615,8 +612,6 @@ func (w *LiveKitWebRTC) processPacketStats(trackID string, packets []*rtp.Packet
 	log.WithField("session", w.ctx.Value("session")).
 		Tracef("Processed packet batch for track %s: lastSeqNum: %d, firstSeqNum: %d, wraparound: %d, firstPacket: %d, lastPacket: %d",
 			trackID, stats.LastSeqNum, stats.FirstSeqNum, stats.SeqNumWrapArounds, firstPacket.SequenceNumber, lastPacket.SequenceNumber)
-
-	w.m.Unlock()
 }
 
 func (w *LiveKitWebRTC) onTrackUnsubscribed(

@@ -567,12 +567,13 @@ func (r *WebmRecorder) RequestKeyframe() {
 		return
 	}
 
-	if r.lastKeyframeRequestTime.IsZero() ||
-		time.Since(r.lastKeyframeRequestTime) > time.Second {
-		log.WithField("session", r.ctx.Value("session")).Debug("Recorder is requesting keyframe")
+	shouldRequest := r.lastKeyframeRequestTime.IsZero() ||
+		time.Since(r.lastKeyframeRequestTime) > time.Second
 
-		r.keyframeRequester.RequestKeyframe()
+	if shouldRequest {
 		r.lastKeyframeRequestTime = time.Now()
+		log.WithField("session", r.ctx.Value("session")).Debug("Recorder is requesting keyframe")
+		r.keyframeRequester.RequestKeyframe()
 	}
 }
 
