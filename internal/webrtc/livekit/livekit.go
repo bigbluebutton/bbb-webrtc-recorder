@@ -439,7 +439,6 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		// TODO: plug logger
 	)
 
-	appstats.TrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
 	w.jitterBuffers[trackID] = buffer
 
 	if isVideo {
@@ -491,7 +490,12 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		}
 	}()
 
+	appstats.OnTrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
+
 	go func() {
+		defer func() {
+			appstats.OnTrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
+		}()
 		for {
 			readDeadline := time.Now().Add(w.cfg.PacketReadTimeout)
 			// Ignore error from SetReadDeadline - it comes from pion/packetio
@@ -621,7 +625,6 @@ func (w *LiveKitWebRTC) onTrackUnsubscribed(
 ) {
 	trackID := pub.SID()
 	trackKind := TrackKind(pub.Kind())
-	mimeType := MimeType(strings.ToLower(track.Codec().MimeType))
 
 	w.m.Lock()
 
@@ -634,8 +637,6 @@ func (w *LiveKitWebRTC) onTrackUnsubscribed(
 	log.WithField("session", w.ctx.Value("session")).
 		Infof("Unsubscribed from track %s source=%s kind=%s participant=%s ssrc=%d",
 			trackID, pub.Source(), trackKind, rp.Identity(), track.SSRC())
-
-	appstats.TrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
 }
 
 func (w *LiveKitWebRTC) onTrackUnmuted(

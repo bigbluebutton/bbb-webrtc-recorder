@@ -236,7 +236,7 @@ func ServePromMetrics(cfg config.Prometheus) {
 	log.Infof("Prometheus metrics exported on %s", cfg.ListenAddress)
 }
 
-func TrackRecordingStarted(kind string, mime string, source string) {
+func OnTrackRecordingStarted(kind string, mime string, source string) {
 	ActiveTracks.With(prometheus.Labels{
 		"kind":   kind,
 		"mime":   mime,
@@ -244,7 +244,7 @@ func TrackRecordingStarted(kind string, mime string, source string) {
 	}).Inc()
 }
 
-func TrackRecordingStopped(kind string, mime string, source string) {
+func OnTrackRecordingStopped(kind string, mime string, source string) {
 	ActiveTracks.With(prometheus.Labels{
 		"kind":   kind,
 		"mime":   mime,
