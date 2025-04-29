@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.9.2
+
+* fix(livekit): prevent duplicate stop events
+
 ### v0.9.1
 
 * fix(livekit): deadlock on GetStats call

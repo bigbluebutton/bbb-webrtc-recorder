@@ -64,9 +64,9 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 		s.webrtc.SetConnectionStateCallback(func(state utils.ConnectionState) {
 			if state.IsTerminalState() {
 				if !s.stopped {
+					s.server.CloseSession(s.id)
 					ts := s.StopRecording() / time.Millisecond
 					s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
-					s.server.CloseSession(s.id)
 				}
 			}
 		})
@@ -97,9 +97,9 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 		s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {
 			if state.IsTerminalState() {
 				if !s.stopped {
+					s.server.CloseSession(s.id)
 					ts := s.StopRecording() / time.Millisecond
 					s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
-					s.server.CloseSession(s.id)
 				}
 			}
 		})
@@ -109,10 +109,12 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 					events.NewRecordingRtpStatusChanged(s.id, isFlowing, timestamp/time.Millisecond),
 				)
 			} else {
-				s.server.CloseSession(s.id)
-				s.server.PublishPubSub(
-					events.NewRecordingStopped(s.id, "closed", timestamp/time.Millisecond),
-				)
+				if !s.stopped {
+					s.server.CloseSession(s.id)
+					s.server.PublishPubSub(
+						events.NewRecordingStopped(s.id, "closed", timestamp/time.Millisecond),
+					)
+				}
 			}
 		})
 
