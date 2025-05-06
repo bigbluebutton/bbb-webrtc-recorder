@@ -273,7 +273,7 @@ func (r *WebmRecorder) GetStats() *RecorderStats {
 }
 
 func (r *WebmRecorder) PushVideo(p *rtp.Packet) {
-	if !r.hasVideo {
+	if !r.hasVideo || p == nil {
 		return
 	}
 
@@ -285,7 +285,7 @@ func (r *WebmRecorder) PushVideo(p *rtp.Packet) {
 }
 
 func (r *WebmRecorder) PushAudio(p *rtp.Packet) {
-	if !r.hasAudio {
+	if !r.hasAudio || p == nil {
 		return
 	}
 
@@ -503,7 +503,7 @@ func (r *WebmRecorder) setExpectedNextSeq(currentSeq uint16) {
 	r.expectedNextSeq = currentSeq + 1
 }
 
-func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
+func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 	if !r.hasAudio {
 		return
 	}
@@ -511,9 +511,17 @@ func (r *WebmRecorder) pushOpus(p *rtp.Packet) {
 	r.m.Lock()
 	defer r.m.Unlock()
 
-	if len(p.Payload) == 0 || r.closed {
+	if len(op.Payload) == 0 || r.closed {
 		return
 	}
+
+	// Create a deep copy of the packet before passing to the recorder
+	// since samplebuilder docs state that it retains the packet reference
+	p := &rtp.Packet{
+		Header:  op.Header,
+		Payload: make([]byte, len(op.Payload)),
+	}
+	copy(p.Payload, op.Payload)
 
 	r.initAudioStats()
 
