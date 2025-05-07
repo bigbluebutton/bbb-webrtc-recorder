@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -504,6 +505,25 @@ func (r *WebmRecorder) setExpectedNextSeq(currentSeq uint16) {
 }
 
 func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
+	defer func() {
+		if err := recover(); err != nil {
+			log.WithField("session", r.ctx.Value("session")).
+				WithField("error", err).
+				WithField("stack", string(debug.Stack())).
+				WithField("packet_seq", op.SequenceNumber).
+				WithField("packet_ts", op.Timestamp).
+				WithField("packet_size", len(op.Payload)).
+				WithField("expected_seq", r.expectedNextSeq).
+				WithField("audio_timestamp", r.audioTimestamp).
+				WithField("has_audio", r.hasAudio).
+				WithField("has_video", r.hasVideo).
+				WithField("closed", r.closed).
+				WithField("samplebuilder_len", r.audioBuilder.Len()).
+				Error("Panic detected in pushOpus")
+			panic(err)
+		}
+	}()
+
 	if !r.hasAudio {
 		return
 	}
@@ -530,8 +550,10 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 		r.trackRTPDiscontinuity(&r.stats.Audio.BaseTrackStats, gap)
 
 		log.WithField("session", r.ctx.Value("session")).
-			Debugf("Audio sequence discontinuity detected: expected=%d, got=%d, gap=%d",
-				r.expectedNextSeq, p.SequenceNumber, gap)
+			WithField("gap", gap).
+			WithField("expected_seq", r.expectedNextSeq).
+			WithField("got_seq", p.SequenceNumber).
+			Warn("Audio sequence discontinuity detected")
 	}
 
 	r.setExpectedNextSeq(p.SequenceNumber)
@@ -557,14 +579,19 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 
 			if _, err := r.audioWriter.Write(true, int64(r.audioTimestamp/time.Millisecond), sample.Data); err != nil {
 				log.WithField("session", r.ctx.Value("session")).
-					Errorf("Error writing audio frame: %v", err)
+					WithField("error", err).
+					WithField("duration", duration).
+					WithField("timestamp", r.audioTimestamp).
+					Error("Error writing audio frame")
 				r.hasValidAudio = false
-				r.RequestKeyframe()
 			} else {
 				r.stats.Audio.WrittenSamples++
 				r.hasValidAudio = true
 				log.WithField("session", r.ctx.Value("session")).
-					Tracef("Audio frame written: ts=%d, size=%d", int64(r.audioTimestamp/time.Millisecond), len(sample.Data))
+					WithField("duration", duration).
+					WithField("timestamp", r.audioTimestamp).
+					WithField("size", len(sample.Data)).
+					Trace("Audio frame written")
 			}
 		}
 	}

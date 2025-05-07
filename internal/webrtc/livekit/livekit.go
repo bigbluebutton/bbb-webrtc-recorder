@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -495,6 +496,22 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	go func() {
 		defer func() {
 			appstats.OnTrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
+
+			if err := recover(); err != nil {
+				log.WithField("session", w.ctx.Value("session")).
+					WithField("error", err).
+					WithField("stack", string(debug.Stack())).
+					Error("Panic detected in LiveKit packet processing, emit failed state")
+
+				// Notify connection state callback as failed so clients can retry/handle it
+				if w.connStateCallback != nil {
+					w.connStateCallback(utils.ConnectionStateFailed)
+				} else {
+					// If no callback is set, panic to crash the process as it
+					// cannot be handled by clients
+					panic(err)
+				}
+			}
 		}()
 		for {
 			readDeadline := time.Now().Add(w.cfg.PacketReadTimeout)
