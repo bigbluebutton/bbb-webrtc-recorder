@@ -13,6 +13,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jech/samplebuilder v0.0.0-20221109182433-6cbba09fc1c9
 	github.com/kr/pretty v0.3.1
+	github.com/livekit/protocol v1.32.2-0.20250206110518-331f97dbf4f3
 	github.com/livekit/server-sdk-go/v2 v2.5.0
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/pion/interceptor v0.1.37
@@ -25,6 +26,7 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/pflag v1.0.6
+	github.com/stretchr/testify v1.10.0
 	github.com/titanous/json5 v1.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -57,7 +59,6 @@ require (
 	github.com/lithammer/shortuuid/v4 v4.0.0 // indirect
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1 // indirect
 	github.com/livekit/mediatransportutil v0.0.0-20241220010243-a2bdee945564 // indirect
-	github.com/livekit/protocol v1.32.2-0.20250206110518-331f97dbf4f3 // indirect
 	github.com/livekit/psrpc v0.6.1-0.20250204212339-6de8b05bfcff // indirect
 	github.com/magefile/mage v1.15.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -90,7 +91,6 @@ require (
 	github.com/redis/go-redis/v9 v9.7.0 // indirect
 	github.com/rogpeppe/go-internal v1.11.0 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
-	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
