@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.9.3
+
+* fix(livekit): add panic recovery when pushing packets
+* fix(livekit): copy audio pkts before pushing to samplebuilder
+* build(deps): bump actions/setup-go from 4 to 5
+
 ### v0.9.2
 
 * fix(livekit): prevent duplicate stop events
