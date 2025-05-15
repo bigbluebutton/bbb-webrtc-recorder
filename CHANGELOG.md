@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.9.4
+
+* feat(livekit): add Prom counters for reconnects and sub failures
+* fix(livekit): guarantee cleanup on start recording failures
+* fix(livekit): fix deadlock with jitterbuffer usage
+* fix(livekit): handle track subscription failures
+* fix(livekit): use tokens for connecting to a room
+* fix(livekit): handle track EOF errors
+* fix(livekit): reject requests when no track is available
+* fix(livekit): reject requests when not all tracks are subscribed
+
 ### v0.9.3
 
 * fix(livekit): add panic recovery when pushing packets
