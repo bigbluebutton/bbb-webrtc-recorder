@@ -167,6 +167,7 @@ func (w *LiveKitWebRTC) Init() error {
 	)
 
 	if err != nil {
+		w.Close()
 		return fmt.Errorf("failed to connect to LiveKit room: %w", err)
 	}
 
@@ -177,8 +178,15 @@ func (w *LiveKitWebRTC) Init() error {
 		Infof("Connected to LiveKit room")
 
 	if _, err := w.subscribeToTracks(w.trackIds); err != nil {
+		w.Close()
+
 		log.WithField("session", w.ctx.Value("session")).
+			WithField("room", w.roomId).
+			WithField("identity", w.identity).
+			WithField("trackIds", w.trackIds).
 			Errorf("Failed to subscribe to tracks: %v", err)
+		appstats.OnTrackSubscriptionFailed(err.Error())
+
 		return err
 	}
 
@@ -195,10 +203,6 @@ func (w *LiveKitWebRTC) Close() time.Duration {
 	}
 
 	w.requestKeyframeWg.Wait()
-
-	if w.keyframeRequestChan != nil {
-		close(w.keyframeRequestChan)
-	}
 
 	if w.rec != nil {
 		return w.rec.Close()
@@ -323,6 +327,25 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 	return finalAdapterStats
 }
 
+func (w *LiveKitWebRTC) queueKeyframeRequest(ssrc uint32, reason string) {
+	if w.keyframeRequestChan == nil {
+		return
+	}
+
+	select {
+	case w.keyframeRequestChan <- ssrc:
+		log.WithFields(log.Fields{
+			"session": w.ctx.Value("session"),
+			"ssrc":    ssrc,
+			"reason":  reason,
+		}).Trace("Queued keyframe request")
+	case <-w.requestKeyframeCtx.Done():
+		return
+	default:
+		return
+	}
+}
+
 func (w *LiveKitWebRTC) RequestKeyframe() {
 	w.m.Lock()
 	ssrcsToRequest := make([]uint32, 0, len(w.pliStats))
@@ -337,13 +360,7 @@ func (w *LiveKitWebRTC) RequestKeyframe() {
 	}
 
 	for _, ssrc := range ssrcsToRequest {
-		select {
-		case w.keyframeRequestChan <- ssrc:
-			// Successfully queued
-		default:
-			log.WithField("session", w.ctx.Value("session")).
-				Warnf("Keyframe request channel full for SSRC %d during general RequestKeyframe.", ssrc)
-		}
+		w.queueKeyframeRequest(ssrc, "direct_request")
 	}
 }
 
@@ -559,15 +576,8 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		clockRate,
 		latency,
 		jitter.WithPacketDroppedHandler(func() {
-			if isVideo && track != nil { // Ensure track and SSRC are valid
-				select {
-				case w.keyframeRequestChan <- ssrcForHandler:
-					log.WithField("session", w.ctx.Value("session")).
-						Tracef("Queued keyframe request for SSRC %d due to packet drop.", ssrcForHandler)
-				default:
-					log.WithField("session", w.ctx.Value("session")).
-						Warnf("Keyframe request channel full for SSRC %d on packet drop. PLI request dropped.", ssrcForHandler)
-				}
+			if isVideo && track != nil {
+				w.queueKeyframeRequest(ssrcForHandler, "packet_drop")
 			}
 		}),
 		// TODO: plug logger via jitter.WithLogger(logger)
@@ -814,13 +824,14 @@ func (w *LiveKitWebRTC) onTrackSubscriptionFailed(
 		return
 	}
 
+	w.connStateCallback(utils.ConnectionStateFailed)
+
 	log.WithField("session", w.ctx.Value("session")).
 		WithField("room", w.roomId).
 		WithField("identity", w.identity).
 		WithField("trackID", trackID).
 		Errorf("Track subscription failed")
-
-	w.connStateCallback(utils.ConnectionStateFailed)
+	appstats.OnTrackSubscriptionFailed("livekit_failure")
 }
 
 func (w *LiveKitWebRTC) onTrackUnpublished(
@@ -872,7 +883,9 @@ func (w *LiveKitWebRTC) onTrackMuted(
 
 func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Disconnected from LiveKit room=%s reason=%v", w.roomId, reason)
+		WithField("room", w.roomId).
+		WithField("identity", w.identity).
+		Infof("Disconnected from LiveKit room reason=%v", reason)
 
 	state := utils.NormalizeLiveKitDisconnectReason(reason)
 	w.connStateCallback(state)
@@ -888,6 +901,7 @@ func (w *LiveKitWebRTC) onReconnecting() {
 		WithField("room", w.roomId).
 		WithField("identity", w.identity).
 		Warn("Reconnecting to LiveKit room")
+	appstats.OnParticipantReconnecting()
 }
 
 func (w *LiveKitWebRTC) onReconnected() {
@@ -895,6 +909,7 @@ func (w *LiveKitWebRTC) onReconnected() {
 		WithField("room", w.roomId).
 		WithField("identity", w.identity).
 		Info("Reconnected to LiveKit room")
+	appstats.OnParticipantReconnected()
 }
 
 func (w *LiveKitWebRTC) validateInitParams() error {

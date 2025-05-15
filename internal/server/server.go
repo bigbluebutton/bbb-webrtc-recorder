@@ -87,6 +87,7 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 			if _, err := sess.StartRecording(e); err != nil {
 				log.WithField("session", ctx.Value("session")).Error(err)
 				s.PublishPubSub(e.Fail(err))
+				s.CloseSession(e.SessionId)
 				return
 			}
 

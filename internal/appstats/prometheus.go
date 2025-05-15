@@ -169,6 +169,27 @@ var (
 			"mime",   // mime type
 			"error",  // error string
 		})
+
+	ParticipantReconnectingEvents = prometheus.NewCounter(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "participant_reconnecting_events_total",
+		Help:      "Total number of participant reconnecting events",
+	})
+
+	ParticipantReconnects = prometheus.NewCounter(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "participant_reconnects_total",
+		Help:      "Total number of participant reconnects",
+	})
+
+	TrackSubscriptionFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "track_subscription_failures_total",
+		Help:      "Total number of track subscription failures",
+	},
+		[]string{
+			"error", // error string
+		})
 )
 
 func Init() {
@@ -187,6 +208,9 @@ func Init() {
 	prometheus.MustRegister(CorruptedFrames)
 	prometheus.MustRegister(WrittenSamples)
 	prometheus.MustRegister(RTPReadErrors)
+	prometheus.MustRegister(ParticipantReconnects)
+	prometheus.MustRegister(TrackSubscriptionFailures)
+	prometheus.MustRegister(ParticipantReconnectingEvents)
 }
 
 func newMetricsHandler() *metricsHandler {
@@ -250,6 +274,18 @@ func OnTrackRecordingStopped(kind string, mime string, source string) {
 		"mime":   mime,
 		"source": source,
 	}).Dec()
+}
+
+func OnParticipantReconnecting() {
+	ParticipantReconnectingEvents.Inc()
+}
+
+func OnParticipantReconnected() {
+	ParticipantReconnects.Inc()
+}
+
+func OnTrackSubscriptionFailed(error string) {
+	TrackSubscriptionFailures.WithLabelValues(error).Inc()
 }
 
 func OnRTPReadError(source string, kind string, mime string, error string) {

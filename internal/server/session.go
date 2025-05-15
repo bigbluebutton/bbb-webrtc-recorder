@@ -119,6 +119,7 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 		})
 
 		if err := s.livekit.Init(); err != nil {
+			s.StopRecording()
 			return "", err
 		}
 	}
