@@ -17,6 +17,8 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
+	"github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/server-sdk-go/v2/pkg/jitter"
 	"github.com/pion/rtp"
@@ -36,8 +38,10 @@ const (
 )
 
 const (
-	notFlowingTicker = time.Millisecond * 100
-	flowingTicker    = time.Millisecond * 1000
+	notFlowingTicker   = time.Millisecond * 100
+	flowingTicker      = time.Millisecond * 1000
+	tokenTTL           = 24 * time.Hour
+	baseSystemMetadata = "{\"bbb_system\": true}"
 )
 
 type MimeType string
@@ -65,6 +69,7 @@ type LiveKitWebRTC struct {
 	remoteParticipants map[string]*lksdk.RemoteParticipant
 	participantIDs     map[string]string // trackID -> participantID
 	roomId             string
+	identity           string
 	trackIds           []string
 	pliStats           map[uint32]pliTracker
 	jitterBuffers      map[string]*jitter.Buffer
@@ -90,12 +95,15 @@ func NewLiveKitWebRTC(
 	trackIds []string,
 ) *LiveKitWebRTC {
 	requestKeyframeCtx, requestKeyframeCancel := context.WithCancel(ctx)
+	sessionID := ctx.Value("session").(string)
+	identity := fmt.Sprintf("bbb-webrtc-recorder-%s", sessionID)
 
 	w := &LiveKitWebRTC{
 		ctx:                   ctx,
 		cfg:                   cfg,
 		rec:                   rec,
 		roomId:                roomId,
+		identity:              identity,
 		trackIds:              trackIds,
 		remoteTrackPubs:       make(map[string]*lksdk.RemoteTrackPublication),
 		pliStats:              make(map[uint32]pliTracker),
@@ -130,32 +138,31 @@ func (w *LiveKitWebRTC) Init() error {
 		return err
 	}
 
-	sessionID, ok := w.ctx.Value("session").(string)
+	token, err := w.buildRecorderToken(w.roomId, w.identity)
 
-	if !ok {
-		return fmt.Errorf("session ID not found in context")
+	if err != nil {
+		return fmt.Errorf("failed to build recorder token: %w", err)
 	}
 
-	identity := fmt.Sprintf("bbb-webrtc-recorder-%s", sessionID)
-
 	log.WithField("session", w.ctx.Value("session")).
-		Debugf("Connecting to LiveKit room %s with identity %s", w.roomId, identity)
+		WithField("room", w.roomId).
+		WithField("identity", w.identity).
+		Debugf("Connecting to LiveKit room")
 
-	room, err := lksdk.ConnectToRoom(w.cfg.Host, lksdk.ConnectInfo{
-		APIKey:              w.cfg.APIKey,
-		APISecret:           w.cfg.APISecret,
-		RoomName:            w.roomId,
-		ParticipantIdentity: identity,
-		ParticipantKind:     lksdk.ParticipantEgress,
-	}, &lksdk.RoomCallback{
-		ParticipantCallback: lksdk.ParticipantCallback{
-			OnTrackSubscribed:   w.onTrackSubscribed,
-			OnTrackUnsubscribed: w.onTrackUnsubscribed,
-			OnTrackUnmuted:      w.onTrackUnmuted,
-			OnTrackMuted:        w.onTrackMuted,
+	room, err := lksdk.ConnectToRoomWithToken(w.cfg.Host, token,
+		&lksdk.RoomCallback{
+			ParticipantCallback: lksdk.ParticipantCallback{
+				OnTrackSubscribed:         w.onTrackSubscribed,
+				OnTrackUnsubscribed:       w.onTrackUnsubscribed,
+				OnTrackUnpublished:        w.onTrackUnpublished,
+				OnTrackUnmuted:            w.onTrackUnmuted,
+				OnTrackMuted:              w.onTrackMuted,
+				OnTrackSubscriptionFailed: w.onTrackSubscriptionFailed,
+			},
+			OnDisconnectedWithReason: w.onDisconnected,
+			OnReconnecting:           w.onReconnecting,
+			OnReconnected:            w.onReconnected,
 		},
-		OnDisconnectedWithReason: w.onDisconnected,
-	},
 		lksdk.WithAutoSubscribe(false),
 	)
 
@@ -165,9 +172,11 @@ func (w *LiveKitWebRTC) Init() error {
 
 	w.room = room
 	log.WithField("session", w.ctx.Value("session")).
-		Infof("Connected to LiveKit room %s", w.roomId)
+		WithField("room", w.roomId).
+		WithField("identity", w.identity).
+		Infof("Connected to LiveKit room")
 
-	if _, err := w.subscribeToTracks(); err != nil {
+	if _, err := w.subscribeToTracks(w.trackIds); err != nil {
 		log.WithField("session", w.ctx.Value("session")).
 			Errorf("Failed to subscribe to tracks: %v", err)
 		return err
@@ -364,6 +373,13 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	w.m.Unlock()
 }
 
+func (w *LiveKitWebRTC) HasTrack(trackID string) bool {
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	return slices.Contains(w.trackIds, trackID)
+}
+
 func (w *LiveKitWebRTC) initTrackStats() {
 	for _, trackID := range w.trackIds {
 		w.trackStats[trackID] = &appstats.AdapterTrackStats{
@@ -377,13 +393,14 @@ func (w *LiveKitWebRTC) initTrackStats() {
 	}
 }
 
-func (w *LiveKitWebRTC) subscribeToTracks() (subscribedTrackPubs map[string]*lksdk.RemoteTrackPublication, err error) {
+func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPubs map[string]*lksdk.RemoteTrackPublication, err error) {
+	availableTracks := make(map[string]*lksdk.RemoteTrackPublication)
 	subscribedTrackPubs = make(map[string]*lksdk.RemoteTrackPublication)
 	remoteParticipants := make(map[string]*lksdk.RemoteParticipant)
 
 	for _, remoteParticipant := range w.room.GetRemoteParticipants() {
 		for _, remoteTrackPublication := range remoteParticipant.TrackPublications() {
-			if slices.Contains(w.trackIds, remoteTrackPublication.SID()) {
+			if slices.Contains(trackIds, remoteTrackPublication.SID()) {
 				kind := TrackKind(remoteTrackPublication.Kind())
 
 				if kind == TrackKindVideo {
@@ -395,6 +412,8 @@ func (w *LiveKitWebRTC) subscribeToTracks() (subscribedTrackPubs map[string]*lks
 				}
 
 				if remoteTrackPub, ok := remoteTrackPublication.(*lksdk.RemoteTrackPublication); ok {
+					availableTracks[remoteTrackPublication.SID()] = remoteTrackPub
+
 					if err := w.subscribe(remoteTrackPub); err != nil {
 						log.WithField("session", w.ctx.Value("session")).
 							Errorf("Failed to subscribe to track %s: %v", remoteTrackPublication.SID(), err)
@@ -411,6 +430,14 @@ func (w *LiveKitWebRTC) subscribeToTracks() (subscribedTrackPubs map[string]*lks
 
 	w.remoteParticipants = remoteParticipants
 	w.remoteTrackPubs = subscribedTrackPubs
+
+	if len(availableTracks) == 0 {
+		return nil, fmt.Errorf("no tracks available")
+	}
+
+	if len(subscribedTrackPubs) < len(availableTracks) {
+		return nil, fmt.Errorf("unable to subscribe")
+	}
 
 	return subscribedTrackPubs, nil
 }
@@ -514,10 +541,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	default:
 		log.WithField("session", w.ctx.Value("session")).
 			Errorf("Unsupported codec: %s", mimeType)
-
-		if w.connStateCallback != nil {
-			w.connStateCallback(utils.ConnectionStateFailed)
-		}
+		w.connStateCallback(utils.ConnectionStateFailed)
 
 		return
 	}
@@ -615,21 +639,24 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	go func() {
 		defer func() {
 			appstats.OnTrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
+			log.WithField("session", w.ctx.Value("session")).
+				WithField("trackID", trackID).
+				WithField("source", pub.Source().String()).
+				WithField("kind", trackKind).
+				WithField("mime", mimeType).
+				WithField("ssrc", track.SSRC()).
+				Info("Track recording stopped")
 
+			// If a panic occurs, notify the connection state callback as failed so clients can retry/handle it
 			if err := recover(); err != nil {
 				log.WithField("session", w.ctx.Value("session")).
 					WithField("error", err).
 					WithField("stack", string(debug.Stack())).
 					Error("Panic detected in LiveKit packet processing, emit failed state")
 
-				// Notify connection state callback as failed so clients can retry/handle it
-				if w.connStateCallback != nil {
-					w.connStateCallback(utils.ConnectionStateFailed)
-				} else {
-					// If no callback is set, panic to crash the process as it
-					// cannot be handled by clients
-					panic(err)
-				}
+				w.connStateCallback(utils.ConnectionStateFailed)
+			} else {
+				w.connStateCallback(utils.ConnectionStateClosed)
 			}
 		}()
 		for {
@@ -759,6 +786,10 @@ func (w *LiveKitWebRTC) onTrackUnsubscribed(
 	pub *lksdk.RemoteTrackPublication,
 	rp *lksdk.RemoteParticipant,
 ) {
+	if !w.HasTrack(pub.SID()) {
+		return
+	}
+
 	trackID := pub.SID()
 	trackKind := TrackKind(pub.Kind())
 
@@ -775,12 +806,47 @@ func (w *LiveKitWebRTC) onTrackUnsubscribed(
 			trackID, pub.Source(), trackKind, rp.Identity(), track.SSRC())
 }
 
+func (w *LiveKitWebRTC) onTrackSubscriptionFailed(
+	trackID string,
+	rp *lksdk.RemoteParticipant,
+) {
+	if !w.HasTrack(trackID) {
+		return
+	}
+
+	log.WithField("session", w.ctx.Value("session")).
+		WithField("room", w.roomId).
+		WithField("identity", w.identity).
+		WithField("trackID", trackID).
+		Errorf("Track subscription failed")
+
+	w.connStateCallback(utils.ConnectionStateFailed)
+}
+
+func (w *LiveKitWebRTC) onTrackUnpublished(
+	pub *lksdk.RemoteTrackPublication,
+	rp *lksdk.RemoteParticipant,
+) {
+	trackID := pub.SID()
+
+	if !w.HasTrack(trackID) {
+		return
+	}
+
+	log.WithField("session", w.ctx.Value("session")).
+		WithField("room", w.roomId).
+		WithField("identity", w.identity).
+		WithField("trackID", trackID).
+		Infof("Track unpublished")
+}
+
 func (w *LiveKitWebRTC) onTrackUnmuted(
 	pub lksdk.TrackPublication,
 	p lksdk.Participant,
 ) {
 	trackID := pub.SID()
 
+	// Only track mute/unmute events for tracks we're *subscribed* to
 	if _, exists := w.remoteTrackPubs[trackID]; !exists {
 		return
 	}
@@ -795,6 +861,7 @@ func (w *LiveKitWebRTC) onTrackMuted(
 ) {
 	trackID := pub.SID()
 
+	// Only track mute/unmute events for tracks we're *subscribed* to
 	if _, exists := w.remoteTrackPubs[trackID]; !exists {
 		return
 	}
@@ -808,10 +875,7 @@ func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 		Infof("Disconnected from LiveKit room=%s reason=%v", w.roomId, reason)
 
 	state := utils.NormalizeLiveKitDisconnectReason(reason)
-
-	if w.connStateCallback != nil {
-		w.connStateCallback(state)
-	}
+	w.connStateCallback(state)
 
 	// If this is a terminal state, also notify via flow callback
 	if state.IsTerminalState() && w.flowCallback != nil {
@@ -819,7 +883,25 @@ func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 	}
 }
 
+func (w *LiveKitWebRTC) onReconnecting() {
+	log.WithField("session", w.ctx.Value("session")).
+		WithField("room", w.roomId).
+		WithField("identity", w.identity).
+		Warn("Reconnecting to LiveKit room")
+}
+
+func (w *LiveKitWebRTC) onReconnected() {
+	log.WithField("session", w.ctx.Value("session")).
+		WithField("room", w.roomId).
+		WithField("identity", w.identity).
+		Info("Reconnected to LiveKit room")
+}
+
 func (w *LiveKitWebRTC) validateInitParams() error {
+	if w.connStateCallback == nil {
+		return fmt.Errorf("connStateCallback is not set")
+	}
+
 	if w.flowCallback == nil {
 		return fmt.Errorf("flowCallback is not set")
 	}
@@ -849,4 +931,27 @@ func (w *LiveKitWebRTC) processKeyframeRequests() {
 			return
 		}
 	}
+}
+
+func (w *LiveKitWebRTC) buildRecorderToken(roomName string, identity string) (string, error) {
+	f := false
+	t := true
+	grant := &auth.VideoGrant{
+		RoomJoin:       true,
+		Room:           roomName,
+		CanSubscribe:   &t,
+		CanPublish:     &f,
+		CanPublishData: &f,
+		Hidden:         true,
+		Recorder:       true,
+	}
+
+	at := auth.NewAccessToken(w.cfg.APIKey, w.cfg.APISecret).
+		SetVideoGrant(grant).
+		SetIdentity(identity).
+		SetKind(livekit.ParticipantInfo_EGRESS).
+		SetValidFor(tokenTTL).
+		SetMetadata(baseSystemMetadata)
+
+	return at.ToJWT()
 }
