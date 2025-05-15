@@ -107,6 +107,22 @@ func TestProcessPacketStats_PreInitializedTrackStatsWraparound(t *testing.T) {
 		"Should detect one sequence number wraparound")
 }
 
+func TestDoubleClose(t *testing.T) {
+	lk, _ := setupMockLK()
+
+	// First close should succeed
+	firstDuration := lk.Close()
+	assert.Equal(t, time.Duration(0), firstDuration, "First close should return duration from recorder")
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Second close should not panic
+	secondDuration := lk.Close()
+	assert.Equal(t, time.Duration(0), secondDuration, "Second close should still return same duration")
+	assert.Nil(t, lk.room, "Room should be nil after close")
+	assert.NotNil(t, lk.keyframeRequestChan, "Channel should not be nil even after close")
+}
+
 func setupMockLK() (*LiveKitWebRTC, *mockRecorder) {
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "session", "test-session")
