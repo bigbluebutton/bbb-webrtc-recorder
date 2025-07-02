@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* feat: boot sequence health check and Prometheus health metrics
+
 ### v0.9.4
 
 * feat(livekit): add Prom counters for reconnects and sub failures

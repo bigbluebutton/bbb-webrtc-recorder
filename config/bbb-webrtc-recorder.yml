@@ -51,3 +51,6 @@ livekit:
   host: ws://localhost:7880
   apiKey: ""
   apiSecret: ""
+  healthCheck:
+    enable: false
+    interval: 1m

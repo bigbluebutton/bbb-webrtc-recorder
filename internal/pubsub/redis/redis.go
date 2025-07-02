@@ -119,6 +119,22 @@ loop:
 	return <-done
 }
 
+func (p *PubSub) Check() error {
+	c, err := p.dial()
+
+	if err != nil {
+		return err
+	}
+
+	defer c.Close()
+
+	if _, err = c.Do("PING"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (p *PubSub) Publish(channel string, message []byte) error {
 	c, err := p.dial()
 	if err != nil {

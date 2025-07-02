@@ -12,6 +12,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/pion/rtp"
+	log "github.com/sirupsen/logrus"
 )
 
 // KeyframeRequester defines the interface for requesting keyframes
@@ -34,11 +35,41 @@ type Recorder interface {
 	Close() time.Duration
 }
 
+func CheckFsPermissions(cfg config.Recorder) error {
+	dir := path.Clean(cfg.Directory)
+
+	if err := checkDirectory(dir); err != nil {
+		return err
+	}
+
+	fileMode, _ := parseFileMode(cfg.FileMode)
+
+	tmpFile, err := os.CreateTemp(dir, ".rec-file-perm-check-*")
+
+	if err != nil {
+		return fmt.Errorf("recorder directory is not writable: %w", err)
+	}
+
+	defer func() {
+		_ = tmpFile.Close()
+		if err := os.Remove(tmpFile.Name()); err != nil {
+			log.WithField("file", tmpFile.Name()).Warnf("could not remove permission check file: %v", err)
+		}
+	}()
+
+	// Check if the configured file mode can be applied
+	if err := tmpFile.Chmod(fileMode); err != nil {
+		return fmt.Errorf("cannot apply file mode %s: %w", cfg.FileMode, err)
+	}
+
+	return nil
+}
+
 func ValidateAndPrepareFile(ctx context.Context, cfg config.Recorder, file string) (string, os.FileMode, error) {
 	dir := path.Clean(cfg.Directory)
 
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return "", 0, fmt.Errorf("directory does not exist %s", cfg.Directory)
+	if err := checkDirectory(dir); err != nil {
+		return "", 0, err
 	}
 
 	if !cfg.WriteToDevNull {
@@ -107,4 +138,30 @@ func NewRecorder(ctx context.Context, cfg config.Recorder, file string) (Recorde
 		return nil, fmt.Errorf("unsupported file extension %s", ext)
 	}
 	return r, nil
+}
+
+func parseFileMode(mode string) (os.FileMode, error) {
+	if parsedFileMode, err := strconv.ParseUint(mode, 0, 32); err != nil {
+		return 0, fmt.Errorf("invalid file mode %s", mode)
+	} else {
+		return os.FileMode(parsedFileMode), nil
+	}
+}
+
+func checkDirectory(dir string) error {
+	if fileInfo, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("recorder directory does not exist: %s", dir)
+		}
+
+		if err != nil {
+			return fmt.Errorf("could not stat recorder directory %s: %w", dir, err)
+		}
+	} else {
+		if !fileInfo.IsDir() {
+			return fmt.Errorf("recorder path is not a directory: %s", dir)
+		}
+	}
+
+	return nil
 }

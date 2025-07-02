@@ -80,6 +80,10 @@ func (cfg *Config) SetDefaults() {
 		APISecret:             "",
 		PacketReadTimeout:     500 * time.Millisecond,
 		PreferredVideoQuality: livekit.VideoQuality_HIGH,
+		HealthCheck: HealthCheck{
+			Enable:   false,
+			Interval: 1 * time.Minute,
+		},
 	}
 }
 
@@ -131,11 +135,17 @@ type Prometheus struct {
 }
 
 type LiveKit struct {
-	Host                  string               `mapstructure:"host"`
-	APIKey                string               `mapstructure:"api_key"`
-	APISecret             string               `mapstructure:"api_secret"`
-	PacketReadTimeout     time.Duration        `mapstructure:"packet_read_timeout"`
-	PreferredVideoQuality livekit.VideoQuality `mapstructure:"preferred_video_quality"`
+	Host                  string               `yaml:"host,omitempty" mapstructure:"host"`
+	APIKey                string               `yaml:"apiKey,omitempty" mapstructure:"api_key"`
+	APISecret             string               `yaml:"apiSecret,omitempty" mapstructure:"api_secret"`
+	PacketReadTimeout     time.Duration        `yaml:"packetReadTimeout,omitempty" mapstructure:"packet_read_timeout"`
+	PreferredVideoQuality livekit.VideoQuality `yaml:"preferredVideoQuality,omitempty" mapstructure:"preferred_video_quality"`
+	HealthCheck           HealthCheck          `yaml:"healthCheck,omitempty"`
+}
+
+type HealthCheck struct {
+	Enable   bool          `yaml:"enable,omitempty"`
+	Interval time.Duration `yaml:"interval,omitempty"`
 }
 
 type LogConfig struct {

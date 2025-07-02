@@ -5,12 +5,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/server"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
@@ -81,6 +84,43 @@ func Run() {
 	}
 
 	ps = pubsub.NewPubSub(cfg.PubSub)
+
+	if err := ps.Check(); err != nil {
+		log.Fatalf("failed to connect to pubsub: %v", err)
+	}
+
+	if err := recorder.CheckFsPermissions(cfg.Recorder); err != nil {
+		log.Fatalf("failed to check recorder filesystem permissions: %v", err)
+	}
+
+	if cfg.LiveKit.HealthCheck.Enable {
+		log.WithField("interval", cfg.LiveKit.HealthCheck.Interval).
+			WithField("host", cfg.LiveKit.Host).
+			Debug("LiveKit health check enabled")
+
+		if err := livekit.CheckConnectivity(cfg.LiveKit); err != nil {
+			log.Fatalf("failed to connect to LiveKit: %v", err)
+		}
+
+		appstats.SetComponentHealth("livekit", true)
+		log.WithField("host", cfg.LiveKit.Host).
+			Info("LiveKit is ready")
+
+		go func() {
+			ticker := time.NewTicker(cfg.LiveKit.HealthCheck.Interval)
+			defer ticker.Stop()
+			for {
+				<-ticker.C
+				if err := livekit.CheckConnectivity(cfg.LiveKit); err != nil {
+					log.Warnf("livekit health check failed: %v", err)
+					appstats.SetComponentHealth("livekit", false)
+				} else {
+					log.Trace("livekit health check succeeded")
+					appstats.SetComponentHealth("livekit", true)
+				}
+			}
+		}()
+	}
 
 	if cfg.HTTP.Enable {
 		hs := server.NewHTTPServer(cfg, ps)

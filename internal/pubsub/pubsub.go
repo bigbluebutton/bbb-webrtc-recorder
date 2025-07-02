@@ -13,6 +13,7 @@ type PubSub interface {
 	Subscribe(channel string, handler PubSubHandler, onStart func() error) error
 	Publish(channel string, message []byte) error
 	Close() error
+	Check() error
 }
 
 type PubSubHandler func(ctx context.Context, message []byte)

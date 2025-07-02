@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/redis"
 	"github.com/cenkalti/backoff/v4"
@@ -37,6 +38,7 @@ func (r *Redis) Subscribe(channel string, handler PubSubHandler, onStart func() 
 				log.Infof("Subscribed to pubsub %s on redis %s", channel, r.config.Address)
 				r.hasConnected = true
 				eb.Reset()
+				appstats.SetComponentHealth("redis", true)
 
 				return onStart()
 			},
@@ -59,6 +61,7 @@ func (r *Redis) Subscribe(channel string, handler PubSubHandler, onStart func() 
 			log.Errorf("failed to subscribe to pubsub %s on %s: %s", channel, r.config.Address, err)
 			return err
 		} else {
+			appstats.SetComponentHealth("redis", false)
 			log.Errorf("failed to subscribe to pubsub %s on %s: %s - retrying in %s", channel, r.config.Address, err, next)
 		}
 
@@ -77,6 +80,10 @@ func (r *Redis) Unsubscribe() {
 
 func (r *Redis) Publish(channel string, message []byte) error {
 	return r.pubsub.Publish(channel, message)
+}
+
+func (r *Redis) Check() error {
+	return r.pubsub.Check()
 }
 
 func NewRedis(cfg config.Redis) *Redis {

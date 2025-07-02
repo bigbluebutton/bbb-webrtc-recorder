@@ -190,6 +190,15 @@ var (
 		[]string{
 			"error", // error string
 		})
+
+	ComponentHealth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Subsystem: "recorder",
+		Name:      "component_health",
+		Help:      "Health status of recorder components (1 = healthy, 0 = unhealthy)",
+	},
+		[]string{
+			"component",
+		})
 )
 
 func Init() {
@@ -211,6 +220,7 @@ func Init() {
 	prometheus.MustRegister(ParticipantReconnects)
 	prometheus.MustRegister(TrackSubscriptionFailures)
 	prometheus.MustRegister(ParticipantReconnectingEvents)
+	prometheus.MustRegister(ComponentHealth)
 }
 
 func newMetricsHandler() *metricsHandler {
@@ -320,6 +330,16 @@ func OnServerResponse(msg interface{}) {
 	default:
 		Responses.WithLabelValues("unknown").Inc()
 	}
+}
+
+func SetComponentHealth(component string, healthy bool) {
+	status := 0.0
+
+	if healthy {
+		status = 1.0
+	}
+
+	ComponentHealth.WithLabelValues(component).Set(status)
 }
 
 func UpdateCaptureMetrics(stats *CaptureStats) {
