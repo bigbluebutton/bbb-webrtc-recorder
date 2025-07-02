@@ -8,6 +8,7 @@ require (
 	github.com/AlekSi/pointer v1.2.0
 	github.com/at-wat/ebml-go v0.17.1
 	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/crazy-max/gonfig v0.7.1
 	github.com/gomodule/redigo v1.9.2
 	github.com/google/uuid v1.6.0

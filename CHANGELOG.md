@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ### UNRELEASED
 
 * feat: boot sequence health check and Prometheus health metrics
+* feat: report readiness via sd_notify
 
 ### v0.9.4
 

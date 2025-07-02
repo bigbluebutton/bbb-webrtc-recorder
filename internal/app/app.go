@@ -14,6 +14,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/server"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
+	"github.com/coreos/go-systemd/daemon"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 	flag "github.com/spf13/pflag"
@@ -120,6 +121,10 @@ func Run() {
 				}
 			}
 		}()
+	}
+
+	if _, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
+		log.Warnf("failed to notify readiness to systemd: %v", err)
 	}
 
 	if cfg.HTTP.Enable {
