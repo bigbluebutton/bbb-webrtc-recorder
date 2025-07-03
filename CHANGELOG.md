@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 * feat: boot sequence health check and Prometheus health metrics
 * feat: report readiness via sd_notify
+* build: upgrade to Pion v4 (fixes periodic freezes/tuple restarts)
 
 ### v0.9.4
 

@@ -13,7 +13,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/signal"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
-	pwebrtc "github.com/pion/webrtc/v3"
+	pwebrtc "github.com/pion/webrtc/v4"
 	log "github.com/sirupsen/logrus"
 )
 

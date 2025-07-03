@@ -2,7 +2,7 @@ package utils
 
 import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 )
 
 // ConnectionState represents a normalized connection state across different

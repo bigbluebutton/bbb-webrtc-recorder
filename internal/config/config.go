@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/livekit"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 	log "github.com/sirupsen/logrus"
 )
 
