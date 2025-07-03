@@ -81,8 +81,9 @@ func (cfg *Config) SetDefaults() {
 		PacketReadTimeout:     500 * time.Millisecond,
 		PreferredVideoQuality: livekit.VideoQuality_HIGH,
 		HealthCheck: HealthCheck{
-			Enable:   false,
-			Interval: 1 * time.Minute,
+			Enable:             false,
+			Interval:           1 * time.Minute,
+			AbortBootOnFailure: false,
 		},
 	}
 }
@@ -144,8 +145,9 @@ type LiveKit struct {
 }
 
 type HealthCheck struct {
-	Enable   bool          `yaml:"enable,omitempty"`
-	Interval time.Duration `yaml:"interval,omitempty"`
+	Enable             bool          `yaml:"enable,omitempty"`
+	Interval           time.Duration `yaml:"interval,omitempty"`
+	AbortBootOnFailure bool          `yaml:"abortBootOnFailure,omitempty"`
 }
 
 type LogConfig struct {

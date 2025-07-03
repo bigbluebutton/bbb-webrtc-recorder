@@ -100,12 +100,16 @@ func Run() {
 			Debug("LiveKit health check enabled")
 
 		if err := livekit.CheckConnectivity(cfg.LiveKit); err != nil {
-			log.Fatalf("failed to connect to LiveKit: %v", err)
-		}
+			appstats.SetComponentHealth("livekit", false)
 
-		appstats.SetComponentHealth("livekit", true)
-		log.WithField("host", cfg.LiveKit.Host).
-			Info("LiveKit is ready")
+			if cfg.LiveKit.HealthCheck.AbortBootOnFailure {
+				log.Fatalf("failed to connect to LiveKit: %v", err)
+			} else {
+				log.Warnf("failed to connect to LiveKit: %v", err)
+			}
+		} else {
+			appstats.SetComponentHealth("livekit", true)
+		}
 
 		go func() {
 			ticker := time.NewTicker(cfg.LiveKit.HealthCheck.Interval)
@@ -113,10 +117,10 @@ func Run() {
 			for {
 				<-ticker.C
 				if err := livekit.CheckConnectivity(cfg.LiveKit); err != nil {
-					log.Warnf("livekit health check failed: %v", err)
+					log.Warnf("LiveKit health check failed: %v", err)
 					appstats.SetComponentHealth("livekit", false)
 				} else {
-					log.Trace("livekit health check succeeded")
+					log.Trace("LiveKit health check succeeded")
 					appstats.SetComponentHealth("livekit", true)
 				}
 			}

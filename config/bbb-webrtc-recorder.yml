@@ -54,3 +54,4 @@ livekit:
   healthCheck:
     enable: false
     interval: 1m
+    abortBootOnFailure: false
