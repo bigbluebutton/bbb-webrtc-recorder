@@ -85,6 +85,7 @@ func (cfg *Config) SetDefaults() {
 			Interval:           1 * time.Minute,
 			AbortBootOnFailure: false,
 		},
+		WriteRTPDump: false,
 	}
 }
 
@@ -142,6 +143,7 @@ type LiveKit struct {
 	PacketReadTimeout     time.Duration        `yaml:"packetReadTimeout,omitempty" mapstructure:"packet_read_timeout"`
 	PreferredVideoQuality livekit.VideoQuality `yaml:"preferredVideoQuality,omitempty" mapstructure:"preferred_video_quality"`
 	HealthCheck           HealthCheck          `yaml:"healthCheck,omitempty"`
+	WriteRTPDump          bool                 `yaml:"writeRTPDump"`
 }
 
 type HealthCheck struct {

@@ -6,9 +6,11 @@ recorder:
   dirFileMode: 0700
   fileMode: 0600
   writeToDevNull: false
-  writeIVFCopy: false
   # Write a stats file for each recording
   writeStatsFile: false
+  # Write a copy of the recorded video in IVF format. Used for debugging and
+  # test environments.
+  writeIVFCopy: false
   videoPacketQueueSize: 256
   audioPacketQueueSize: 32
   useCustomSampler: true
@@ -51,6 +53,9 @@ livekit:
   host: ws://localhost:7880
   apiKey: ""
   apiSecret: ""
+  # Write a raw RTP dump (in rtpdump format) for recorded tracks. Used for
+  # debugging and test environments.
+  writeRTPDump: false
   healthCheck:
     enable: false
     interval: 1m

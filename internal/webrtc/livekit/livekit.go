@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -80,6 +81,7 @@ type LiveKitWebRTC struct {
 	trackStats         map[string]*appstats.AdapterTrackStats
 	startTs            time.Time
 	connStateCallback  func(state utils.ConnectionState)
+	rtpWriters         map[string]*recorder.RTPWriter
 
 	keyframeRequestChan   chan uint32
 	requestKeyframeCtx    context.Context
@@ -111,6 +113,7 @@ func NewLiveKitWebRTC(
 		flowState:             make(map[string]*trackFlowState),
 		trackStats:            make(map[string]*appstats.AdapterTrackStats),
 		participantIDs:        make(map[string]string),
+		rtpWriters:            make(map[string]*recorder.RTPWriter),
 		startTs:               time.Now(),
 		keyframeRequestChan:   make(chan uint32, 100),
 		requestKeyframeCtx:    requestKeyframeCtx,
@@ -203,6 +206,18 @@ func (w *LiveKitWebRTC) Close() time.Duration {
 	}
 
 	w.requestKeyframeWg.Wait()
+
+	if w.rtpWriters != nil {
+		for trackID, writer := range w.rtpWriters {
+			if err := writer.Close(); err != nil {
+				log.WithField("session", w.ctx.Value("session")).
+					WithField("trackID", trackID).
+					Warnf("Failed to close rtp writer for track %s: %v", trackID, err)
+			}
+		}
+	}
+
+	w.rtpWriters = nil
 
 	if w.rec != nil {
 		return w.rec.Close()
@@ -371,10 +386,17 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 
 	log.WithField("session", w.ctx.Value("session")).
 		Tracef("Requesting keyframe for SSRC %d", ssrc)
+	requestedKeyframes := 0
 
 	// w.remoteParticipants contain all owners of the tracks we are subscribed to
 	for _, participant := range w.remoteParticipants {
 		participant.WritePLI(webrtc.SSRC(ssrc))
+		requestedKeyframes++
+	}
+
+	if requestedKeyframes > 0 {
+		log.WithField("session", w.ctx.Value("session")).
+			Debugf("Requested %d keyframes for SSRC %d", requestedKeyframes, ssrc)
 	}
 
 	w.m.Lock()
@@ -537,18 +559,6 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		Infof("Subscribed to track %s source=%s kind=%s mime=%s clockRate=%d participant=%s ssrc=%d",
 			trackID, pub.Source(), trackKind, mimeType, clockRate, rp.Identity(), track.SSRC())
 
-	w.m.Lock()
-	w.remoteTrackPubs[trackID] = pub
-	w.participantIDs[trackID] = rp.Identity()
-
-	// Ensure remoteParticipants map is initialized - might be a thing if autoSubscribe is true
-	if w.remoteParticipants == nil {
-		w.remoteParticipants = make(map[string]*lksdk.RemoteParticipant)
-	}
-
-	w.remoteParticipants[rp.Identity()] = rp
-	w.m.Unlock()
-
 	var depacketizer rtp.Depacketizer
 	switch mimeType {
 	case MimeTypeVP8:
@@ -562,6 +572,36 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 		return
 	}
+
+	if w.cfg.WriteRTPDump {
+		basePath := w.rec.GetFilePath()
+		ext := filepath.Ext(basePath)
+		rtpPath := fmt.Sprintf("%s.rtp", basePath[:len(basePath)-len(ext)])
+		rtpWriter, err := recorder.NewRTPWriter(rtpPath, net.IP{0, 0, 0, 0}, 0)
+
+		if err != nil {
+			log.WithField("session", w.ctx.Value("session")).
+				WithField("trackID", trackID).
+				Errorf("Failed to create RTP writer for track %s: %v", trackID, err)
+		} else {
+			log.WithField("session", w.ctx.Value("session")).
+				WithField("trackID", trackID).
+				Infof("RTP dump enabled for track %s to %s", trackID, rtpPath)
+			w.rtpWriters[trackID] = rtpWriter
+		}
+	}
+
+	w.m.Lock()
+	w.remoteTrackPubs[trackID] = pub
+	w.participantIDs[trackID] = rp.Identity()
+
+	// Ensure remoteParticipants map is initialized - might be a thing if autoSubscribe is true
+	if w.remoteParticipants == nil {
+		w.remoteParticipants = make(map[string]*lksdk.RemoteParticipant)
+	}
+
+	w.remoteParticipants[rp.Identity()] = rp
+	w.m.Unlock()
 
 	latency := time.Duration(200) * time.Millisecond
 
@@ -669,6 +709,9 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 				w.connStateCallback(utils.ConnectionStateClosed)
 			}
 		}()
+
+		rtpWriter, rtpWriterExists := w.rtpWriters[trackID]
+
 		for {
 			readDeadline := time.Now().Add(w.cfg.PacketReadTimeout)
 			// Ignore error from SetReadDeadline - it comes from pion/packetio
@@ -693,6 +736,14 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 			if packet == nil {
 				continue
+			}
+
+			if rtpWriterExists {
+				if err := rtpWriter.WriteRTP(packet); err != nil {
+					log.WithField("session", w.ctx.Value("session")).
+						WithField("trackID", trackID).
+						Warnf("failed to write RTP packet for track %s: %v", trackID, err)
+				}
 			}
 
 			buffer.Push(packet)

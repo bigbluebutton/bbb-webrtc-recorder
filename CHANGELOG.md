@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* feat(livekit): generation of rtpdump files for recorded tracks
+
 ### v0.10.0
 
 * feat: boot sequence health check and Prometheus health metrics
