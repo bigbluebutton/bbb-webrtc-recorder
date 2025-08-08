@@ -75,11 +75,6 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 				s.server.PublishPubSub(
 					events.NewRecordingRtpStatusChanged(s.id, isFlowing, timestamp/time.Millisecond),
 				)
-			} else {
-				s.server.CloseSession(s.id)
-				s.server.PublishPubSub(
-					events.NewRecordingStopped(s.id, "closed", timestamp/time.Millisecond),
-				)
 			}
 		})
 		s.webrtc.SetSDPOffer(offer)
