@@ -2,9 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-### UNRELEASED
+### v0.11.0
 
 * feat(livekit): generation of rtpdump files for recorded tracks
+* fix(mediasoup): stop event triggered by flowing=false if adapter is closed
 
 ### v0.10.0
 
