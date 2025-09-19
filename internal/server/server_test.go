@@ -116,12 +116,12 @@ func TestDoubleStopSession(t *testing.T) {
 	server.sessions.Store(sessionID, sess)
 	server.shutdownWg.Add(1)
 	go sess.Run(&server.shutdownWg)
-	err := sess.StartRecording(startEvent)
+	err := sess.StartRecording(startEvent, time.Time{})
 	assert.NoError(t, err)
 
 	// 2. Stop the session for the first time
 	stopEvent1 := &events.StopRecording{SessionId: sessionID}
-	err1 := sess.StopRecording(stopEvent1, events.StopReasonNormal)
+	err1 := sess.StopRecording(stopEvent1, events.StopReasonNormal, time.Time{})
 
 	assert.NoError(t, err1, "First stop should not produce an error")
 
@@ -139,7 +139,7 @@ func TestDoubleStopSession(t *testing.T) {
 			}
 		}()
 
-		err2 = sess.StopRecording(stopEvent2, events.StopReasonNormal)
+		err2 = sess.StopRecording(stopEvent2, events.StopReasonNormal, time.Time{})
 		assert.NoError(t, err2, "Second stop should not produce an error")
 	})
 
