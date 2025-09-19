@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.12.0
+
+* feat: new Histogram metric `request_duration_seconds`
+* feat: new counter metric `session_errors_total`
+* fix: command processing is inefficient and causes lockups, rework it
+* fix: don't emit stop event for sessions that have not started
+* test: add double (trailing) start/stop tests to server.go
+* test: regression test for stop events for non-started sessions
+
 ### v0.11.0
 
 * feat(livekit): generation of rtpdump files for recorded tracks
