@@ -1,15 +1,17 @@
 package server
 
 import (
+	"errors"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/signal"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
@@ -17,18 +19,37 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type startRecordingCommand struct {
+	event     *events.StartRecording
+	startTime time.Time
+}
+
+type stopRecordingCommand struct {
+	event     *events.StopRecording
+	reason    string
+	startTime time.Time
+}
+
 type Session struct {
 	id          string
 	server      *Server
 	cfg         *config.Config
 	webrtc      *webrtc.WebRTC
-	livekit     *livekit.LiveKitWebRTC
+	livekit     interfaces.LiveKitWebRTCInterface
 	recorder    recorder.Recorder
 	stopped     bool
+	stoppedOnce sync.Once
+	commands    chan interface{}
 	statsWriter *appstats.StatsFileWriter
 }
 
-func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWebRTC, recorder recorder.Recorder) *Session {
+func NewSession(
+	id string,
+	s *Server,
+	wrtc *webrtc.WebRTC,
+	lk interfaces.LiveKitWebRTCInterface,
+	recorder recorder.Recorder,
+) *Session {
 	sess := &Session{
 		id:       id,
 		server:   s,
@@ -36,6 +57,7 @@ func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWe
 		livekit:  lk,
 		recorder: recorder,
 		cfg:      s.cfg,
+		commands: make(chan interface{}, 10),
 	}
 
 	if s.cfg.Recorder.WriteStatsFile {
@@ -55,19 +77,84 @@ func NewSession(id string, s *Server, wrtc *webrtc.WebRTC, lk *livekit.LiveKitWe
 	return sess
 }
 
-func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
+func (s *Session) StartRecording(e *events.StartRecording, startTime time.Time) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// A panic here likely means the channel has been closed, which indicates
+			// the session is already stopped or in the process of stopping. Start
+			// should always fail when facing an error condition (differently from stop).
+			log.WithField("session", s.id).Errorf("recovered from panic in start command: %v", r)
+			err = errors.New("failed to start session, panic")
+		}
+	}()
+
+	select {
+	case s.commands <- startRecordingCommand{event: e, startTime: startTime}:
+		return nil
+
+	default:
+		return errors.New("session command queue is full")
+	}
+}
+
+func (s *Session) StopRecording(e *events.StopRecording, reason string, startTime time.Time) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// A panic here likely means the channel has been closed, which indicates
+			// the session is already stopped or in the process of stopping.
+			// Stop should fail silently to API consumers. This is our job to get right.
+			// Log and register metrics as panics should not happen and should be investigated.
+			log.WithField("session", s.id).Errorf("recovered from panic in stop command: %v", r)
+			appstats.OnSessionError("panic in stop command")
+			err = nil
+		}
+	}()
+
+	select {
+	case s.commands <- stopRecordingCommand{event: e, reason: reason, startTime: startTime}:
+		return nil
+
+	default:
+		return errors.New("session command queue is full")
+	}
+}
+
+func (s *Session) Run(wg *sync.WaitGroup) {
+	defer wg.Done()
 	appstats.Sessions.Inc()
-	// Only initialize WebRTC if we're using mediasoup
+	defer appstats.Sessions.Dec()
+
+	for cmd := range s.commands {
+		switch c := cmd.(type) {
+		case startRecordingCommand:
+			s.handleStartRecording(c)
+
+		case stopRecordingCommand:
+			s.handleStopRecording(c)
+			return
+
+		default:
+			log.WithField("session", s.id).Errorf("unknown command type: %T", c)
+			return
+		}
+	}
+}
+
+func (s *Session) handleStartRecording(c startRecordingCommand) {
+	e := c.event
+	defer func() {
+		if e != nil && !c.startTime.IsZero() {
+			appstats.ObserveRequestDuration(e.Id, time.Since(c.startTime))
+		}
+	}()
+
+	// webrtc is the mediasoup-based adapter
 	if s.webrtc != nil {
 		offer := pwebrtc.SessionDescription{}
 		signal.Decode(e.GetSDP(), &offer)
 		s.webrtc.SetConnectionStateCallback(func(state utils.ConnectionState) {
 			if state.IsTerminalState() {
-				if !s.stopped {
-					s.server.CloseSession(s.id)
-					ts := s.StopRecording() / time.Millisecond
-					s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
-				}
+				s.StopRecording(nil, state.String(), time.Time{})
 			}
 		})
 		s.webrtc.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {
@@ -81,21 +168,21 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 		answer, err := s.webrtc.Init()
 
 		if err != nil {
-			return "", err
+			s.server.PublishPubSub(e.Fail(err))
+			appstats.OnSessionError("init_failed")
+			s.handleStopRecording(stopRecordingCommand{reason: "init_failed"})
+			return
 		}
 
-		return signal.Encode(answer), nil
+		s.server.PublishPubSub(e.Success(signal.Encode(answer), s.recorder.GetFilePath()))
+
+		return
 	}
 
-	// For LiveKit, we don't need to return an SDP answer
 	if s.livekit != nil {
 		s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {
 			if state.IsTerminalState() {
-				if !s.stopped {
-					s.server.CloseSession(s.id)
-					ts := s.StopRecording() / time.Millisecond
-					s.server.PublishPubSub(events.NewRecordingStopped(s.id, state.String(), ts))
-				}
+				s.StopRecording(nil, state.String(), time.Time{})
 			}
 		})
 		s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {
@@ -104,32 +191,38 @@ func (s *Session) StartRecording(e *events.StartRecording) (string, error) {
 					events.NewRecordingRtpStatusChanged(s.id, isFlowing, timestamp/time.Millisecond),
 				)
 			} else {
-				if !s.stopped {
-					s.server.CloseSession(s.id)
-					s.server.PublishPubSub(
-						events.NewRecordingStopped(s.id, "closed", timestamp/time.Millisecond),
-					)
-				}
+				s.StopRecording(nil, "closed", time.Time{})
 			}
 		})
 
 		if err := s.livekit.Init(); err != nil {
-			s.StopRecording()
-			return "", err
-		}
-	}
+			s.server.PublishPubSub(e.Fail(err))
+			appstats.OnSessionError("init_failed")
+			s.handleStopRecording(stopRecordingCommand{reason: "init_failed"})
 
-	return "", nil
+			return
+		}
+
+		// For LiveKit, we don't need to return an SDP answer
+		s.server.PublishPubSub(e.Success("", s.recorder.GetFilePath()))
+	}
 }
 
-func (s *Session) StopRecording() time.Duration {
-	var duration time.Duration
+func (s *Session) handleStopRecording(c stopRecordingCommand) {
+	s.stoppedOnce.Do(func() {
+		defer func() {
+			if c.event != nil && !c.startTime.IsZero() {
+				appstats.ObserveRequestDuration(c.event.Id, time.Since(c.startTime))
+			}
+		}()
 
-	if !s.stopped {
 		s.stopped = true
-		appstats.Sessions.Dec()
+		var duration time.Duration
 
 		if s.livekit != nil {
+			// Reset state callbacks to avoid any potential race conditions or duplicated events.
+			s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {})
+			s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {})
 			stats := s.livekit.GetStats()
 			appstats.UpdateCaptureMetrics(stats)
 
@@ -149,9 +242,30 @@ func (s *Session) StopRecording() time.Duration {
 		}
 
 		if s.webrtc != nil {
+			// Reset state callbacks to avoid any potential race conditions or duplicated events.
+			s.webrtc.SetConnectionStateCallback(func(state utils.ConnectionState) {})
+			s.webrtc.SetFlowCallback(func(isFlowing bool, videoTimestamp time.Duration, closed bool) {})
 			duration = s.webrtc.Close()
 		}
-	}
 
-	return duration
+		ts := duration / time.Millisecond
+		var response interface{}
+
+		e := c.event
+		reason := c.reason
+
+		if e != nil {
+			response = e.Stopped(reason, ts)
+		} else {
+			if reason == "" {
+				reason = events.StopReasonNormal
+			}
+
+			response = events.NewRecordingStopped(s.id, reason, ts)
+		}
+
+		s.server.PublishPubSub(response)
+		s.server.CloseSession(s.id)
+		close(s.commands)
+	})
 }

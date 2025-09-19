@@ -11,6 +11,7 @@ import (
 	"github.com/at-wat/ebml-go/mkvcore"
 	"github.com/at-wat/ebml-go/webm"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/jech/samplebuilder"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
@@ -41,49 +42,6 @@ type VP8FrameInfo struct {
 	isKeyFrame    bool
 	timestamp     uint32
 	size          int
-}
-
-type DiscontinuityInfo struct {
-	Count    int    `json:"count"`
-	MinGap   uint16 `json:"minGap"`
-	MaxGap   uint16 `json:"maxGap"`
-	AvgGap   uint16 `json:"avgGap"`
-	TotalGap uint16 `json:"totalGap"`
-}
-
-// BaseTrackStats contains metrics common to both audio and video tracks
-type BaseTrackStats struct {
-	StartTime           int64             `json:"startTime"`
-	EndTime             int64             `json:"endTime"`
-	StartPTS            int64             `json:"startPts"`
-	EndPTS              int64             `json:"endPts"`
-	AvgSampleDurationMs time.Duration     `json:"avgSampleDurationMs"`
-	MaxSampleDurationMs time.Duration     `json:"maxSampleDurationMs"`
-	TotalSamples        int               `json:"totalSamples"`
-	WrittenSamples      int               `json:"writtenSamples"`
-	RTPDiscontInfo      DiscontinuityInfo `json:"rtpDiscontInfo"`
-
-	sampleDurationAcc time.Duration
-}
-
-// AudioTrackStats contains audio-specific metrics
-type AudioTrackStats struct {
-	BaseTrackStats
-}
-
-// VideoTrackStats contains video-specific metrics
-type RecorderTrackStats struct {
-	BaseTrackStats
-	CorruptedFrames     int               `json:"corruptedFrames,omitempty"`
-	AvgFrameSizeBytes   int               `json:"avgFrameSizeBytes,omitempty"`
-	MaxFrameSizeBytes   int               `json:"maxFrameSizeBytes,omitempty"`
-	KeyframeCount       int               `json:"keyframeCount,omitempty"`
-	VP8PicIDDiscontInfo DiscontinuityInfo `json:"vp8PicIdDiscontInfo,omitempty"`
-}
-
-type RecorderStats struct {
-	Audio *RecorderTrackStats `json:"audio,omitempty"`
-	Video *RecorderTrackStats `json:"video,omitempty"`
 }
 
 type WebmRecorder struct {
@@ -144,7 +102,7 @@ type WebmRecorder struct {
 	ivfWriter           *IVFWriter
 
 	// Stats tracking
-	stats        RecorderStats
+	stats        types.RecorderStats
 	lastAudioPTS int64
 	lastVideoPTS int64
 }
@@ -222,7 +180,7 @@ func (r *WebmRecorder) AudioTimestamp() time.Duration {
 	return r.audioTimestamp
 }
 
-func (r *WebmRecorder) GetStats() *RecorderStats {
+func (r *WebmRecorder) GetStats() *types.RecorderStats {
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -233,7 +191,7 @@ func (r *WebmRecorder) GetStats() *RecorderStats {
 		stats.Audio.EndPTS = r.lastAudioPTS
 
 		if stats.Audio.TotalSamples > 0 {
-			stats.Audio.AvgSampleDurationMs = stats.Audio.sampleDurationAcc /
+			stats.Audio.AvgSampleDurationMs = stats.Audio.SampleDurationAcc /
 				time.Duration(stats.Audio.TotalSamples)
 		}
 
@@ -253,7 +211,7 @@ func (r *WebmRecorder) GetStats() *RecorderStats {
 		}
 
 		if stats.Video.TotalSamples > 0 {
-			stats.Video.AvgSampleDurationMs = stats.Video.sampleDurationAcc /
+			stats.Video.AvgSampleDurationMs = stats.Video.SampleDurationAcc /
 				time.Duration(stats.Video.TotalSamples)
 		}
 
@@ -377,18 +335,18 @@ func (r *WebmRecorder) Close() time.Duration {
 
 func (r *WebmRecorder) initVideoStats() {
 	if r.stats.Video == nil {
-		r.stats.Video = &RecorderTrackStats{
-			BaseTrackStats: BaseTrackStats{
+		r.stats.Video = &types.RecorderTrackStats{
+			BaseTrackStats: types.BaseTrackStats{
 				StartTime: time.Now().Unix(),
 				StartPTS:  r.lastVideoPTS,
-				RTPDiscontInfo: DiscontinuityInfo{
+				RTPDiscontInfo: types.DiscontinuityInfo{
 					Count:    0,
 					MinGap:   0,
 					MaxGap:   0,
 					TotalGap: 0,
 				},
 			},
-			VP8PicIDDiscontInfo: DiscontinuityInfo{
+			VP8PicIDDiscontInfo: types.DiscontinuityInfo{
 				Count:    0,
 				MinGap:   0,
 				MaxGap:   0,
@@ -400,11 +358,11 @@ func (r *WebmRecorder) initVideoStats() {
 
 func (r *WebmRecorder) initAudioStats() {
 	if r.stats.Audio == nil {
-		r.stats.Audio = &RecorderTrackStats{
-			BaseTrackStats: BaseTrackStats{
+		r.stats.Audio = &types.RecorderTrackStats{
+			BaseTrackStats: types.BaseTrackStats{
 				StartTime: time.Now().Unix(),
 				StartPTS:  r.lastAudioPTS,
-				RTPDiscontInfo: DiscontinuityInfo{
+				RTPDiscontInfo: types.DiscontinuityInfo{
 					Count:    0,
 					MinGap:   0,
 					MaxGap:   0,
@@ -1270,7 +1228,7 @@ func (r *WebmRecorder) initWriter(width, height int) {
 
 //  ----- Stats tracking methods -----
 
-func (r *WebmRecorder) trackRTPDiscontinuity(stats *BaseTrackStats, gap uint16) {
+func (r *WebmRecorder) trackRTPDiscontinuity(stats *types.BaseTrackStats, gap uint16) {
 	if stats == nil {
 		return
 	}
@@ -1287,7 +1245,7 @@ func (r *WebmRecorder) trackRTPDiscontinuity(stats *BaseTrackStats, gap uint16) 
 	}
 }
 
-func (r *WebmRecorder) trackPicIDDiscontinuity(stats *RecorderTrackStats, gap uint16) {
+func (r *WebmRecorder) trackPicIDDiscontinuity(stats *types.RecorderTrackStats, gap uint16) {
 	if stats == nil {
 		return
 	}
@@ -1304,7 +1262,7 @@ func (r *WebmRecorder) trackPicIDDiscontinuity(stats *RecorderTrackStats, gap ui
 	}
 }
 
-func (r *WebmRecorder) trackFrameStats(stats *RecorderTrackStats, size int, isKeyFrame bool, duration time.Duration) {
+func (r *WebmRecorder) trackFrameStats(stats *types.RecorderTrackStats, size int, isKeyFrame bool, duration time.Duration) {
 	if stats == nil {
 		return
 	}
@@ -1321,7 +1279,7 @@ func (r *WebmRecorder) trackFrameStats(stats *RecorderTrackStats, size int, isKe
 	}
 }
 
-func (r *WebmRecorder) trackSampleStats(stats *BaseTrackStats, duration time.Duration) {
+func (r *WebmRecorder) trackSampleStats(stats *types.BaseTrackStats, duration time.Duration) {
 	// Duration is in ns, convert to ms
 	durationMs := duration / time.Millisecond
 
@@ -1330,7 +1288,7 @@ func (r *WebmRecorder) trackSampleStats(stats *BaseTrackStats, duration time.Dur
 	}
 
 	stats.TotalSamples++
-	stats.sampleDurationAcc += durationMs
+	stats.SampleDurationAcc += durationMs
 
 	if durationMs > stats.MaxSampleDurationMs {
 		stats.MaxSampleDurationMs = durationMs

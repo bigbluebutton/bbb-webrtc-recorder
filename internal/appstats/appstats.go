@@ -1,7 +1,9 @@
 package appstats
 
 import (
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
+	"time"
+
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 )
 
 type AdapterTrackStats struct {
@@ -23,18 +25,26 @@ type BufferStatsWrapper struct {
 }
 
 type TrackStats struct {
-	Source             string                       `json:"source"`
-	Buffer             *BufferStatsWrapper          `json:"buffer"`
-	Adapter            *AdapterTrackStats           `json:"adapter"`
-	RecorderTrackStats *recorder.RecorderTrackStats `json:"recorderTrackStats,omitempty"`
-	TrackKind          string                       `json:"trackKind"`
-	MimeType           string                       `json:"mimeType"`
+	Source             string                    `json:"source"`
+	Buffer             *BufferStatsWrapper       `json:"buffer"`
+	Adapter            *AdapterTrackStats        `json:"adapter"`
+	RecorderTrackStats *types.RecorderTrackStats `json:"recorder"`
+	TrackKind          string                    `json:"trackKind"`
+	MimeType           string                    `json:"mimeType"`
 }
 
 type CaptureStats struct {
-	RecorderSessionUUID string                 `json:"recorderSessionId"`
+	RecorderSessionUUID string                 `json:"recorderSessionUuid"`
 	RoomID              string                 `json:"roomId"`
 	ParticipantID       string                 `json:"participantId"`
 	Tracks              map[string]*TrackStats `json:"tracks"`
 	FileName            string                 `json:"fileName"`
+}
+
+func ObserveRequestDuration(method string, duration time.Duration) {
+	RequestDuration.WithLabelValues(method).Observe(duration.Seconds())
+}
+
+func OnSessionError(reason string) {
+	SessionErrors.WithLabelValues(reason).Inc()
 }

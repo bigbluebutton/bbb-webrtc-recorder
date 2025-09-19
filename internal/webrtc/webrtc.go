@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
@@ -37,6 +38,7 @@ type WebRTC struct {
 	videoTrackSSRCs     []uint32
 	pliStats            map[uint32]PLITracker
 	sdpOffer            webrtc.SessionDescription
+	m                   sync.Mutex
 }
 
 func NewWebRTC(ctx context.Context, cfg config.WebRTC, rec recorder.Recorder) *WebRTC {
@@ -53,10 +55,18 @@ func NewWebRTC(ctx context.Context, cfg config.WebRTC, rec recorder.Recorder) *W
 }
 
 func (w *WebRTC) SetConnectionStateCallback(fn func(state utils.ConnectionState)) {
+	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
+	w.m.Lock()
+	defer w.m.Unlock()
+
 	w.connStateCallbackFn = fn
 }
 
 func (w *WebRTC) SetFlowCallback(fn func(isFlowing bool, videoTimestamp time.Duration, closed bool)) {
+	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
+	w.m.Lock()
+	defer w.m.Unlock()
+
 	w.flowCallback = fn
 }
 
@@ -321,7 +331,14 @@ func (w *WebRTC) Init() (webrtc.SessionDescription, error) {
 							}
 						}
 
-						w.flowCallback(false, ts, true)
+						w.m.Lock()
+						fcb := w.flowCallback
+						w.m.Unlock()
+
+						if fcb != nil {
+							fcb(false, ts, true)
+						}
+
 						return
 					case <-ticker.C:
 						if s1 == s2 {
@@ -341,7 +358,13 @@ func (w *WebRTC) Init() (webrtc.SessionDescription, error) {
 									ts = w.rec.AudioTimestamp()
 								}
 							}
-							w.flowCallback(isFlowing, ts, false)
+							w.m.Lock()
+							fcb := w.flowCallback
+							w.m.Unlock()
+
+							if fcb != nil {
+								fcb(isFlowing, ts, false)
+							}
 
 							if isFlowing {
 								ticker.Reset(time.Millisecond * 1000)
@@ -447,8 +470,12 @@ func (w *WebRTC) Init() (webrtc.SessionDescription, error) {
 			}
 		}
 
-		if w.connStateCallbackFn != nil {
-			w.connStateCallbackFn(state)
+		w.m.Lock()
+		callback := w.connStateCallbackFn
+		w.m.Unlock()
+
+		if callback != nil {
+			callback(state)
 		}
 	})
 

@@ -21,6 +21,8 @@ type Server struct {
 	cfg      *config.Config
 	pubsub   pubsub.PubSub
 	sessions sync.Map
+	// shutdownWg is used to wait for graceful shutdowns
+	shutdownWg sync.WaitGroup
 }
 
 func NewServer(cfg *config.Config, ps pubsub.PubSub) *Server {
@@ -28,14 +30,25 @@ func NewServer(cfg *config.Config, ps pubsub.PubSub) *Server {
 }
 
 func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
+	start := time.Now()
+	method := "invalid"
+	processedHere := true
+
+	defer func() {
+		if processedHere {
+			appstats.ObserveRequestDuration(method, time.Since(start))
+		}
+	}()
+
 	log.Trace(string(msg))
 	event := events.Decode(msg)
-
 	appstats.OnServerRequest(event)
 
 	if !event.IsValid() {
 		return
 	}
+
+	method = event.Id
 
 	switch event.Id {
 	case "startRecording":
@@ -43,6 +56,7 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 
 		if e == nil {
 			s.PublishPubSub(e.Fail(fmt.Errorf("incorrect event")))
+			return
 		}
 
 		ctx = context.WithValue(ctx, "session", e.SessionId)
@@ -63,6 +77,8 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 
 		var rec recorder.Recorder
 		var err error
+		var wrtc *webrtc.WebRTC
+		var lk *livekit.LiveKitWebRTC
 
 		switch e.Adapter {
 		case "livekit":
@@ -74,24 +90,13 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 				return
 			}
 
-			wrtc := livekit.NewLiveKitWebRTC(
+			lk = livekit.NewLiveKitWebRTC(
 				ctx,
 				s.cfg.LiveKit,
 				rec,
 				e.AdapterOptions.LiveKit.Room,
 				e.AdapterOptions.LiveKit.TrackIDs,
 			)
-			sess := NewSession(e.SessionId, s, nil, wrtc, rec)
-			s.sessions.Store(e.SessionId, sess)
-
-			if _, err := sess.StartRecording(e); err != nil {
-				log.WithField("session", ctx.Value("session")).Error(err)
-				s.PublishPubSub(e.Fail(err))
-				s.CloseSession(e.SessionId)
-				return
-			}
-
-			s.PublishPubSub(e.Success("", rec.GetFilePath()))
 
 		case "mediasoup", "":
 			rec, err = recorder.NewRecorder(ctx, s.cfg.Recorder, e.FileName)
@@ -102,32 +107,34 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 				return
 			}
 
-			var sdp string
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						err = fmt.Errorf("%v", r)
-					}
-				}()
-
-				wrtc := webrtc.NewWebRTC(ctx, s.cfg.WebRTC, rec)
-				sess := NewSession(e.SessionId, s, wrtc, nil, rec)
-				s.sessions.Store(e.SessionId, sess)
-				sdp, err = sess.StartRecording(e)
-				s.PublishPubSub(e.Success(sdp, rec.GetFilePath()))
-			}()
-
-			if err != nil {
-				log.WithField("session", ctx.Value("session")).Error(err)
-				s.PublishPubSub(e.Fail(err))
-			}
+			wrtc = webrtc.NewWebRTC(ctx, s.cfg.WebRTC, rec)
 
 		default:
 			err := fmt.Errorf("unknown adapter type: %s", e.Adapter)
 			log.WithField("session", ctx.Value("session")).Error(err)
 			s.PublishPubSub(e.Fail(err))
+
 			return
 		}
+
+		sess := NewSession(e.SessionId, s, wrtc, lk, rec)
+		s.sessions.Store(e.SessionId, sess)
+		s.shutdownWg.Add(1)
+		go sess.Run(&s.shutdownWg)
+
+		if err := sess.StartRecording(e, start); err != nil {
+			log.WithField("session", e.SessionId).Errorf("failed to send start command: %v", err)
+			s.PublishPubSub(e.Fail(err))
+			appstats.OnSessionError(err.Error())
+
+			if stopErr := sess.StopRecording(nil, "start_failed", time.Time{}); stopErr != nil {
+				log.WithField("session", e.SessionId).Errorf("failed to stop session after start failure: %v", stopErr)
+				appstats.OnSessionError(stopErr.Error())
+			}
+
+			return
+		}
+		processedHere = false
 
 	case "stopRecording":
 		e := event.StopRecording()
@@ -137,9 +144,12 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 		}
 
 		if sess, ok := s.sessions.Load(e.SessionId); ok {
-			ts := sess.(*Session).StopRecording() / time.Millisecond
-			s.PublishPubSub(e.Stopped(events.StopReasonNormal, ts))
-			s.CloseSession(e.SessionId)
+			if err := sess.(*Session).StopRecording(e, events.StopReasonNormal, start); err != nil {
+				log.WithField("session", e.SessionId).Errorf("failed to send stop command: %v", err)
+				appstats.OnSessionError(err.Error())
+				return
+			}
+			processedHere = false
 		}
 
 	case "getRecorderStatus":
@@ -167,11 +177,14 @@ func (s *Server) Close() error {
 	// Close all sessions gracefully
 	s.sessions.Range(func(key, value interface{}) bool {
 		sess := value.(*Session)
-		ts := sess.StopRecording() / time.Millisecond
-		s.PublishPubSub(events.NewRecordingStopped(sess.id, events.StopReasonAppShutdown, ts))
-		s.CloseSession(sess.id)
+
+		if err := sess.StopRecording(nil, events.StopReasonAppShutdown, time.Time{}); err != nil {
+			log.WithField("session", sess.id).Errorf("failed to send stop command during shutdown: %v", err)
+		}
+
 		return true
 	})
 
+	s.shutdownWg.Wait()
 	return nil
 }

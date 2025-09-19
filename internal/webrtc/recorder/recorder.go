@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/pion/rtp"
 	log "github.com/sirupsen/logrus"
@@ -20,7 +21,7 @@ type KeyframeRequester = interfaces.KeyframeRequester
 
 type Recorder interface {
 	GetFilePath() string
-	GetStats() *RecorderStats
+	GetStats() *types.RecorderStats
 	PushVideo(rtp *rtp.Packet)
 	PushAudio(rtp *rtp.Packet)
 	NotifySkippedPacket(seq uint16)

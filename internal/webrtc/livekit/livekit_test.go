@@ -7,16 +7,16 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/assert"
 )
 
 // mockRecorder implements the recorder.Recorder interface for testing
 type mockRecorder struct {
-	videoStats *recorder.RecorderTrackStats
-	audioStats *recorder.RecorderTrackStats
+	videoStats *types.RecorderTrackStats
+	audioStats *types.RecorderTrackStats
 	hasAudio   bool
 	hasVideo   bool
 	filePath   string
@@ -26,8 +26,8 @@ func (m *mockRecorder) GetFilePath() string {
 	return m.filePath
 }
 
-func (m *mockRecorder) GetStats() *recorder.RecorderStats {
-	return &recorder.RecorderStats{
+func (m *mockRecorder) GetStats() *types.RecorderStats {
+	return &types.RecorderStats{
 		Video: m.videoStats,
 		Audio: m.audioStats,
 	}
@@ -132,8 +132,8 @@ func setupMockLK() (*LiveKitWebRTC, *mockRecorder) {
 		APISecret: "test-secret",
 	}
 	rec := &mockRecorder{
-		videoStats: &recorder.RecorderTrackStats{},
-		audioStats: &recorder.RecorderTrackStats{},
+		videoStats: &types.RecorderTrackStats{},
+		audioStats: &types.RecorderTrackStats{},
 		filePath:   "test.webm",
 	}
 	roomID := "test-room"

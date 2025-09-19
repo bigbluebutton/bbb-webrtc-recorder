@@ -199,6 +199,25 @@ var (
 		[]string{
 			"component",
 		})
+
+	RequestDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Subsystem: "recorder",
+		Name:      "request_duration_seconds",
+		Help:      "Duration of server requests.",
+		Buckets:   []float64{0.01, 0.02, 0.03, 0.05, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0},
+	},
+		[]string{
+			"method",
+		})
+
+	SessionErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "session_errors_total",
+		Help:      "Total number of session-related errors.",
+	},
+		[]string{
+			"reason",
+		})
 )
 
 func Init() {
@@ -221,6 +240,8 @@ func Init() {
 	prometheus.MustRegister(TrackSubscriptionFailures)
 	prometheus.MustRegister(ParticipantReconnectingEvents)
 	prometheus.MustRegister(ComponentHealth)
+	prometheus.MustRegister(RequestDuration)
+	prometheus.MustRegister(SessionErrors)
 }
 
 func newMetricsHandler() *metricsHandler {

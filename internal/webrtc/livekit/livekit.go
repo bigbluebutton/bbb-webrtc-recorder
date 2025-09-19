@@ -15,6 +15,7 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
@@ -129,10 +130,18 @@ func NewLiveKitWebRTC(
 }
 
 func (w *LiveKitWebRTC) SetConnectionStateCallback(callback func(state utils.ConnectionState)) {
+	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
+	w.m.Lock()
+	defer w.m.Unlock()
+
 	w.connStateCallback = callback
 }
 
 func (w *LiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
+	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
+	w.m.Lock()
+	defer w.m.Unlock()
+
 	w.flowCallback = callback
 }
 
@@ -274,12 +283,12 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 
 	w.m.Unlock()
 
-	var recStats *recorder.RecorderStats
+	var recStats *types.RecorderStats
 
 	if recorderRef != nil {
 		recStats = recorderRef.GetStats()
 	} else {
-		recStats = &recorder.RecorderStats{}
+		recStats = &types.RecorderStats{}
 	}
 
 	finalAdapterStats := &appstats.CaptureStats{
@@ -332,9 +341,9 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 		}
 
 		if recStats != nil {
-			if remoteTrackPub.Kind() == lksdk.TrackKindVideo {
+			if remoteTrackPub.Kind() == lksdk.TrackKindVideo && recStats.Video != nil {
 				finalAdapterStats.Tracks[source].RecorderTrackStats = recStats.Video
-			} else if remoteTrackPub.Kind() == lksdk.TrackKindAudio {
+			} else if remoteTrackPub.Kind() == lksdk.TrackKindAudio && recStats.Audio != nil {
 				finalAdapterStats.Tracks[source].RecorderTrackStats = recStats.Audio
 			}
 		}
@@ -939,11 +948,24 @@ func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 		Infof("Disconnected from LiveKit room reason=%v", reason)
 
 	state := utils.NormalizeLiveKitDisconnectReason(reason)
-	w.connStateCallback(state)
+
+	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
+	w.m.Lock()
+	callback := w.connStateCallback
+	w.m.Unlock()
+
+	if callback != nil {
+		callback(state)
+	}
 
 	// If this is a terminal state, also notify via flow callback
-	if state.IsTerminalState() && w.flowCallback != nil {
-		w.flowCallback(false, time.Since(w.startTs), true)
+	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
+	w.m.Lock()
+	fcb := w.flowCallback
+	w.m.Unlock()
+
+	if state.IsTerminalState() && fcb != nil {
+		fcb(false, time.Since(w.startTs), true)
 	}
 }
 
