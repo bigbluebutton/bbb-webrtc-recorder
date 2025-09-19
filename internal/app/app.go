@@ -138,7 +138,7 @@ func Run() {
 
 	sv = server.NewServer(cfg, ps)
 
-	if err := ps.Subscribe(cfg.PubSub.Channels.Subscribe, sv.HandlePubSub, sv.OnStart); err != nil {
+	if err := ps.Subscribe(cfg.PubSub.Channels.Subscribe, sv.HandlePubSubMsg, sv.OnStart); err != nil {
 		log.Fatalf("failed to subscribe to pubsub %s: %s", cfg.PubSub.Channels.Subscribe, err)
 	}
 }

@@ -162,7 +162,7 @@ func TestDuplicateStartSession(t *testing.T) {
 	}`, sessionID))
 
 	// Send a start request for the already-existing session
-	server.HandlePubSub(ctx, startEventJSON)
+	server.HandlePubSubMsg(ctx, startEventJSON)
 
 	// We expect a "startRecordingResponse" message with a "failed" status
 	select {
@@ -178,5 +178,53 @@ func TestDuplicateStartSession(t *testing.T) {
 		assert.Contains(t, *response.Error, "session test-duplicate-start already exists")
 	case <-time.After(1 * time.Second):
 		t.Fatal("Did not receive a response from the server")
+	}
+}
+
+func TestStartRecordingFailureDoesNotPublishStopEvent(t *testing.T) {
+	cfg := &config.Config{
+		Recorder: config.Recorder{
+			// Use a recorder config that will cause recorder.NewRecorder to fail
+			Directory: "/this/path/cannot/exist/surely/",
+			FileMode:  "0640",
+		},
+	}
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(cfg, ps)
+	ctx := context.Background()
+	sessionID := "test-start-fail"
+	startEventPayload := &events.StartRecording{
+		SessionId: sessionID,
+		Adapter:   "livekit",
+		FileName:  "test.webm",
+	}
+	event := &events.Event{
+		Id:   "startRecording",
+		Data: startEventPayload,
+	}
+	event.StartRecording()
+	server.HandlePubSubEvent(ctx, event)
+
+	// 1. We expect exactly one message: a "startRecordingResponse" with a "failed" status
+	select {
+	case responseBytes := <-ps.publishChan:
+		var response events.StartRecordingResponse
+		err := json.Unmarshal(responseBytes, &response)
+		assert.NoError(t, err)
+
+		assert.Equal(t, "startRecordingResponse", response.Id)
+		assert.Equal(t, sessionID, response.SessionId)
+		assert.Equal(t, "failed", response.Status)
+		assert.NotNil(t, response.Error)
+	case <-time.After(1 * time.Second):
+		t.Fatal("Did not receive a response from the server")
+	}
+
+	// 2. We expect NO other messages, specifically no "recordingStopped" message.
+	select {
+	case unexpectedBytes := <-ps.publishChan:
+		t.Fatalf("Received an unexpected second message on pubsub channel: %s", string(unexpectedBytes))
+	case <-time.After(100 * time.Millisecond):
+		// This is the expected outcome: the channel is empty.
 	}
 }

@@ -31,16 +31,17 @@ type stopRecordingCommand struct {
 }
 
 type Session struct {
-	id          string
-	server      *Server
-	cfg         *config.Config
-	webrtc      *webrtc.WebRTC
-	livekit     interfaces.LiveKitWebRTCInterface
-	recorder    recorder.Recorder
-	stopped     bool
-	stoppedOnce sync.Once
-	commands    chan interface{}
-	statsWriter *appstats.StatsFileWriter
+	id                  string
+	server              *Server
+	cfg                 *config.Config
+	webrtc              *webrtc.WebRTC
+	livekit             interfaces.LiveKitWebRTCInterface
+	recorder            recorder.Recorder
+	stopped             bool
+	stoppedOnce         sync.Once
+	commands            chan interface{}
+	statsWriter         *appstats.StatsFileWriter
+	startedSuccessfully bool
 }
 
 func NewSession(
@@ -175,6 +176,7 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 		}
 
 		s.server.PublishPubSub(e.Success(signal.Encode(answer), s.recorder.GetFilePath()))
+		s.startedSuccessfully = true
 
 		return
 	}
@@ -205,14 +207,20 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 
 		// For LiveKit, we don't need to return an SDP answer
 		s.server.PublishPubSub(e.Success("", s.recorder.GetFilePath()))
+		s.startedSuccessfully = true
 	}
 }
 
 func (s *Session) handleStopRecording(c stopRecordingCommand) {
 	s.stoppedOnce.Do(func() {
 		defer func() {
-			if c.event != nil && !c.startTime.IsZero() {
-				appstats.ObserveRequestDuration(c.event.Id, time.Since(c.startTime))
+			if !c.startTime.IsZero() {
+				method := "stopRecording"
+				if c.event != nil {
+					method = c.event.Id
+				}
+
+				appstats.ObserveRequestDuration(method, time.Since(c.startTime))
 			}
 		}()
 
@@ -264,7 +272,10 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 			response = events.NewRecordingStopped(s.id, reason, ts)
 		}
 
-		s.server.PublishPubSub(response)
+		if s.startedSuccessfully {
+			s.server.PublishPubSub(response)
+		}
+
 		s.server.CloseSession(s.id)
 		close(s.commands)
 	})

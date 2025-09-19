@@ -29,7 +29,13 @@ func NewServer(cfg *config.Config, ps pubsub.PubSub) *Server {
 	return &Server{cfg: cfg, pubsub: ps}
 }
 
-func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
+func (s *Server) HandlePubSubMsg(ctx context.Context, msg []byte) {
+	log.Trace(string(msg))
+	event := events.Decode(msg)
+	s.HandlePubSubEvent(ctx, event)
+}
+
+func (s *Server) HandlePubSubEvent(ctx context.Context, event *events.Event) {
 	start := time.Now()
 	method := "invalid"
 	processedHere := true
@@ -40,8 +46,6 @@ func (s *Server) HandlePubSub(ctx context.Context, msg []byte) {
 		}
 	}()
 
-	log.Trace(string(msg))
-	event := events.Decode(msg)
 	appstats.OnServerRequest(event)
 
 	if !event.IsValid() {
