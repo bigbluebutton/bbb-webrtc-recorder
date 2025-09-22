@@ -79,8 +79,10 @@ func Init() {
 }
 
 func Run() {
+	appstats.Init()
+
 	if cfg.Prometheus.Enable {
-		appstats.Init()
+		appstats.RegisterMetrics()
 		appstats.ServePromMetrics(cfg.Prometheus)
 	}
 

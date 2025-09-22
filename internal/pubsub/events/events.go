@@ -27,6 +27,8 @@ const (
 	RecordingStoppedKey          = "recordingStopped"
 	RecorderStatusKey            = "recorderStatus"
 	GetRecorderStatusKey         = "getRecorderStatus"
+	GetRecordingsKey             = "getRecordings"
+	GetRecordingsResponseKey     = "getRecordingsResponse"
 )
 
 const (
@@ -359,4 +361,63 @@ func (e *Event) GetRecorderStatus() *GetRecorderStatus {
 
 func (e *GetRecorderStatus) Status(appVersion string, instanceId string) *RecorderStatus {
 	return NewRecorderStatus(appVersion, instanceId)
+}
+
+/*
+getRecordings (* -> Recorder)
+```JSON5
+
+	{
+		"id": "getRecordings",
+		"requestId": "<String>" // requester-defined - for request/response correlation
+	}
+
+```
+*/
+type GetRecordings struct {
+	Id        string `json:"id,omitempty"`
+	RequestId string `json:"requestId,omitempty"`
+}
+
+type RecordingInfo struct {
+	SessionId      string          `json:"recordingSessionId,omitempty"`
+	FileName       string          `json:"fileName,omitempty"`
+	Adapter        AdapterType     `json:"adapter,omitempty"`
+	AdapterOptions *AdapterOptions `json:"adapterOptions,omitempty"`
+	StartTimeUTC   *int64          `json:"startTimeUTC,omitempty"` // Unix timestamp (milliseconds)
+	StartTimeHR    *time.Duration  `json:"startTimeHR,omitempty"`  // Monotonic system time (nanoseconds)
+}
+
+/*
+getRecordingsResponse (Recorder -> *)
+```JSON5
+
+	{
+		"id": "getRecordingsResponse",
+		"requestId": "<String>", // Mirrors the requestId from the getRecordings request
+		"recordings": [
+			{
+				"recordingSessionId": "<String>",
+				"fileName": "<String>",
+				"adapter": "<String>", // "mediasoup" or "livekit"
+				"adapterOptions": { ... },
+				"startTimeUTC": "<Number | undefined>", // Wall clock time (milliseconds since epoch) for the first frame
+				"startTimeHR": "<Number | undefined>" // Monotonic system time (milliseconds) for the first frame
+			}
+		]
+	}
+
+```
+*/
+type GetRecordingsResponse struct {
+	Id         string           `json:"id,omitempty"`
+	RequestId  string           `json:"requestId,omitempty"`
+	Recordings []*RecordingInfo `json:"recordings"`
+}
+
+func (e *Event) GetRecordings() *GetRecordings {
+	if ev, ok := e.Data.(*GetRecordings); ok {
+		return ev
+	}
+	return nil
 }

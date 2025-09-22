@@ -33,6 +33,8 @@ func Decode(message []byte) *Event {
 		s = &GetRecorderStatus{}
 	case "recorderStatus":
 		s = &RecorderStatus{}
+	case "getRecordings":
+		s = &GetRecordings{}
 	default:
 		var v map[string]interface{}
 		s = &v

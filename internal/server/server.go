@@ -158,7 +158,42 @@ func (s *Server) HandlePubSubEvent(ctx context.Context, event *events.Event) {
 
 	case "getRecorderStatus":
 		s.PublishPubSub(events.NewRecorderStatus(s.cfg.App.Version, s.cfg.App.InstanceId))
+
+	case "getRecordings":
+		e := event.GetRecordings()
+
+		if e == nil {
+			return
+		}
+
+		go s.handleGetRecordings(e)
+		processedHere = false
 	}
+}
+
+func (s *Server) handleGetRecordings(e *events.GetRecordings) {
+	start := time.Now()
+	recordings := make([]*events.RecordingInfo, 0)
+
+	defer func() {
+		appstats.ObserveRequestDuration("getRecordings", time.Since(start))
+	}()
+
+	s.sessions.Range(func(key, value interface{}) bool {
+		session := value.(*Session)
+
+		if info := session.GetRecordingInfo(); info != nil {
+			recordings = append(recordings, info)
+		}
+
+		return true
+	})
+	response := &events.GetRecordingsResponse{
+		Id:         events.GetRecordingsResponseKey,
+		RequestId:  e.RequestId,
+		Recordings: recordings,
+	}
+	s.PublishPubSub(response)
 }
 
 func (s *Server) PublishPubSub(msg interface{}) {

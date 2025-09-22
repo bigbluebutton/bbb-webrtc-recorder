@@ -6,6 +6,14 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 )
 
+var (
+	AppStartTime time.Time
+)
+
+func Init() {
+	AppStartTime = time.Now()
+}
+
 type AdapterTrackStats struct {
 	StartTime         int64  `json:"startTime"`
 	EndTime           int64  `json:"endTime"`
@@ -39,6 +47,10 @@ type CaptureStats struct {
 	ParticipantID       string                 `json:"participantId"`
 	Tracks              map[string]*TrackStats `json:"tracks"`
 	FileName            string                 `json:"fileName"`
+}
+
+func GetUptime() time.Duration {
+	return time.Since(AppStartTime)
 }
 
 func ObserveRequestDuration(method string, duration time.Duration) {

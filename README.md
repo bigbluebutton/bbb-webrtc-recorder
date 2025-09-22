@@ -207,3 +207,39 @@ journalctl -u bbb-webrtc-recorder -f
 	timestamp: <Number>, // event generation timestamp
 }
 ```
+
+`getRecordings` (* -> Recorder)
+```json5
+{
+    "id": "getRecordings",
+    "requestId": "<String>" // requester-defined - for request/response correlation
+}
+```
+
+`getRecordingsResponse` (Recorder -> *)
+```json5
+{
+    "id": "getRecordingsResponse",
+    "requestId": "<String>", // Mirrors the requestId from the getRecordings request
+    "recordings": [
+        {
+            "recordingSessionId": "<String>",
+            "fileName": "<String>",
+            "adapter": "<String>", // "mediasoup" or "livekit"
+            "adapterOptions": {
+                // mediasoup-specific options
+                "mediasoup": {
+                    "sdp": "<String>"
+                },
+                // LiveKit-specific options
+                "livekit": {
+                    "room": "<String>",
+                    "trackIds": ["<String>"]
+                }
+            },
+            "startTimeUTC": "<Number | undefined>", // Wall clock time (milliseconds since epoch) for the first frame
+            "startTimeHR": "<Number | undefined>" // Monotonic system time (milliseconds) for the first frame
+        }
+    ]
+}
+```

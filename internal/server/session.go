@@ -42,6 +42,12 @@ type Session struct {
 	commands            chan interface{}
 	statsWriter         *appstats.StatsFileWriter
 	startedSuccessfully bool
+
+	mu                    sync.Mutex
+	startEvent            *events.StartRecording
+	recordingStartTimeUTC time.Time
+	recordingStartTimeHR  time.Duration
+	mediaHasFlowed        bool
 }
 
 func NewSession(
@@ -120,6 +126,31 @@ func (s *Session) StopRecording(e *events.StopRecording, reason string, startTim
 	}
 }
 
+func (s *Session) GetRecordingInfo() *events.RecordingInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.startEvent == nil || s.recorder == nil {
+		return nil
+	}
+
+	info := &events.RecordingInfo{
+		SessionId:      s.id,
+		FileName:       s.recorder.GetFilePath(),
+		Adapter:        s.startEvent.Adapter,
+		AdapterOptions: s.startEvent.AdapterOptions,
+	}
+
+	if s.mediaHasFlowed {
+		utc := s.recordingStartTimeUTC.UnixMilli()
+		hr := s.recordingStartTimeHR
+		info.StartTimeUTC = &utc
+		info.StartTimeHR = &hr
+	}
+
+	return info
+}
+
 func (s *Session) Run(wg *sync.WaitGroup) {
 	defer wg.Done()
 	appstats.Sessions.Inc()
@@ -149,6 +180,11 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 		}
 	}()
 
+	s.mu.Lock()
+	// Store the start event for GetRecordingInfo requests
+	s.startEvent = e
+	s.mu.Unlock()
+
 	// webrtc is the mediasoup-based adapter
 	if s.webrtc != nil {
 		offer := pwebrtc.SessionDescription{}
@@ -159,6 +195,8 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 			}
 		})
 		s.webrtc.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {
+			s.handleFirstMediaFlow(isFlowing, timestamp)
+
 			if !closed {
 				s.server.PublishPubSub(
 					events.NewRecordingRtpStatusChanged(s.id, isFlowing, timestamp/time.Millisecond),
@@ -188,6 +226,8 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 			}
 		})
 		s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {
+			s.handleFirstMediaFlow(isFlowing, timestamp)
+
 			if !closed {
 				s.server.PublishPubSub(
 					events.NewRecordingRtpStatusChanged(s.id, isFlowing, timestamp/time.Millisecond),
@@ -279,4 +319,15 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 		s.server.CloseSession(s.id)
 		close(s.commands)
 	})
+}
+
+func (s *Session) handleFirstMediaFlow(isFlowing bool, timestamp time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if isFlowing && !s.mediaHasFlowed {
+		s.mediaHasFlowed = true
+		s.recordingStartTimeUTC = time.Now().UTC()
+		s.recordingStartTimeHR = timestamp
+	}
 }

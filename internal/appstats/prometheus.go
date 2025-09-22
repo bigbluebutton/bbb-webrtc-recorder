@@ -220,7 +220,7 @@ var (
 		})
 )
 
-func Init() {
+func RegisterMetrics() {
 	prometheus.MustRegister(Requests)
 	prometheus.MustRegister(InvalidRequests)
 	prometheus.MustRegister(Responses)

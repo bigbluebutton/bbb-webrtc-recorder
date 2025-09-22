@@ -41,9 +41,11 @@ func (p *mockPubSub) Close() error   { return nil }
 var _ pubsub.PubSub = (*mockPubSub)(nil)
 
 // Mock Recorder
-type mockRecorder struct{}
+type mockRecorder struct {
+	path string
+}
 
-func (r *mockRecorder) GetFilePath() string             { return "/tmp/rec.webm" }
+func (r *mockRecorder) GetFilePath() string             { return r.path }
 func (r *mockRecorder) PushVideo(p *rtp.Packet)         {}
 func (r *mockRecorder) PushAudio(p *rtp.Packet)         {}
 func (r *mockRecorder) Close() time.Duration            { return 0 }
@@ -226,5 +228,168 @@ func TestStartRecordingFailureDoesNotPublishStopEvent(t *testing.T) {
 		t.Fatalf("Received an unexpected second message on pubsub channel: %s", string(unexpectedBytes))
 	case <-time.After(100 * time.Millisecond):
 		// This is the expected outcome: the channel is empty.
+	}
+}
+
+func TestGetRecordings(t *testing.T) {
+	testCases := []struct {
+		name       string
+		setup      func(server *Server) map[string]*Session
+		assertions func(t *testing.T, response *events.GetRecordingsResponse, sessions map[string]*Session)
+	}{
+		{
+			name: "With Active Sessions",
+			setup: func(server *Server) map[string]*Session {
+				sessions := make(map[string]*Session)
+
+				// LiveKit session
+				sessionID1 := "test-session-1"
+				startEvent1 := &events.StartRecording{
+					SessionId: sessionID1,
+					FileName:  "rec1.webm",
+					Adapter:   "livekit",
+					AdapterOptions: &events.AdapterOptions{
+						LiveKit: &events.LiveKitConfig{Room: "room1", TrackIDs: []string{"track1"}},
+					},
+				}
+				sess1 := &Session{
+					id:                    sessionID1,
+					startEvent:            startEvent1,
+					recorder:              &mockRecorder{path: "/var/recordings/rec1.webm"},
+					recordingStartTimeUTC: time.Now().Add(time.Millisecond * 50),
+					recordingStartTimeHR:  time.Second * 10,
+					mediaHasFlowed:        true,
+				}
+				server.sessions.Store(sessionID1, sess1)
+				sessions[sessionID1] = sess1
+
+				// Mediasoup session
+				sessionID2 := "test-session-2"
+				startEvent2 := &events.StartRecording{
+					SessionId: sessionID2,
+					FileName:  "rec2.webm",
+					Adapter:   "mediasoup",
+					AdapterOptions: &events.AdapterOptions{
+						Mediasoup: &events.MediasoupConfig{SDP: "v=0..."},
+					},
+				}
+				sess2 := &Session{
+					id:                    sessionID2,
+					startEvent:            startEvent2,
+					recorder:              &mockRecorder{path: "/var/recordings/rec2.webm"},
+					recordingStartTimeUTC: time.Now().Add(time.Millisecond * 50),
+					recordingStartTimeHR:  time.Second * 20,
+					mediaHasFlowed:        true,
+				}
+				server.sessions.Store(sessionID2, sess2)
+				sessions[sessionID2] = sess2
+
+				// Session without media flow
+				sessionID3 := "test-session-3"
+				startEvent3 := &events.StartRecording{
+					SessionId: sessionID3,
+					FileName:  "rec3.webm",
+					Adapter:   "livekit",
+					AdapterOptions: &events.AdapterOptions{
+						LiveKit: &events.LiveKitConfig{Room: "room3", TrackIDs: []string{"track3"}},
+					},
+				}
+				sess3 := &Session{
+					id:             sessionID3,
+					startEvent:     startEvent3,
+					recorder:       &mockRecorder{path: "/var/recordings/rec3.webm"},
+					mediaHasFlowed: false,
+				}
+				server.sessions.Store(sessionID3, sess3)
+				sessions[sessionID3] = sess3
+
+				return sessions
+			},
+			assertions: func(t *testing.T, response *events.GetRecordingsResponse, sessions map[string]*Session) {
+				assert.Len(t, response.Recordings, 3)
+
+				recMap := make(map[string]*events.RecordingInfo)
+				for _, rec := range response.Recordings {
+					recMap[rec.SessionId] = rec
+				}
+
+				// Validate LiveKit recording
+				sess1 := sessions["test-session-1"]
+				rec1, ok1 := recMap[sess1.id]
+				assert.True(t, ok1)
+				assert.Equal(t, sess1.recorder.GetFilePath(), rec1.FileName)
+				assert.Equal(t, events.AdapterLiveKit, rec1.Adapter)
+				assert.Equal(t, sess1.startEvent.AdapterOptions.LiveKit.Room, rec1.AdapterOptions.LiveKit.Room)
+				assert.Equal(t, sess1.startEvent.AdapterOptions.LiveKit.TrackIDs, rec1.AdapterOptions.LiveKit.TrackIDs)
+				assert.NotNil(t, rec1.StartTimeUTC)
+				assert.Equal(t, sess1.recordingStartTimeUTC.UnixMilli(), *rec1.StartTimeUTC)
+				assert.NotNil(t, rec1.StartTimeHR)
+				assert.Equal(t, sess1.recordingStartTimeHR, *rec1.StartTimeHR)
+
+				// Validate Mediasoup recording
+				sess2 := sessions["test-session-2"]
+				rec2, ok2 := recMap[sess2.id]
+				assert.True(t, ok2)
+				assert.Equal(t, sess2.recorder.GetFilePath(), rec2.FileName)
+				assert.Equal(t, events.AdapterMediasoup, rec2.Adapter)
+				assert.Equal(t, sess2.startEvent.AdapterOptions.Mediasoup.SDP, rec2.AdapterOptions.Mediasoup.SDP)
+				assert.NotNil(t, rec2.StartTimeUTC)
+				assert.Equal(t, sess2.recordingStartTimeUTC.UnixMilli(), *rec2.StartTimeUTC)
+				assert.NotNil(t, rec2.StartTimeHR)
+				assert.Equal(t, sess2.recordingStartTimeHR, *rec2.StartTimeHR)
+
+				// Validate session that request times are undefined when media has not started flowing.
+				sess3 := sessions["test-session-3"]
+				rec3, ok3 := recMap[sess3.id]
+				assert.True(t, ok3)
+				assert.Equal(t, sess3.recorder.GetFilePath(), rec3.FileName)
+				assert.Equal(t, events.AdapterLiveKit, rec3.Adapter)
+				assert.Equal(t, sess3.startEvent.AdapterOptions.LiveKit.Room, rec3.AdapterOptions.LiveKit.Room)
+				assert.Equal(t, sess3.startEvent.AdapterOptions.LiveKit.TrackIDs, rec3.AdapterOptions.LiveKit.TrackIDs)
+				assert.Nil(t, rec3.StartTimeUTC)
+				assert.Nil(t, rec3.StartTimeHR)
+			},
+		},
+		{
+			name:  "With No Active Sessions",
+			setup: func(server *Server) map[string]*Session { return nil },
+			assertions: func(t *testing.T, response *events.GetRecordingsResponse, sessions map[string]*Session) {
+				assert.NotNil(t, response.Recordings, "Recordings field should be an empty array, not null")
+				assert.Len(t, response.Recordings, 0, "Recordings array should be empty")
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+			server := NewServer(cfg, ps)
+			ctx := context.Background()
+			sessions := tc.setup(server)
+			requestID := "test-req-" + tc.name
+
+			getRecordingsEvent := &events.Event{
+				Id: "getRecordings",
+				Data: &events.GetRecordings{
+					Id:        "getRecordings",
+					RequestId: requestID,
+				},
+			}
+			server.HandlePubSubEvent(ctx, getRecordingsEvent)
+
+			select {
+			case responseBytes := <-ps.publishChan:
+				var response events.GetRecordingsResponse
+				err := json.Unmarshal(responseBytes, &response)
+				assert.NoError(t, err)
+				assert.Equal(t, "getRecordingsResponse", response.Id)
+				assert.Equal(t, requestID, response.RequestId)
+				tc.assertions(t, &response, sessions)
+
+			case <-time.After(2 * time.Second):
+				t.Fatal("Did not receive a getRecordingsResponse from the server within 2 seconds")
+			}
+		})
 	}
 }
