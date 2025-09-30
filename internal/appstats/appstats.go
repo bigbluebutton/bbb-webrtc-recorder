@@ -60,3 +60,11 @@ func ObserveRequestDuration(method string, duration time.Duration) {
 func OnSessionError(reason string) {
 	SessionErrors.WithLabelValues(reason).Inc()
 }
+
+func ObserveLiveKitConnectDuration(duration time.Duration) {
+	LiveKitConnectDuration.Observe(duration.Seconds())
+}
+
+func ObserveLiveKitSubscribeDuration(duration time.Duration) {
+	LiveKitSubscribeDuration.Observe(duration.Seconds())
+}

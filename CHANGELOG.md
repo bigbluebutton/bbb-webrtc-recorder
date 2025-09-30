@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* feat: add getRecordings API
+* feat: new Histogram metric `livekit_connect_duration_seconds`
+* feat: new Histogram metric `livekit_subscribe_duration_seconds`
+
 ### v0.12.0
 
 * feat: new Histogram metric `request_duration_seconds`

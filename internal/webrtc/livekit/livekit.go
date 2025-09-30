@@ -88,6 +88,8 @@ type LiveKitWebRTC struct {
 	requestKeyframeCtx    context.Context
 	requestKeyframeCancel context.CancelFunc
 	requestKeyframeWg     sync.WaitGroup
+
+	pendingSubscriptions map[string]time.Time
 }
 
 func NewLiveKitWebRTC(
@@ -119,6 +121,7 @@ func NewLiveKitWebRTC(
 		keyframeRequestChan:   make(chan uint32, 100),
 		requestKeyframeCtx:    requestKeyframeCtx,
 		requestKeyframeCancel: requestKeyframeCancel,
+		pendingSubscriptions:  make(map[string]time.Time),
 	}
 
 	w.initTrackStats()
@@ -150,44 +153,9 @@ func (w *LiveKitWebRTC) Init() error {
 		return err
 	}
 
-	token, err := w.buildRecorderToken(w.roomId, w.identity)
-
-	if err != nil {
-		return fmt.Errorf("failed to build recorder token: %w", err)
+	if err := w.connectToRoom(); err != nil {
+		return err
 	}
-
-	log.WithField("session", w.ctx.Value("session")).
-		WithField("room", w.roomId).
-		WithField("identity", w.identity).
-		Debugf("Connecting to LiveKit room")
-
-	room, err := lksdk.ConnectToRoomWithToken(w.cfg.Host, token,
-		&lksdk.RoomCallback{
-			ParticipantCallback: lksdk.ParticipantCallback{
-				OnTrackSubscribed:         w.onTrackSubscribed,
-				OnTrackUnsubscribed:       w.onTrackUnsubscribed,
-				OnTrackUnpublished:        w.onTrackUnpublished,
-				OnTrackUnmuted:            w.onTrackUnmuted,
-				OnTrackMuted:              w.onTrackMuted,
-				OnTrackSubscriptionFailed: w.onTrackSubscriptionFailed,
-			},
-			OnDisconnectedWithReason: w.onDisconnected,
-			OnReconnecting:           w.onReconnecting,
-			OnReconnected:            w.onReconnected,
-		},
-		lksdk.WithAutoSubscribe(false),
-	)
-
-	if err != nil {
-		w.Close()
-		return fmt.Errorf("failed to connect to LiveKit room: %w", err)
-	}
-
-	w.room = room
-	log.WithField("session", w.ctx.Value("session")).
-		WithField("room", w.roomId).
-		WithField("identity", w.identity).
-		Infof("Connected to LiveKit room")
 
 	if _, err := w.subscribeToTracks(w.trackIds); err != nil {
 		w.Close()
@@ -442,9 +410,9 @@ func (w *LiveKitWebRTC) initTrackStats() {
 }
 
 func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPubs map[string]*lksdk.RemoteTrackPublication, err error) {
-	availableTracks := make(map[string]*lksdk.RemoteTrackPublication)
 	subscribedTrackPubs = make(map[string]*lksdk.RemoteTrackPublication)
 	remoteParticipants := make(map[string]*lksdk.RemoteParticipant)
+	pendingSubscriptions := make(map[string]time.Time)
 
 	for _, remoteParticipant := range w.room.GetRemoteParticipants() {
 		for _, remoteTrackPublication := range remoteParticipant.TrackPublications() {
@@ -460,17 +428,17 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 				}
 
 				if remoteTrackPub, ok := remoteTrackPublication.(*lksdk.RemoteTrackPublication); ok {
-					availableTracks[remoteTrackPublication.SID()] = remoteTrackPub
+					trackSID := remoteTrackPub.SID()
+					subscribedTrackPubs[trackSID] = remoteTrackPub
+					w.participantIDs[trackSID] = remoteParticipant.Identity()
+					remoteParticipants[remoteParticipant.Identity()] = remoteParticipant
+					pendingSubscriptions[trackSID] = time.Now()
 
 					if err := w.subscribe(remoteTrackPub); err != nil {
 						log.WithField("session", w.ctx.Value("session")).
-							Errorf("Failed to subscribe to track %s: %v", remoteTrackPublication.SID(), err)
+							Errorf("Failed to subscribe to track %s: %v", trackSID, err)
 						return nil, err
 					}
-
-					subscribedTrackPubs[remoteTrackPublication.SID()] = remoteTrackPub
-					w.participantIDs[remoteTrackPublication.SID()] = remoteParticipant.Identity()
-					remoteParticipants[remoteParticipant.Identity()] = remoteParticipant
 				}
 			}
 		}
@@ -479,13 +447,13 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 	w.remoteParticipants = remoteParticipants
 	w.remoteTrackPubs = subscribedTrackPubs
 
-	if len(availableTracks) == 0 {
+	if len(pendingSubscriptions) == 0 {
 		return nil, fmt.Errorf("no tracks available")
 	}
 
-	if len(subscribedTrackPubs) < len(availableTracks) {
-		return nil, fmt.Errorf("unable to subscribe")
-	}
+	w.m.Lock()
+	w.pendingSubscriptions = pendingSubscriptions
+	w.m.Unlock()
 
 	return subscribedTrackPubs, nil
 }
@@ -558,6 +526,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	pub *lksdk.RemoteTrackPublication,
 	rp *lksdk.RemoteParticipant,
 ) {
+	w.observeSubscription(pub.SID())
 	trackID := pub.SID()
 	trackKind := TrackKind(pub.Kind())
 	isVideo := trackKind == TrackKindVideo
@@ -777,6 +746,17 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 			w.processPacketStats(trackID, packets)
 		}
 	}()
+}
+
+func (w *LiveKitWebRTC) observeSubscription(trackID string) {
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	if startTime, ok := w.pendingSubscriptions[trackID]; ok && !startTime.IsZero() {
+		duration := time.Since(startTime)
+		appstats.ObserveLiveKitSubscribeDuration(duration)
+		delete(w.pendingSubscriptions, trackID)
+	}
 }
 
 func (w *LiveKitWebRTC) trackReadErrorStats(err error, trackID string, pub *lksdk.RemoteTrackPublication) {
@@ -1019,6 +999,51 @@ func (w *LiveKitWebRTC) processKeyframeRequests() {
 			return
 		}
 	}
+}
+
+func (w *LiveKitWebRTC) connectToRoom() error {
+	token, err := w.buildRecorderToken(w.roomId, w.identity)
+
+	if err != nil {
+		return fmt.Errorf("failed to build recorder token: %w", err)
+	}
+
+	log.WithField("session", w.ctx.Value("session")).
+		WithField("room", w.roomId).
+		WithField("identity", w.identity).
+		Debugf("Connecting to LiveKit room")
+
+	connectStart := time.Now()
+	room, err := lksdk.ConnectToRoomWithToken(w.cfg.Host, token,
+		&lksdk.RoomCallback{
+			ParticipantCallback: lksdk.ParticipantCallback{
+				OnTrackSubscribed:         w.onTrackSubscribed,
+				OnTrackUnsubscribed:       w.onTrackUnsubscribed,
+				OnTrackUnpublished:        w.onTrackUnpublished,
+				OnTrackUnmuted:            w.onTrackUnmuted,
+				OnTrackMuted:              w.onTrackMuted,
+				OnTrackSubscriptionFailed: w.onTrackSubscriptionFailed,
+			},
+			OnDisconnectedWithReason: w.onDisconnected,
+			OnReconnecting:           w.onReconnecting,
+			OnReconnected:            w.onReconnected,
+		},
+		lksdk.WithAutoSubscribe(false),
+	)
+	appstats.ObserveLiveKitConnectDuration(time.Since(connectStart))
+
+	if err != nil {
+		w.Close()
+		return fmt.Errorf("failed to connect to LiveKit room: %w", err)
+	}
+
+	w.room = room
+	log.WithField("session", w.ctx.Value("session")).
+		WithField("room", w.roomId).
+		WithField("identity", w.identity).
+		Infof("Connected to LiveKit room")
+
+	return nil
 }
 
 func (w *LiveKitWebRTC) buildRecorderToken(roomName string, identity string) (string, error) {
