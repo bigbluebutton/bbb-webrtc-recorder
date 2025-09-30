@@ -48,6 +48,7 @@ type Session struct {
 	recordingStartTimeUTC time.Time
 	recordingStartTimeHR  time.Duration
 	mediaHasFlowed        bool
+	metadata              map[string]any
 }
 
 func NewSession(
@@ -139,6 +140,7 @@ func (s *Session) GetRecordingInfo() *events.RecordingInfo {
 		FileName:       s.recorder.GetFilePath(),
 		Adapter:        s.startEvent.Adapter,
 		AdapterOptions: s.startEvent.AdapterOptions,
+		Metadata:       s.metadata,
 	}
 
 	if s.mediaHasFlowed {
@@ -183,6 +185,7 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 	s.mu.Lock()
 	// Store the start event for GetRecordingInfo requests
 	s.startEvent = e
+	s.metadata = e.Metadata
 	s.mu.Unlock()
 
 	// webrtc is the mediasoup-based adapter
@@ -213,7 +216,7 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 			return
 		}
 
-		s.server.PublishPubSub(e.Success(signal.Encode(answer), s.recorder.GetFilePath()))
+		s.server.PublishPubSub(e.Success(signal.Encode(answer), s.recorder.GetFilePath(), s.metadata))
 		s.startedSuccessfully = true
 
 		return
@@ -246,7 +249,7 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 		}
 
 		// For LiveKit, we don't need to return an SDP answer
-		s.server.PublishPubSub(e.Success("", s.recorder.GetFilePath()))
+		s.server.PublishPubSub(e.Success("", s.recorder.GetFilePath(), s.metadata))
 		s.startedSuccessfully = true
 	}
 }

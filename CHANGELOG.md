@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ### UNRELEASED
 
 * feat: add getRecordings API
+* feat: add support for opaque session metadata
 * feat: new Histogram metric `livekit_connect_duration_seconds`
 * feat: new Histogram metric `livekit_subscribe_duration_seconds`
 

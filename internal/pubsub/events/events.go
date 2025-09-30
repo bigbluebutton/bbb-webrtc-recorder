@@ -96,6 +96,7 @@ type StartRecording struct {
 	FileName       string          `json:"fileName,omitempty"`
 	Adapter        AdapterType     `json:"adapter,omitempty"` // "mediasoup" or "livekit"
 	AdapterOptions *AdapterOptions `json:"adapterOptions,omitempty"`
+	Metadata       map[string]any  `json:"metadata,omitempty"`
 	// Legacy field for backward compatibility - check AdapterOptions#Mediasoup#SDP
 	// for the new format
 	SDP string `json:"sdp,omitempty"`
@@ -158,7 +159,7 @@ func (e *StartRecording) Fail(err error) *StartRecordingResponse {
 	return &r
 }
 
-func (e *StartRecording) Success(sdp, fileName string) *StartRecordingResponse {
+func (e *StartRecording) Success(sdp, fileName string, metadata map[string]any) *StartRecordingResponse {
 	r := StartRecordingResponse{
 		Id:        StartRecordingResponseKey,
 		SessionId: e.SessionId,
@@ -166,6 +167,7 @@ func (e *StartRecording) Success(sdp, fileName string) *StartRecordingResponse {
 		Error:     nil,
 		SDP:       pointer.ToString(sdp),
 		FileName:  pointer.ToString(fileName),
+		Metadata:  metadata,
 	}
 	return &r
 }
@@ -185,13 +187,14 @@ startRecordingResponse (Recorder -> SFU)
 */
 
 type StartRecordingResponse struct {
-	Id        string  `json:"id,omitempty"`
-	SessionId string  `json:"recordingSessionId,omitempty"`
-	Status    string  `json:"status,omitempty"`
-	Error     *string `json:"error,omitempty"`
-	SDP       *string `json:"sdp,omitempty"`
-	FileName  *string `json:"fileName,omitempty"`
-	Adapter   *string `json:"adapter,omitempty"`
+	Id        string         `json:"id,omitempty"`
+	SessionId string         `json:"recordingSessionId,omitempty"`
+	Status    string         `json:"status,omitempty"`
+	Error     *string        `json:"error,omitempty"`
+	SDP       *string        `json:"sdp,omitempty"`
+	FileName  *string        `json:"fileName,omitempty"`
+	Adapter   *string        `json:"adapter,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 func (e *StartRecordingResponse) Validate() error {
@@ -384,6 +387,7 @@ type RecordingInfo struct {
 	FileName       string          `json:"fileName,omitempty"`
 	Adapter        AdapterType     `json:"adapter,omitempty"`
 	AdapterOptions *AdapterOptions `json:"adapterOptions,omitempty"`
+	Metadata       map[string]any  `json:"metadata,omitempty"`
 	StartTimeUTC   *int64          `json:"startTimeUTC,omitempty"` // Unix timestamp (milliseconds)
 	StartTimeHR    *time.Duration  `json:"startTimeHR,omitempty"`  // Monotonic system time (nanoseconds)
 }
@@ -393,18 +397,19 @@ getRecordingsResponse (Recorder -> *)
 ```JSON5
 
 	{
-		"id": "getRecordingsResponse",
-		"requestId": "<String>", // Mirrors the requestId from the getRecordings request
-		"recordings": [
-			{
-				"recordingSessionId": "<String>",
-				"fileName": "<String>",
-				"adapter": "<String>", // "mediasoup" or "livekit"
-				"adapterOptions": { ... },
-				"startTimeUTC": "<Number | undefined>", // Wall clock time (milliseconds since epoch) for the first frame
-				"startTimeHR": "<Number | undefined>" // Monotonic system time (milliseconds) for the first frame
-			}
-		]
+	    "id": "getRecordingsResponse",
+	    "requestId": "<String>", // Mirrors the requestId from the getRecordings request
+	    "recordings": [
+	        {
+	            "recordingSessionId": "<String>",
+	            "fileName": "<String>",
+	            "adapter": "<String>", // "mediasoup" or "livekit"
+	            "metadata": { ... }, // Opaque metadata from the original startRecording request
+	            "adapterOptions": { ... },
+	            "startTimeUTC": "<Number | undefined>", // Wall clock time (milliseconds since epoch) for the first frame
+	            "startTimeHR": "<Number | undefined>" // Monotonic system time (milliseconds) for the first frame
+	        }
+	    ]
 	}
 
 ```

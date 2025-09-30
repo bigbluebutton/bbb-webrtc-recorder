@@ -251,11 +251,13 @@ func TestGetRecordings(t *testing.T) {
 					AdapterOptions: &events.AdapterOptions{
 						LiveKit: &events.LiveKitConfig{Room: "room1", TrackIDs: []string{"track1"}},
 					},
+					Metadata: map[string]any{"participantId": "user1", "source": "camera"},
 				}
 				sess1 := &Session{
 					id:                    sessionID1,
 					startEvent:            startEvent1,
 					recorder:              &mockRecorder{path: "/var/recordings/rec1.webm"},
+					metadata:              startEvent1.Metadata,
 					recordingStartTimeUTC: time.Now().Add(time.Millisecond * 50),
 					recordingStartTimeHR:  time.Second * 10,
 					mediaHasFlowed:        true,
@@ -272,11 +274,13 @@ func TestGetRecordings(t *testing.T) {
 					AdapterOptions: &events.AdapterOptions{
 						Mediasoup: &events.MediasoupConfig{SDP: "v=0..."},
 					},
+					Metadata: map[string]any{"participantId": "user2", "source": "screen"},
 				}
 				sess2 := &Session{
 					id:                    sessionID2,
 					startEvent:            startEvent2,
 					recorder:              &mockRecorder{path: "/var/recordings/rec2.webm"},
+					metadata:              startEvent2.Metadata,
 					recordingStartTimeUTC: time.Now().Add(time.Millisecond * 50),
 					recordingStartTimeHR:  time.Second * 20,
 					mediaHasFlowed:        true,
@@ -293,20 +297,43 @@ func TestGetRecordings(t *testing.T) {
 					AdapterOptions: &events.AdapterOptions{
 						LiveKit: &events.LiveKitConfig{Room: "room3", TrackIDs: []string{"track3"}},
 					},
+					Metadata: map[string]interface{}{"participantId": "user3", "source": "camera"},
 				}
 				sess3 := &Session{
 					id:             sessionID3,
 					startEvent:     startEvent3,
 					recorder:       &mockRecorder{path: "/var/recordings/rec3.webm"},
+					metadata:       startEvent3.Metadata,
 					mediaHasFlowed: false,
 				}
 				server.sessions.Store(sessionID3, sess3)
 				sessions[sessionID3] = sess3
 
+				// Session with no metadata
+				sessionID4 := "test-session-4"
+				startEvent4 := &events.StartRecording{
+					SessionId: sessionID4,
+					FileName:  "rec4.webm",
+					Adapter:   "livekit",
+					AdapterOptions: &events.AdapterOptions{
+						LiveKit: &events.LiveKitConfig{Room: "room4", TrackIDs: []string{"track4"}},
+					},
+					Metadata: nil, // Explicitly no metadata
+				}
+				sess4 := &Session{
+					id:             sessionID4,
+					startEvent:     startEvent4,
+					recorder:       &mockRecorder{path: "/var/recordings/rec4.webm"},
+					metadata:       startEvent4.Metadata,
+					mediaHasFlowed: false,
+				}
+				server.sessions.Store(sessionID4, sess4)
+				sessions[sessionID4] = sess4
+
 				return sessions
 			},
 			assertions: func(t *testing.T, response *events.GetRecordingsResponse, sessions map[string]*Session) {
-				assert.Len(t, response.Recordings, 3)
+				assert.Len(t, response.Recordings, 4)
 
 				recMap := make(map[string]*events.RecordingInfo)
 				for _, rec := range response.Recordings {
@@ -321,6 +348,7 @@ func TestGetRecordings(t *testing.T) {
 				assert.Equal(t, events.AdapterLiveKit, rec1.Adapter)
 				assert.Equal(t, sess1.startEvent.AdapterOptions.LiveKit.Room, rec1.AdapterOptions.LiveKit.Room)
 				assert.Equal(t, sess1.startEvent.AdapterOptions.LiveKit.TrackIDs, rec1.AdapterOptions.LiveKit.TrackIDs)
+				assert.Equal(t, sess1.startEvent.Metadata, rec1.Metadata)
 				assert.NotNil(t, rec1.StartTimeUTC)
 				assert.Equal(t, sess1.recordingStartTimeUTC.UnixMilli(), *rec1.StartTimeUTC)
 				assert.NotNil(t, rec1.StartTimeHR)
@@ -333,6 +361,7 @@ func TestGetRecordings(t *testing.T) {
 				assert.Equal(t, sess2.recorder.GetFilePath(), rec2.FileName)
 				assert.Equal(t, events.AdapterMediasoup, rec2.Adapter)
 				assert.Equal(t, sess2.startEvent.AdapterOptions.Mediasoup.SDP, rec2.AdapterOptions.Mediasoup.SDP)
+				assert.Equal(t, sess2.startEvent.Metadata, rec2.Metadata)
 				assert.NotNil(t, rec2.StartTimeUTC)
 				assert.Equal(t, sess2.recordingStartTimeUTC.UnixMilli(), *rec2.StartTimeUTC)
 				assert.NotNil(t, rec2.StartTimeHR)
@@ -346,8 +375,17 @@ func TestGetRecordings(t *testing.T) {
 				assert.Equal(t, events.AdapterLiveKit, rec3.Adapter)
 				assert.Equal(t, sess3.startEvent.AdapterOptions.LiveKit.Room, rec3.AdapterOptions.LiveKit.Room)
 				assert.Equal(t, sess3.startEvent.AdapterOptions.LiveKit.TrackIDs, rec3.AdapterOptions.LiveKit.TrackIDs)
+				assert.Equal(t, sess3.startEvent.Metadata, rec3.Metadata)
 				assert.Nil(t, rec3.StartTimeUTC)
 				assert.Nil(t, rec3.StartTimeHR)
+
+				// Validate session with no metadata
+				sess4 := sessions["test-session-4"]
+				rec4, ok4 := recMap[sess4.id]
+				assert.True(t, ok4)
+				assert.Equal(t, sess4.recorder.GetFilePath(), rec4.FileName)
+				assert.Equal(t, events.AdapterLiveKit, rec4.Adapter)
+				assert.Nil(t, rec4.Metadata)
 			},
 		},
 		{

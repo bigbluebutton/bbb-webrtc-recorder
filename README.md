@@ -141,6 +141,7 @@ journalctl -u bbb-webrtc-recorder -f
     },
     // Legacy field for backward compatibility
     sdp?: <String>, // offer - required for mediasoup adapter if adapterOptions.mediasoup.sdp is not provided
+    metadata?: <Object>, // Opaque, client-defined metadata. Returned in startRecordingResponse and getRecordingsResponse
 }
 ```
 
@@ -154,6 +155,7 @@ journalctl -u bbb-webrtc-recorder -f
     error: undefined | <String>,
     sdp: <String | undefined>, // answer
     fileName: <String | undefined>, // full path to recording
+    metadata: <Object | undefined>, // Opaque metadata from the original startRecording request
 }
 ```
 
@@ -226,6 +228,7 @@ journalctl -u bbb-webrtc-recorder -f
             "recordingSessionId": "<String>",
             "fileName": "<String>",
             "adapter": "<String>", // "mediasoup" or "livekit"
+            "metadata": { ... }, // Opaque metadata from the original startRecording request
             "adapterOptions": {
                 // mediasoup-specific options
                 "mediasoup": {
