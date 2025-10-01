@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-### UNRELEASED
+### v0.13.0
 
 * feat: add getRecordings API
 * feat: add support for opaque session metadata
