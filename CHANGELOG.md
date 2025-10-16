@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* fix: panic when stopping a mediasoup adapter recording
+* build(docker): bump golang from 1.24 to 1.25
+
 ### v0.13.0
 
 * feat: add getRecordings API

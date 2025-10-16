@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"os"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -18,6 +19,15 @@ import (
 	pwebrtc "github.com/pion/webrtc/v4"
 	log "github.com/sirupsen/logrus"
 )
+
+func isInterfaceNil(i interface{}) bool {
+	if i == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(i)
+	return !v.IsValid() || v.IsNil()
+}
 
 type startRecordingCommand struct {
 	event     *events.StartRecording
@@ -270,7 +280,7 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 		s.stopped = true
 		var duration time.Duration
 
-		if s.livekit != nil {
+		if !isInterfaceNil(s.livekit) {
 			// Reset state callbacks to avoid any potential race conditions or duplicated events.
 			s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {})
 			s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {})
