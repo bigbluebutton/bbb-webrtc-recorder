@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ### UNRELEASED
 
 * fix: panic when stopping a mediasoup adapter recording
+* fix: unnecessary init of LK adapter fields when using mediasoup
 * build(docker): bump golang from 1.24 to 1.25
 
 ### v0.13.0

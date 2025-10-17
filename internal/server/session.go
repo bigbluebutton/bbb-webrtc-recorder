@@ -232,7 +232,7 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 		return
 	}
 
-	if s.livekit != nil {
+	if !isInterfaceNil(s.livekit) {
 		s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {
 			if state.IsTerminalState() {
 				s.StopRecording(nil, state.String(), time.Time{})
