@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-### UNRELEASED
+### v0.13.1
 
 * fix: panic when stopping a mediasoup adapter recording
 * fix: unnecessary init of LK adapter fields when using mediasoup
