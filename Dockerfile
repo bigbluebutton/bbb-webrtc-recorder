@@ -29,4 +29,7 @@ RUN groupadd -g 998 bigbluebutton && useradd -m -u 998 -g bigbluebutton bigblueb
 COPY --from=builder /usr/bin/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder
 COPY --from=builder /app/config/bbb-webrtc-recorder.yml /etc/bbb-webrtc-recorder/bbb-webrtc-recorder.yml
 
-CMD ["/bin/sh", "-c", "chown -R bigbluebutton:bigbluebutton /var/lib/bbb-webrtc-recorder && gosu bigbluebutton /usr/bin/bbb-webrtc-recorder"]
+RUN mkdir /var/lib/bbb-webrtc-recorder
+RUN chown -R bigbluebutton:bigbluebutton /var/lib/bbb-webrtc-recorder
+
+CMD ["/bin/sh", "-c", "gosu bigbluebutton /usr/bin/bbb-webrtc-recorder"]
