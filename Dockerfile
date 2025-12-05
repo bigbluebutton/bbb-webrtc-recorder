@@ -26,8 +26,8 @@ RUN apt-get update && apt-get install -y gosu
 RUN groupadd -g 998 bigbluebutton && useradd -m -u 998 -g bigbluebutton bigbluebutton
 
 # create directories
-RUN mkdir -p /var/lib/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder /etc/bbb-webrtc-recorder
-RUN chown -R bigbluebutton:bigbluebutton /var/lib/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder /etc/bbb-webrtc-recorder
+RUN mkdir -p /var/lib/bbb-webrtc-recorder /etc/bbb-webrtc-recorder
+RUN chown -R bigbluebutton:bigbluebutton /var/lib/bbb-webrtc-recorder /etc/bbb-webrtc-recorder
 
 # Copy the binary to the production image from the builder stage.
 COPY --from=builder --chown=bigbluebutton /usr/bin/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder
