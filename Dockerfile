@@ -25,11 +25,13 @@ RUN apt-get update && apt-get install -y gosu
 # use same UID as in the recordings container
 RUN groupadd -g 998 bigbluebutton && useradd -m -u 998 -g bigbluebutton bigbluebutton
 
+# create directories
+RUN mkdir -p /var/lib/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder /etc/bbb-webrtc-recorder
+RUN chown -R bigbluebutton:bigbluebutton /var/lib/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder /etc/bbb-webrtc-recorder
+
 # Copy the binary to the production image from the builder stage.
-COPY --from=builder /usr/bin/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder
-COPY --from=builder /app/config/bbb-webrtc-recorder.yml /etc/bbb-webrtc-recorder/bbb-webrtc-recorder.yml
+COPY --from=builder --chown=bigbluebutton /usr/bin/bbb-webrtc-recorder /usr/bin/bbb-webrtc-recorder
+COPY --from=builder --chown=bigbluebutton /app/config/bbb-webrtc-recorder.yml /etc/bbb-webrtc-recorder/bbb-webrtc-recorder.yml
 
-RUN mkdir -p /var/lib/bbb-webrtc-recorder
-RUN chown -R bigbluebutton:bigbluebutton /var/lib/bbb-webrtc-recorder
-
-CMD ["/bin/sh", "-c", "gosu bigbluebutton /usr/bin/bbb-webrtc-recorder"]
+USER bigbluebutton
+CMD ["/usr/bin/bbb-webrtc-recorder"]
