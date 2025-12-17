@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* fix(webm): split seqnum tracking for A/V, muffle discont logs
+
 ### v0.13.1
 
 * fix: panic when stopping a mediasoup adapter recording

@@ -44,6 +44,11 @@ type VP8FrameInfo struct {
 	size          int
 }
 
+type SequenceTracker struct {
+	expectedNextSeq uint16
+	kind            string
+}
+
 type WebmRecorder struct {
 	// Configuration fields
 	file                  string
@@ -90,7 +95,11 @@ type WebmRecorder struct {
 	lastSkippedSeq   uint16
 	skipSignaled     bool
 	lastProcessedSeq uint16
-	expectedNextSeq  uint16
+	// Next seqnum tracking per codec - to handle audio/video interleaving better
+	// The above (with the exception of lastPictureID) should be moved to this
+	// struct eventually - prlanzarin
+	videoSeqTracker *SequenceTracker
+	audioSeqTracker *SequenceTracker
 
 	// Frame statistics
 	corruptedFrameCount int
@@ -126,6 +135,8 @@ func NewWebmRecorder(
 		writeIVFCopy:          writeIVFCopy,
 		audioBuilder:          samplebuilder.New(audioPacketQueueSize, &codecs.OpusPacket{}, opusSampleRate),
 		videoBuilder:          samplebuilder.New(videoPacketQueueSize, &codecs.VP8Packet{}, vp8SampleRate),
+		videoSeqTracker:       &SequenceTracker{expectedNextSeq: 0, kind: "video"},
+		audioSeqTracker:       &SequenceTracker{expectedNextSeq: 0, kind: "audio"},
 		lastKeyFrameTime:      time.Now(),
 		// TODO Make this configurable or remove the timeout altogether - prlanzarin
 		frameTimeout: time.Millisecond * 2000,
@@ -393,16 +404,18 @@ func (r *WebmRecorder) pushVP8Builtin(packet *rtp.Packet) {
 		r.lastKeyFrameTime = time.Now()
 	}
 
-	if r.expectedNextSeq > 0 && packet.SequenceNumber != r.expectedNextSeq {
-		gap := calculateSequenceGap(packet.SequenceNumber, r.expectedNextSeq)
+	if r.videoSeqTracker.expectedNextSeq > 0 && packet.SequenceNumber != r.videoSeqTracker.expectedNextSeq {
+		gap := calculateSequenceGap(packet.SequenceNumber, r.videoSeqTracker.expectedNextSeq)
 		r.trackRTPDiscontinuity(&r.stats.Video.BaseTrackStats, gap)
 
 		log.WithField("session", r.ctx.Value("session")).
-			Debugf("Video sequence discontinuity detected: expected=%d, got=%d, gap=%d",
-				r.expectedNextSeq, packet.SequenceNumber, gap)
+			WithField("expected_seq", r.videoSeqTracker.expectedNextSeq).
+			WithField("got_seq", packet.SequenceNumber).
+			WithField("gap", gap).
+			Debug("Video sequence discontinuity detected")
 	}
 
-	r.setExpectedNextSeq(packet.SequenceNumber)
+	r.setExpectedNextSeq(packet.SequenceNumber, "video")
 	r.videoBuilder.Push(packet)
 	log.WithField("session", r.ctx.Value("session")).
 		Tracef("BUILTIN: VP8 RTP-DEPAY: seq=%d, ts=%d, marker=%v, S=%v, PictureID=%d, KeyFrame=%v, size=%d, PartID=%d",
@@ -458,8 +471,12 @@ func (r *WebmRecorder) pushVP8Builtin(packet *rtp.Packet) {
 	}
 }
 
-func (r *WebmRecorder) setExpectedNextSeq(currentSeq uint16) {
-	r.expectedNextSeq = currentSeq + 1
+func (r *WebmRecorder) setExpectedNextSeq(currentSeq uint16, kind string) {
+	if kind == r.videoSeqTracker.kind {
+		r.videoSeqTracker.expectedNextSeq = currentSeq + 1
+	} else if kind == r.audioSeqTracker.kind {
+		r.audioSeqTracker.expectedNextSeq = currentSeq + 1
+	}
 }
 
 func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
@@ -471,7 +488,7 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 				WithField("packet_seq", op.SequenceNumber).
 				WithField("packet_ts", op.Timestamp).
 				WithField("packet_size", len(op.Payload)).
-				WithField("expected_seq", r.expectedNextSeq).
+				WithField("expected_seq", r.audioSeqTracker.expectedNextSeq).
 				WithField("audio_timestamp", r.audioTimestamp).
 				WithField("has_audio", r.hasAudio).
 				WithField("has_video", r.hasVideo).
@@ -503,18 +520,18 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 
 	r.initAudioStats()
 
-	if r.expectedNextSeq > 0 && p.SequenceNumber != r.expectedNextSeq {
-		gap := calculateSequenceGap(p.SequenceNumber, r.expectedNextSeq)
+	if r.audioSeqTracker.expectedNextSeq > 0 && p.SequenceNumber != r.audioSeqTracker.expectedNextSeq {
+		gap := calculateSequenceGap(p.SequenceNumber, r.audioSeqTracker.expectedNextSeq)
 		r.trackRTPDiscontinuity(&r.stats.Audio.BaseTrackStats, gap)
 
 		log.WithField("session", r.ctx.Value("session")).
 			WithField("gap", gap).
-			WithField("expected_seq", r.expectedNextSeq).
+			WithField("expected_seq", r.audioSeqTracker.expectedNextSeq).
 			WithField("got_seq", p.SequenceNumber).
-			Warn("Audio sequence discontinuity detected")
+			Debug("Audio sequence discontinuity detected")
 	}
 
-	r.setExpectedNextSeq(p.SequenceNumber)
+	r.setExpectedNextSeq(p.SequenceNumber, "audio")
 	r.audioBuilder.Push(p)
 
 	for {
@@ -667,14 +684,16 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 
 	r.initVideoStats()
 
-	if r.expectedNextSeq > 0 && p.SequenceNumber != r.expectedNextSeq {
-		gap := calculateSequenceGap(p.SequenceNumber, r.expectedNextSeq)
+	if r.videoSeqTracker.expectedNextSeq > 0 && p.SequenceNumber != r.videoSeqTracker.expectedNextSeq {
+		gap := calculateSequenceGap(p.SequenceNumber, r.videoSeqTracker.expectedNextSeq)
 		r.trackRTPDiscontinuity(&r.stats.Video.BaseTrackStats, gap)
 
 		if !r.skipSignaled {
 			log.WithField("session", r.ctx.Value("session")).
-				Debugf("Sequence discontinuity detected: expected=%d, got=%d, gap=%d",
-					r.expectedNextSeq, p.SequenceNumber, gap)
+				WithField("expected_seq", r.videoSeqTracker.expectedNextSeq).
+				WithField("got_seq", p.SequenceNumber).
+				WithField("gap", gap).
+				Debug("Video sequence discontinuity detected")
 		}
 
 		if r.skipSignaled && r.lastSkippedSeq+1 == p.SequenceNumber {
@@ -700,7 +719,7 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 		r.skipSignaled = false
 	}
 
-	r.setExpectedNextSeq(p.SequenceNumber)
+	r.setExpectedNextSeq(p.SequenceNumber, "video")
 	r.lastProcessedSeq = p.SequenceNumber
 
 	vp8Packet := codecs.VP8Packet{}
