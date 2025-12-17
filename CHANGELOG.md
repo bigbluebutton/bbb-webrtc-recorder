@@ -2,9 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-### UNRELEASED
+### v0.14.0
 
+* feat: add docker matrix build to support arm64
 * fix(webm): split seqnum tracking for A/V, muffle discont logs
+* build(docker): remove QEMU setup from publish Docker workflow
 
 ### v0.13.1
 
