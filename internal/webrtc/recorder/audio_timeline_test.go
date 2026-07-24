@@ -64,6 +64,14 @@ func TestAudioTimelinePreservedOnClose(t *testing.T) {
 		{"3pct_loss", 200, 33},
 		{"5pct_loss", 1000, 20},
 		{"10pct_loss", 500, 10},
+		// Long-duration case: 15000 frames = 5 min at 20ms/frame, ~5% loss.
+		// Demonstrates the deficit does NOT scale with recording length. A naive
+		// "proportional to loss rate" expectation would predict ~6.3s short over
+		// 5 min (300s * 2.1%); the pre-fix deficit instead plateaus at the
+		// samplebuilder backlog cap (<= 2*audioPacketQueueSize frames = 64 * 20ms
+		// = 1.28s, see TestAudioTimelinePreFixDeficitIsBounded). With the fix the
+		// deficit stays the constant one-frame 20ms.
+		{"5min_5pct_loss", 15000, 20},
 	}
 
 	for _, tt := range tests {
@@ -89,6 +97,72 @@ func TestAudioTimelinePreservedOnClose(t *testing.T) {
 			assert.Equal(t, int64(20), deficitMs,
 				"deficit should be exactly one frame (20ms constant), got %dms (%.2f%%)",
 				deficitMs, deficitPercent)
+		})
+	}
+}
+
+// TestAudioTimelinePreFixDeficitIsBounded documents the pre-fix behaviour and
+// empirically refutes the "shortfall proportional to loss rate" framing.
+//
+// The deficit caused by the missing flush on close is the samplebuilder BACKLOG
+// at close time, which is bounded by the buffer capacity (2*audioPacketQueueSize
+// packets), NOT proportional to the recording length or the loss rate.
+//
+// How the pre-fix number is measured here without touching production code: the
+// old close() never flushed, so reading AudioTimestamp() BEFORE Close() (i.e.
+// before flushBuilders runs) reproduces exactly what the old code wrote. The
+// push-loop duration math is unchanged by the fix for every frame but the first,
+// so this is a faithful pre-fix measurement.
+//
+// A naive "5 min * ~2.1%" prediction would be ~6.3s short over 5 minutes; the
+// measured pre-fix deficit instead plateaus below the ~1.28s buffer bound.
+func TestAudioTimelinePreFixDeficitIsBounded(t *testing.T) {
+	const audioPacketQueueSize = 32
+	// 2*maxLate packets is the samplebuilder buffer bound (see samplebuilder.New).
+	bufferBoundMs := int64(2*audioPacketQueueSize) * 20
+
+	tests := []struct {
+		name         string
+		totalFrames  int
+		lossInterval int
+	}{
+		{"20s_5pct", 1000, 20},
+		{"5min_5pct", 15000, 20},
+		{"5min_10pct", 15000, 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewWebmRecorder("/dev/null", 0600, 256, audioPacketQueueSize, true, false)
+			r.SetHasAudio(true)
+			r.SetHasVideo(false)
+
+			feedOpusStreamWithLoss(t, r, tt.totalFrames, tt.lossInterval)
+
+			// Timeline BEFORE flush = pre-fix result (old close() did not flush).
+			preFix := r.AudioTimestamp()
+			r.Close() // fix path: flushBuilders drains the backlog
+
+			expected := time.Duration(tt.totalFrames) * 20 * time.Millisecond
+			preFixDeficitMs := expected.Milliseconds() - preFix.Milliseconds()
+			postFixDeficitMs := expected.Milliseconds() - r.AudioTimestamp().Milliseconds()
+
+			t.Logf("%s: expected=%v preFixDeficit=%dms postFixDeficit=%dms bufferBound=%dms",
+				tt.name, expected, preFixDeficitMs, postFixDeficitMs, bufferBoundMs)
+
+			// Pre-fix deficit is bounded by the buffer, not proportional to length.
+			assert.LessOrEqual(t, preFixDeficitMs, bufferBoundMs,
+				"pre-fix deficit should be bounded by the samplebuilder buffer (%dms), got %dms",
+				bufferBoundMs, preFixDeficitMs)
+
+			// The naive proportional prediction for 5 min at ~5% is seconds; assert
+			// we are far below that, proving the deficit does not scale with length.
+			assert.Less(t, preFixDeficitMs, int64(2000),
+				"pre-fix deficit must not scale with length, got %dms", preFixDeficitMs)
+
+			// The fix recovers the backlog: post-fix deficit is the constant 20ms.
+			assert.Equal(t, int64(20), postFixDeficitMs,
+				"post-fix deficit should be the constant one-frame 20ms")
 		})
 	}
 }
