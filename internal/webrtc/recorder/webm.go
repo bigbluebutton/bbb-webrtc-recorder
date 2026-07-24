@@ -331,7 +331,17 @@ func (r *WebmRecorder) flushBuilders() {
 
 	if r.hasVideo && r.videoWriter != nil && !r.useCustomSampler {
 		for {
-			sample := r.videoBuilder.Pop()
+			// ForcePopWithTimestamp (not Pop) so the drain actually gets past the
+			// sequence-gap gate: a plain Pop() returns nil at the first gap, so
+			// anything poppable was already emitted during pushVP8Builtin and this
+			// loop would recover nothing. Force-pop drains the complete frames
+			// buffered behind the gap and drops any partial frame (samplebuilder
+			// only assembles start..end contiguous frames), so it never emits a
+			// corrupt frame. Duration comes from sample.Duration (the samplebuilder
+			// timestamp delta at vp8SampleRate), the same source pushVP8Builtin
+			// uses; the first drained frame has duration 0 if no video was popped
+			// before it, mirroring the audio branch's first-frame case.
+			sample, _ := r.videoBuilder.ForcePopWithTimestamp()
 			if sample == nil {
 				break
 			}
