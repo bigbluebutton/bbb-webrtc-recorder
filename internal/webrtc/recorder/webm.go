@@ -85,10 +85,12 @@ type WebmRecorder struct {
 	lastKeyframeRequestTime time.Time
 
 	// Frame processing
-	currentFrame     []byte
-	currentFrameInfo *VP8FrameInfo // Again, more debugging than anything else
-	packetTimestamp  uint32
-	pts              int64 // Last PTS (presentation timestamp) *written* to the WebM file
+	currentFrame         []byte
+	currentFrameInfo     *VP8FrameInfo // Again, more debugging than anything else
+	packetTimestamp      uint32
+	audioPacketTimestamp uint32 // Last popped audio RTP timestamp (for timeline derivation)
+	audioTsInitialized   bool
+	pts                  int64 // Last PTS (presentation timestamp) *written* to the WebM file
 
 	// Sequence tracking
 	lastPictureID    uint16 // Last PictureID received in any VP8 packet, not necessarily written
@@ -296,12 +298,65 @@ func (r *WebmRecorder) NotifySkippedPacket(seq uint16) {
 	}
 }
 
+// flushBuilders drains any samples remaining in the audio and video
+// samplebuilders using ForcePopWithTimestamp. Under packet loss, the non-force
+// Pop() in pushOpus/pushVP8Builtin blocks on the sequence-gap gate, leaving
+// valid samples buffered indefinitely. Without this flush, those samples -
+// and the timeline span they carry - are silently lost when the writer closes,
+// shortening the recording by an amount proportional to the loss rate.
+func (r *WebmRecorder) flushBuilders() {
+	if r.hasAudio && r.audioWriter != nil {
+		for {
+			sample, ts := r.audioBuilder.ForcePopWithTimestamp()
+			if sample == nil {
+				break
+			}
+			var duration time.Duration
+			if r.audioTsInitialized {
+				duration = time.Duration((float64(ts-r.audioPacketTimestamp)/float64(opusSampleRate))*secondToNanoseconds) * time.Nanosecond
+			}
+			r.audioPacketTimestamp = ts
+			r.audioTsInitialized = true
+			r.trackSampleStats(&r.stats.Audio.BaseTrackStats, duration)
+			r.audioTimestamp += duration
+			if _, err := r.audioWriter.Write(true, int64(r.audioTimestamp/time.Millisecond), sample.Data); err != nil {
+				log.WithField("session", r.ctx.Value("session")).
+					WithField("error", err).
+					Warn("Error writing flushed audio frame")
+			} else {
+				r.stats.Audio.WrittenSamples++
+			}
+		}
+	}
+
+	if r.hasVideo && r.videoWriter != nil && !r.useCustomSampler {
+		for {
+			sample := r.videoBuilder.Pop()
+			if sample == nil {
+				break
+			}
+			duration := sample.Duration
+			r.trackFrameStats(r.stats.Video, len(sample.Data), false, duration)
+			r.videoTimestamp += duration
+			if _, err := r.videoWriter.Write(false, int64(r.videoTimestamp/time.Millisecond), sample.Data); err != nil {
+				log.WithField("session", r.ctx.Value("session")).
+					WithField("error", err).
+					Warn("Error writing flushed video frame")
+			} else {
+				r.stats.Video.WrittenSamples++
+			}
+		}
+	}
+}
+
 // Locked
 func (r *WebmRecorder) close() time.Duration {
 	if r.closed {
 		return r.videoTimestamp
 	}
 	r.closed = true
+
+	r.flushBuilders()
 
 	if r.audioWriter != nil {
 		if err := r.audioWriter.Close(); err != nil {
@@ -535,7 +590,7 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 	r.audioBuilder.Push(p)
 
 	for {
-		sample := r.audioBuilder.Pop()
+		sample, ts := r.audioBuilder.PopWithTimestamp()
 
 		if sample == nil {
 			return
@@ -548,7 +603,19 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 		}
 
 		if r.audioWriter != nil {
-			duration := sample.Duration
+			// Derive duration from the RTP timestamp delta, mirroring the
+			// pattern used by pushVP8Custom (webm.go:1052). The samplebuilder's
+			// sample.Duration is computed the same way internally, but deriving
+			// from the source timestamp directly avoids relying on the
+			// builder's internal lastTimestamp state, which starts at zero for
+			// the first frame (losing one frame's duration).
+			var duration time.Duration
+			if r.audioTsInitialized {
+				duration = time.Duration((float64(ts-r.audioPacketTimestamp)/float64(opusSampleRate))*secondToNanoseconds) * time.Nanosecond
+			}
+			r.audioPacketTimestamp = ts
+			r.audioTsInitialized = true
+
 			r.trackSampleStats(&r.stats.Audio.BaseTrackStats, duration)
 			r.audioTimestamp += duration
 
@@ -565,6 +632,7 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 				log.WithField("session", r.ctx.Value("session")).
 					WithField("duration", duration).
 					WithField("timestamp", r.audioTimestamp).
+					WithField("rtp_ts", ts).
 					WithField("size", len(sample.Data)).
 					Trace("Audio frame written")
 			}
