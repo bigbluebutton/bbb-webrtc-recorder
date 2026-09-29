@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* fix(webm): skip audio frames that do not advance the timestamp
+
 ### v0.15.0
 
 * feat(livekit): support quality constraints on captures

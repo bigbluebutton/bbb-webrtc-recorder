@@ -551,8 +551,20 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 			duration := sample.Duration
 			r.trackSampleStats(&r.stats.Audio.BaseTrackStats, duration)
 			r.audioTimestamp += duration
+			pts := int64(r.audioTimestamp / time.Millisecond)
 
-			if _, err := r.audioWriter.Write(true, int64(r.audioTimestamp/time.Millisecond), sample.Data); err != nil {
+			// LiveKit's blank frames at downtrack close can carry the previous
+			// frame's RTP timestamp plus one tick: same ms, overlapping audio.
+			if r.stats.Audio.WrittenSamples > 0 && pts <= r.lastAudioPTS {
+				log.WithField("session", r.ctx.Value("session")).
+					WithField("duration", duration).
+					WithField("timestamp", r.audioTimestamp).
+					Debug("Skipping audio frame that does not advance the timestamp")
+
+				continue
+			}
+
+			if _, err := r.audioWriter.Write(true, pts, sample.Data); err != nil {
 				log.WithField("session", r.ctx.Value("session")).
 					WithField("error", err).
 					WithField("duration", duration).
@@ -561,6 +573,7 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 				r.hasValidAudio = false
 			} else {
 				r.stats.Audio.WrittenSamples++
+				r.lastAudioPTS = pts
 				r.hasValidAudio = true
 				log.WithField("session", r.ctx.Value("session")).
 					WithField("duration", duration).
