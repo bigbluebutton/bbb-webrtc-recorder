@@ -50,7 +50,8 @@ const (
 	// transport-wide feedback [1] and lets a VP8 key frame take about 300 ms
 	// of that rate [2], so a key frame's packets spread over hundreds of ms,
 	// and its pacer queue may reach 2 s [3]. The cost: an unrecoverable video
-	// loss holds the track that long before its keyframe request.
+	// loss holds the track that long, though the track buffer usually
+	// requests its key frame much sooner.
 	//
 	// [1] https://webrtc.googlesource.com/src/+/ac9591c580ac697e7bb604debf8a141b18626204/modules/congestion_controller/goog_cc/goog_cc_network_control.cc#58
 	// [2] https://webrtc.googlesource.com/src/+/ac9591c580ac697e7bb604debf8a141b18626204/modules/video_coding/codecs/vp8/libvpx_vp8_encoder.cc#927
@@ -92,6 +93,7 @@ type LiveKitWebRTC struct {
 	trackIds           []string
 	pliStats           map[uint32]pliTracker
 	jitterBuffers      map[string]*trackBuffer
+	videoBuffers       map[uint32]*trackBuffer // SSRC -> video track buffer
 	hasAudio           bool
 	hasVideo           bool
 	flowState          map[string]*trackFlowState
@@ -137,6 +139,7 @@ func NewLiveKitWebRTC(
 		remoteTrackPubs:       make(map[string]*lksdk.RemoteTrackPublication),
 		pliStats:              make(map[uint32]pliTracker),
 		jitterBuffers:         make(map[string]*trackBuffer),
+		videoBuffers:          make(map[uint32]*trackBuffer),
 		flowState:             make(map[string]*trackFlowState),
 		trackStats:            make(map[string]*appstats.AdapterTrackStats),
 		participantIDs:        make(map[string]string),
@@ -419,6 +422,17 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	w.pliStats[ssrc] = pliTracker{count: newCount, timestamp: now}
 
 	w.m.Unlock()
+}
+
+// KeyframeRequestedSince answers for the video track buffer of ssrc, from
+// its own loss reports. While the track flows, the read loop pushes a packet
+// at least every PacketReadTimeout.
+func (w *LiveKitWebRTC) KeyframeRequestedSince(ssrc uint32, since time.Time) bool {
+	w.m.Lock()
+	buffer := w.videoBuffers[ssrc]
+	w.m.Unlock()
+
+	return buffer != nil && buffer.requestedSince(since, w.cfg.PacketReadTimeout)
 }
 
 func (w *LiveKitWebRTC) HasTrack(trackID string) bool {
@@ -723,6 +737,30 @@ func jitterLatencyFor(kind TrackKind) time.Duration {
 	return audioJitterLatency
 }
 
+// registerTrackBuffer wires a track's buffer into the adapter, apart from
+// addJitterBuffer so that the writer tests register buffers of their own:
+// without the SSRC entry, the writer repeats every request the buffer made.
+func (w *LiveKitWebRTC) registerTrackBuffer(trackID string, isVideo bool, ssrcForHandler uint32, buffer *trackBuffer) {
+	w.m.Lock()
+	w.jitterBuffers[trackID] = buffer
+
+	if isVideo {
+		if _, exists := w.pliStats[ssrcForHandler]; !exists {
+			w.pliStats[ssrcForHandler] = pliTracker{count: 0, timestamp: time.Now()}
+		}
+		w.videoBuffers[ssrcForHandler] = buffer
+	}
+	w.m.Unlock()
+
+	if isVideo {
+		if kfr, ok := w.rec.(interface {
+			SetKeyframeRequester(interfaces.KeyframeRequester)
+		}); ok {
+			kfr.SetKeyframeRequester(w)
+		}
+	}
+}
+
 func (w *LiveKitWebRTC) onTrackSubscribed(
 	track *webrtc.TrackRemote,
 	pub *lksdk.RemoteTrackPublication,
@@ -790,20 +828,6 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	}
 
 	buffer := w.addJitterBuffer(trackID, depacketizer, jitterLatencyFor(trackKind), ssrcForHandler, isVideo && track != nil)
-
-	if isVideo {
-		w.m.Lock()
-		if _, exists := w.pliStats[ssrcForHandler]; !exists {
-			w.pliStats[ssrcForHandler] = pliTracker{count: 0, timestamp: time.Now()}
-		}
-		w.m.Unlock()
-
-		if kfr, ok := w.rec.(interface {
-			SetKeyframeRequester(interfaces.KeyframeRequester)
-		}); ok {
-			kfr.SetKeyframeRequester(w)
-		}
-	}
 
 	flowCheckDone := make(chan bool)
 	defer func() {
@@ -979,9 +1003,7 @@ func (w *LiveKitWebRTC) addJitterBuffer(
 		}
 	})
 
-	w.m.Lock()
-	w.jitterBuffers[trackID] = buffer
-	w.m.Unlock()
+	w.registerTrackBuffer(trackID, requestKeyframes, ssrc, buffer)
 
 	return buffer
 }

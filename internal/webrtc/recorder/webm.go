@@ -12,6 +12,7 @@ import (
 	"github.com/at-wat/ebml-go/webm"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/jech/samplebuilder"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
@@ -600,6 +601,14 @@ func (r *WebmRecorder) RequestKeyframe() {
 	}
 }
 
+// keyframeDue reports whether the requester already asked for a key frame
+// since the last one arrived.
+func (r *WebmRecorder) keyframeDue(ssrc uint32) bool {
+	t, ok := r.keyframeRequester.(interfaces.KeyframeRequestTracker)
+
+	return ok && t.KeyframeRequestedSince(ssrc, r.lastKeyFrameTime)
+}
+
 // Some validations here are kind of duplicate from the depayloader (pushVP8)
 // e.g.: keyframe detection, continuity etc
 // That is intentional for now - I'm trying to figure out whether the assembly
@@ -801,6 +810,10 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 		r.vp8Tracker.currentPartitionSize = 0
 		r.frameStartTime = time.Now()
 
+		if isKeyFrame {
+			r.lastKeyFrameTime = r.frameStartTime
+		}
+
 		r.currentFrameInfo = &VP8FrameInfo{
 			startSequence: p.SequenceNumber,
 			pictureID:     pictureID,
@@ -853,7 +866,9 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 				} else {
 					// For non-keyframes with discontinuity, reject and request keyframe
 					r.hasKeyFrame = false
-					r.RequestKeyframe()
+					if !r.keyframeDue(p.SSRC) {
+						r.RequestKeyframe()
+					}
 					return
 				}
 			}

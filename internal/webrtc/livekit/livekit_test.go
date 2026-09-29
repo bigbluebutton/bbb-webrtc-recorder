@@ -3,6 +3,8 @@ package livekit
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,9 +12,11 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -186,4 +190,239 @@ func TestTrackMuteCallbacksDuringTrackRegistration(t *testing.T) {
 
 	<-done
 	assert.Len(t, lk.remoteTrackPubs, 1000)
+}
+
+// writerFrame is frame f of a 30 fps VP8 stream: 4 packets from seq with
+// picture ID pic, the first carrying a 640x480 key frame header when key.
+func writerFrame(ssrc uint32, seq, pic uint16, f int, key bool) []*rtp.Packet {
+	pkts := make([]*rtp.Packet, 0, 4)
+	for j := range 4 {
+		desc := byte(0x80) // X: an extension byte follows
+		if j == 0 {
+			desc |= 0x10 // S: the frame starts here
+		}
+
+		// I: a 15-bit picture ID follows.
+		payload := []byte{desc, 0x80, 0x80 | byte(pic>>8)&0x7f, byte(pic)}
+		switch {
+		case j == 0 && key:
+			payload = append(payload, 0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a, 0x80, 0x02, 0xe0, 0x01)
+		case j == 0:
+			payload = append(payload, 0x11, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+		}
+
+		pkts = append(pkts, &rtp.Packet{
+			Header: rtp.Header{Version: 2, PayloadType: 96, SSRC: ssrc, SequenceNumber: seq + uint16(j),
+				Timestamp: uint32(90000 + 3000*f), Marker: j == 3},
+			Payload: append(payload, 0xA0, 0xA1, 0xA2, 0xA3),
+		})
+	}
+
+	return pkts
+}
+
+type countingRequester struct{ n atomic.Int32 }
+
+func (c *countingRequester) RequestKeyframe()              { c.n.Add(1) }
+func (c *countingRequester) RequestKeyframeForSSRC(uint32) { c.n.Add(1) }
+
+// writerStream drives the LiveKit video path without a room: a track buffer
+// registered as onTrackSubscribed registers it, into a WebmRecorder whose
+// requester is the adapter, so both kinds of request reach its channel. A
+// request is answered with a key frame at the first frame 100 ms later.
+type writerStream struct {
+	frames    int
+	lost      int           // the frame missing packet 1, or -1
+	late      time.Duration // if set, when that packet comes after its frame
+	skipPicAt int           // the frame whose picture ID skips one, or -1
+	deaf      bool          // the publisher never answers
+	ignore    int           // how many requests LiveKit's PLI throttle drops first
+	unasked   int           // a frame sent as a key frame for another subscriber
+	stallAt   int           // if stall is set, the first frame it delays
+	stall     time.Duration
+	requester interfaces.KeyframeRequester
+}
+
+func (s writerStream) run(t *testing.T) (requests []time.Duration, written int) {
+	const ssrc = 1234
+	rec := recorder.NewWebmRecorder(filepath.Join(t.TempDir(), "video.webm"), 0o600, 256, 32, true, false)
+	rec.SetHasVideo(true)
+	w := &LiveKitWebRTC{
+		ctx:                 context.WithValue(context.Background(), "session", "test-session"), //nolint:staticcheck // SA1029: the key livekit.go reads
+		cfg:                 (&config.Config{}).GetDefaults().LiveKit,
+		rec:                 rec,
+		pliStats:            map[uint32]pliTracker{},
+		jitterBuffers:       map[string]*trackBuffer{},
+		videoBuffers:        map[uint32]*trackBuffer{},
+		keyframeRequestChan: make(chan uint32, 100),
+		requestKeyframeCtx:  context.Background(),
+	}
+	b := newTrackBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval, func() {
+		w.queueKeyframeRequest(ssrc, "packet_drop")
+	})
+	defer b.close()
+	w.registerTrackBuffer("video", true, ssrc, b)
+	if s.requester != nil {
+		rec.SetKeyframeRequester(s.requester)
+	}
+
+	start := time.Now()
+	drain := func() bool {
+		asked := false
+		for len(w.keyframeRequestChan) > 0 {
+			<-w.keyframeRequestChan
+			requests = append(requests, time.Since(start))
+			asked = true
+		}
+
+		return asked
+	}
+	push := func(p *rtp.Packet) {
+		for _, out := range b.push(p) {
+			rec.PushVideo(out)
+		}
+	}
+
+	var keyAt time.Time
+	var held *rtp.Packet
+	var heldAt time.Time
+	ignored := 0
+	seq, pic := uint16(1000), uint16(100)
+	for f := range s.frames {
+		at := start.Add(time.Duration(f) * time.Second / 30)
+		if s.stall > 0 && f >= s.stallAt {
+			at = at.Add(s.stall)
+		}
+		time.Sleep(time.Until(at))
+		if drain() && keyAt.IsZero() && !s.deaf {
+			if ignored < s.ignore {
+				ignored++
+			} else {
+				keyAt = time.Now().Add(100 * time.Millisecond)
+			}
+		}
+		if held != nil && !time.Now().Before(heldAt) {
+			push(held)
+			held = nil
+		}
+
+		key := f == 0 || f == s.unasked || (!keyAt.IsZero() && !time.Now().Before(keyAt))
+		if key {
+			keyAt = time.Time{}
+		}
+		if f == s.skipPicAt {
+			pic++
+		}
+
+		for j, p := range writerFrame(ssrc, seq, pic&0x7fff, f, key) {
+			if f == s.lost && j == 1 {
+				if s.late > 0 {
+					held, heldAt = p, time.Now().Add(s.late)
+				}
+
+				continue
+			}
+			push(p)
+		}
+		seq += 4
+		pic++
+	}
+	drain()
+	written = rec.GetStats().Video.WrittenSamples
+	rec.Close()
+
+	return requests, written
+}
+
+// The writer asks for a key frame when the jitter buffer releases the frames
+// after a loss, 2 s late. The track buffer asked 200 ms after the loss, and
+// that key frame follows those frames: a second request would bring another.
+func TestWriterLeavesLossRequestToTrackBuffer(t *testing.T) {
+	// How long after the track buffer's request the writer skips its own.
+	window := videoJitterLatency + lossReportSlack + (&config.Config{}).GetDefaults().LiveKit.PacketReadTimeout
+
+	t.Run("unrepaired loss", func(t *testing.T) {
+		t.Parallel()
+		requests, written := writerStream{frames: 105, lost: 30, skipPicAt: -1}.run(t)
+		if assert.Len(t, requests, 1, "requests at %v", requests) {
+			assert.Less(t, requests[0], 1400*time.Millisecond, "the track buffer's")
+		}
+		assert.Greater(t, written, 90, "recording resumes at the early key frame")
+	})
+
+	t.Run("request dropped", func(t *testing.T) {
+		t.Parallel()
+		requests, written := writerStream{frames: 130, lost: 30, skipPicAt: -1, ignore: 1}.run(t)
+		if assert.Len(t, requests, 2, "requests at %v", requests) {
+			assert.Less(t, requests[1]-requests[0], lossKeyframeInterval+200*time.Millisecond, "the track buffer asks again")
+		}
+		assert.Greater(t, written, 80, "recording resumes at the second request's key frame")
+	})
+
+	t.Run("request dropped after another subscriber's key frame", func(t *testing.T) {
+		t.Parallel()
+		// That key frame comes between the loss and the request.
+		requests, written := writerStream{frames: 130, lost: 30, skipPicAt: -1, ignore: 1, unasked: 33}.run(t)
+		assert.Len(t, requests, 1, "requests at %v", requests)
+		assert.Greater(t, written, 120, "recording resumes at that key frame")
+	})
+
+	t.Run("frames behind the loss wait for a push", func(t *testing.T) {
+		t.Parallel()
+		// The jitter buffer releases them at 3 s, and the next packet comes
+		// 350 ms later, as at a low frame rate: past the latency and slack
+		// after the request, within the read timeout.
+		requests, _ := writerStream{frames: 110, lost: 30, skipPicAt: -1, stallAt: 90, stall: 350 * time.Millisecond}.run(t)
+		if assert.Len(t, requests, 1, "requests at %v", requests) {
+			assert.Less(t, requests[0], 1400*time.Millisecond, "the track buffer's")
+		}
+	})
+
+	t.Run("picture ID gap after that key frame", func(t *testing.T) {
+		t.Parallel()
+		// The loss is repaired only after the track buffer's request, whose
+		// key frame is written before the gap at 2 s.
+		requests, _ := writerStream{frames: 66, lost: 30, late: 300 * time.Millisecond, skipPicAt: 60}.run(t)
+		if assert.Len(t, requests, 2, "requests at %v", requests) {
+			assert.Less(t, requests[0], 1400*time.Millisecond, "the track buffer's")
+			assert.GreaterOrEqual(t, requests[1], 1950*time.Millisecond, "the writer's")
+		}
+	})
+
+	t.Run("picture ID gap after that key frame, late in the window", func(t *testing.T) {
+		t.Parallel()
+		// The gap at 3.5 s falls in the part of the window that only the
+		// read timeout adds.
+		requests, _ := writerStream{frames: 115, lost: 30, late: 300 * time.Millisecond, skipPicAt: 105}.run(t)
+		if assert.Len(t, requests, 2, "requests at %v", requests) {
+			assert.Greater(t, requests[1]-requests[0], videoJitterLatency+lossReportSlack)
+			assert.Less(t, requests[1]-requests[0], window)
+		}
+	})
+
+	t.Run("key frame never comes", func(t *testing.T) {
+		t.Parallel()
+		requests, _ := writerStream{frames: 130, lost: 30, skipPicAt: -1, deaf: true}.run(t)
+		// The track buffer asks again each second, and the writer holds back.
+		assert.GreaterOrEqual(t, len(requests), 3, "requests at %v", requests)
+		for i := 1; i < len(requests); i++ {
+			assert.Greater(t, requests[i]-requests[i-1], lossKeyframeInterval-100*time.Millisecond, "requests at %v", requests)
+			assert.Less(t, requests[i]-requests[i-1], lossKeyframeInterval+200*time.Millisecond, "requests at %v", requests)
+		}
+	})
+
+	t.Run("picture ID gap and no track buffer request", func(t *testing.T) {
+		t.Parallel()
+		requests, _ := writerStream{frames: 20, lost: -1, skipPicAt: 10}.run(t)
+		assert.Len(t, requests, 1, "requests at %v", requests)
+	})
+
+	t.Run("requester without track buffers", func(t *testing.T) {
+		t.Parallel()
+		// The mediasoup adapter: nothing reports its requests to the writer.
+		var c countingRequester
+		requests, _ := writerStream{frames: 20, lost: -1, skipPicAt: 10, requester: &c}.run(t)
+		assert.Empty(t, requests)
+		assert.Equal(t, int32(1), c.n.Load())
+	})
 }
