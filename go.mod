@@ -1,8 +1,6 @@
 module github.com/bigbluebutton/bbb-webrtc-recorder
 
-go 1.24
-
-toolchain go1.24.0
+go 1.26.0
 
 require (
 	github.com/AlekSi/pointer v1.2.0
