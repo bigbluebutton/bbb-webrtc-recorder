@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Modified for bbb-webrtc-recorder: dropIncomplete also drops a head packet
+// that arrived exactly at the expiry. See third_party/README.md.
+
 package jitter
 
 import (
@@ -324,11 +327,11 @@ func (b *Buffer) dropIncompleteExpired(expiry time.Time) {
 }
 
 // dropIncomplete drops incomplete packets at the head of the buffer.
-// If force is false, only drops packets that arrived before expiry.
+// If force is false, only drops packets that arrived at or before expiry.
 func (b *Buffer) dropIncomplete(expiry time.Time, force bool) bool {
 	dropped := false
 
-	for b.head != nil && !b.head.isComplete() && (force || b.head.extPacket.ReceivedAt.Before(expiry)) {
+	for b.head != nil && !b.head.isComplete() && (force || !b.head.extPacket.ReceivedAt.After(expiry)) {
 		if b.initialized && !b.head.discont {
 			b.stats.PacketsLost += uint64(b.head.extPacket.SequenceNumber - b.prevSN - 1)
 		}

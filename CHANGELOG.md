@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* fix(livekit): drop an expired incomplete frame at its deadline
+
 ### v0.16.0
 
 * fix(webm): skip audio frames that do not advance the timestamp

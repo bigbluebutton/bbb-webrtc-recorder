@@ -12,12 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Modified for bbb-webrtc-recorder: adds TestIncompleteExpiresAtDeadline. See
+// third_party/README.md.
+
 package jitter
 
 import (
 	"math"
 	"math/rand"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pion/rtp"
@@ -288,6 +292,40 @@ func TestFlushReportsLoss(t *testing.T) {
 		PacketsPopped:  4,
 		SamplesPopped:  2,
 	})
+}
+
+// Under synctest the timer fires with the clock exactly at the deadline. If
+// the incomplete head is not dropped then, the timer re-arms for zero and the
+// bubble's clock never advances again, so real time bounds the wait.
+func TestIncompleteExpiresAtDeadline(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		synctest.Test(t, func(t *testing.T) {
+			dropped := make(chan struct{}, 1)
+			b := NewBuffer(&testDepacketizer{}, testBufferLatency, func([]ExtPacket) {},
+				WithPacketLossHandler(func(_, _ uint64) {
+					select {
+					case dropped <- struct{}{}:
+					default:
+					}
+				}))
+			defer b.Close()
+			s := newTestStream()
+
+			start := time.Now()
+			b.PushAt(s.gen(true, false), start) // the tail never arrives
+			<-dropped
+			require.Equal(t, testBufferLatency, time.Since(start))
+			require.Equal(t, uint64(1), b.Stats().PacketsDropped)
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "incomplete sample never expired")
+	}
 }
 
 func checkSample(t *testing.T, out chan []ExtPacket, expected int) {
