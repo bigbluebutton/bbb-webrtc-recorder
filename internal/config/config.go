@@ -88,6 +88,11 @@ func (cfg *Config) SetDefaults() {
 			AbortBootOnFailure: false,
 		},
 		WriteRTPDump: false,
+		TraceCapture: TraceCapture{
+			Enabled:          false,
+			Payload:          TraceCapturePayloadHeader,
+			MaxBytesPerTrack: DefaultTraceCaptureMaxBytesPerTrack,
+		},
 	}
 	cfg.Constraints = Constraints{
 		DiskPressure: DiskPressure{
@@ -159,6 +164,25 @@ type LiveKit struct {
 	PreferredVideoQuality livekit.VideoQuality `yaml:"preferredVideoQuality,omitempty" mapstructure:"preferred_video_quality"`
 	HealthCheck           HealthCheck          `yaml:"healthCheck,omitempty"`
 	WriteRTPDump          bool                 `yaml:"writeRTPDump"`
+	TraceCapture          TraceCapture         `yaml:"traceCapture,omitempty" mapstructure:"trace_capture"`
+}
+
+const (
+	TraceCapturePayloadHeader = "header"
+	TraceCapturePayloadFull   = "full"
+
+	DefaultTraceCaptureMaxBytesPerTrack = 16 << 20
+)
+
+// TraceCapture writes each recorded LiveKit track's packet reads as an
+// internal/corpus read trace, for replay.
+type TraceCapture struct {
+	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+	// Payload is TraceCapturePayloadHeader or TraceCapturePayloadFull.
+	Payload string `yaml:"payload,omitempty" mapstructure:"payload"`
+	// MaxBytesPerTrack caps each trace's compressed size; 0 means no cap, and
+	// a negative value the default.
+	MaxBytesPerTrack int64 `yaml:"maxBytesPerTrack,omitempty" mapstructure:"max_bytes_per_track"`
 }
 
 type HealthCheck struct {

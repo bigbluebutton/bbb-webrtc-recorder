@@ -103,6 +103,12 @@ type LiveKitWebRTC struct {
 	startTs            time.Time
 	connStateCallback  func(state utils.ConnectionState)
 	rtpWriters         map[string]*recorder.RTPWriter
+	// trackID -> trace capture, made by the first openTraceCapture. Not under
+	// m: a jitter buffer's loss handler records its keyframe requests with
+	// the buffer's lock held, and m and that lock are never held together.
+	capturesMu          sync.Mutex
+	traceCaptures       map[string]*trackCapture
+	traceCapturesClosed bool
 
 	keyframeRequestChan   chan uint32
 	requestKeyframeCtx    context.Context
@@ -224,11 +230,15 @@ func (w *LiveKitWebRTC) Close() time.Duration {
 	w.rtpWriters = nil
 	w.m.Unlock()
 
+	var duration time.Duration
 	if w.rec != nil {
-		return w.rec.Close()
+		duration = w.rec.Close()
 	}
 
-	return 0
+	// Closing drains the capture queues: only once the recording is final.
+	w.closeTraceCaptures()
+
+	return duration
 }
 
 func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
@@ -358,6 +368,10 @@ func (w *LiveKitWebRTC) queueKeyframeRequest(ssrc uint32, reason string) {
 
 	select {
 	case w.keyframeRequestChan <- ssrc:
+		if w.cfg.TraceCapture.Enabled {
+			w.captureKeyframeRequest(ssrc, reason)
+		}
+
 		log.WithFields(log.Fields{
 			"session": w.ctx.Value("session"),
 			"ssrc":    ssrc,
@@ -812,16 +826,27 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 	buffer := w.addJitterBuffer(trackID, depacketizer, jitterLatencyFor(trackKind), ssrcForHandler, isVideo && track != nil)
 
-	appstats.OnTrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
-
-	go w.readTrack(track, trackInfo{
+	info := trackInfo{
 		id:      trackID,
 		kind:    trackKind,
 		mime:    mimeType,
 		source:  pub.Source().String(),
 		ssrc:    ssrcForHandler,
 		pubMime: pub.MimeType(),
-	}, buffer)
+	}
+	w.prepareTrack(info, clockRate)
+
+	appstats.OnTrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
+
+	go w.readTrack(track, info, buffer)
+}
+
+// prepareTrack is onTrackSubscribed's setup of a registered track for
+// readTrack, kept apart so that the trace capture tests go through it.
+func (w *LiveKitWebRTC) prepareTrack(info trackInfo, clockRate uint32) {
+	if w.cfg.TraceCapture.Enabled {
+		w.openTraceCapture(info, clockRate)
+	}
 }
 
 // trackFilePath is <base>.<trackID><suffix> next to the recording at
@@ -954,6 +979,16 @@ type trackInfo struct {
 // buffer and reports the connection closed, or failed on a panic.
 func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *trackBuffer) {
 	defer buffer.close()
+
+	w.capturesMu.Lock()
+	capture := w.traceCaptures[info.id]
+	w.capturesMu.Unlock()
+
+	if capture != nil {
+		// Closing drains the capture's queue: only once the track is reported.
+		defer capture.close()
+	}
+
 	defer func() {
 		appstats.OnTrackRecordingStopped(string(info.kind), string(info.mime), info.source)
 		log.WithField("session", w.ctx.Value("session")).
@@ -1003,7 +1038,11 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 		// Ignore error from SetReadDeadline - it comes from pion/packetio
 		// but it'll never throw - probably conforming to some interface
 		_ = src.SetReadDeadline(readDeadline)
-		packet, _, err := src.ReadRTP()
+		packet, attrs, err := src.ReadRTP()
+
+		if capture != nil {
+			capture.observe(packet, attrs, err)
+		}
 
 		if err != nil {
 			if procErr := w.handleReadRTPError(err, info); procErr != nil {

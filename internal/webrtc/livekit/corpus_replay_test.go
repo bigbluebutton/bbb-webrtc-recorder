@@ -16,6 +16,7 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
+	"github.com/pion/rtp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -197,24 +198,55 @@ func loadExpectation(t *testing.T, path string) *expectation {
 	return e
 }
 
+// traceInfo is the trackInfo of tr, the i-th of the traces replayed
+// together, and its clock rate.
+func traceInfo(t *testing.T, i int, tr *corpus.Trace) (trackInfo, uint32) {
+	info := trackInfo{id: tr.Header.TrackID, ssrc: tr.Header.SSRC}
+	if info.id == "" {
+		info.id = fmt.Sprintf("track-%d", i)
+	}
+
+	switch tr.Header.Codec {
+	case corpus.CodecVP8:
+		info.kind, info.mime, info.source, info.pubMime = TrackKindVideo, MimeTypeVP8, "camera", "video/VP8"
+	case corpus.CodecOpus:
+		info.kind, info.mime, info.source, info.pubMime = TrackKindAudio, MimeTypeOpus, "microphone", "audio/opus"
+	default:
+		require.Failf(t, "unsupported codec", "%q", tr.Header.Codec)
+	}
+
+	return info, tr.Header.ClockRate
+}
+
+// traceReads is what tr's records replay as, events skipped, and which of
+// its packets are rtx copies.
+func traceReads(tr *corpus.Trace) (reads []trackRead, rtx map[*rtp.Packet]bool) {
+	rtx = map[*rtp.Packet]bool{}
+	for _, rec := range tr.Records {
+		if rec.IsEvent() {
+			continue
+		}
+
+		read := trackRead{at: time.Duration(rec.AtUs) * time.Microsecond}
+		if rec.T == corpus.RecordEOF {
+			read.err = io.EOF
+		} else {
+			read.pkt = rec.Packet()
+			read.pkt.SSRC = tr.Header.SSRC
+			rtx[read.pkt] = rec.RTX
+		}
+		reads = append(reads, read)
+	}
+
+	return reads, rtx
+}
+
 // replayTraces plays traces together through the read loop into one WebM.
 // Run it inside a synctest bubble: the traces' atUs are offsets from now.
 func replayTraces(t *testing.T, traces []*corpus.Trace) replayResult {
 	infos := make([]trackInfo, 0, len(traces))
 	for i, tr := range traces {
-		info := trackInfo{id: tr.Header.TrackID, ssrc: tr.Header.SSRC}
-		if info.id == "" {
-			info.id = fmt.Sprintf("track-%d", i)
-		}
-
-		switch tr.Header.Codec {
-		case corpus.CodecVP8:
-			info.kind, info.mime, info.source, info.pubMime = TrackKindVideo, MimeTypeVP8, "camera", "video/VP8"
-		case corpus.CodecOpus:
-			info.kind, info.mime, info.source, info.pubMime = TrackKindAudio, MimeTypeOpus, "microphone", "audio/opus"
-		default:
-			require.Failf(t, "unsupported codec", "%q", tr.Header.Codec)
-		}
+		info, _ := traceInfo(t, i, tr)
 		infos = append(infos, info)
 	}
 
@@ -223,21 +255,7 @@ func replayTraces(t *testing.T, traces []*corpus.Trace) replayResult {
 	srcs := make([]trackSource, 0, len(traces))
 	fakes := make([]*fakeTrack, 0, len(traces))
 	for _, tr := range traces {
-		reads := make([]trackRead, 0, len(tr.Records))
-		for _, rec := range tr.Records {
-			if rec.IsEvent() {
-				continue
-			}
-
-			read := trackRead{at: time.Duration(rec.AtUs) * time.Microsecond}
-			if rec.T == corpus.RecordEOF {
-				read.err = io.EOF
-			} else {
-				read.pkt = rec.Packet()
-				read.pkt.SSRC = tr.Header.SSRC
-			}
-			reads = append(reads, read)
-		}
+		reads, _ := traceReads(tr)
 		fake := newFakeTrack(reads)
 		fakes = append(fakes, fake)
 		srcs = append(srcs, settledSource{trackSource: fake, turn: turn})

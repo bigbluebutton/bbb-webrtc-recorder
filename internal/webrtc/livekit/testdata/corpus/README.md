@@ -3,12 +3,17 @@
 Read traces for the in-process replay of the LiveKit path (read loop, `trackBuffer`, `WebmRecorder`), one `<name>.expect.json` per seed.
 
 - **Traces** are `internal/corpus` trace v1: gzipped NDJSON, a header line and one record per packet read, ending with an `eof` record. `atUs` is the read time.
+  - **Event records** log what the reader did: `pli`, a keyframe request with its `reason` (`packet_drop` or `direct_request`), and `timeout`, a read that hit its deadline. Replay skips them, since the events re-emerge from the replayed packets and read times.
+  - **The `eof` reason** is optional. A capture sets it when its trace misses records: `truncated` when it was cut at its byte cap, `dropped` when its writer fell behind and dropped records.
+  - **`pad`** marks an RTP padding packet. LiveKit sends padding probes ahead of a track's first key frame, and the jitter buffer drops them before it starts.
+  - **`epochUnixUs`** in the header is the wall-clock time of `atUs` 0. Each recording session has its own clock, so the traces of one meeting align only through it.
 - **No trace carries media.** Every payload is a header prefix that replay zero-pads to `plen`:
   - a VP8 descriptor and frame header in the `corpus.GenerateVP8` layout;
   - an Opus TOC byte.
 - **Provenance:**
   - `synthetic`: built with the `corpus` generators and mutations. The header's `generator` field records the exact call chain.
   - `pcap-extract`: per-packet read schedules taken from header-only SRTP captures of live test runs. The header `note` says what was synthesized.
+  - `capture`: a live capture written by the LiveKit adapter with `livekit.traceCapture` enabled. Its `generator` names the payload mode; in `full` mode the trace carries the media. No seed uses it.
 - **Regenerating:** the converters that wrote these traces are not in this repository, only their output is. The expect files are calibrated by hand from measured runs.
 
 ## Seeds
