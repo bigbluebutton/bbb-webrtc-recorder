@@ -90,20 +90,18 @@ func (t *Trace) Write(w io.Writer) error {
 		return err
 	}
 
-	gz := gzip.NewWriter(w)
-	enc := json.NewEncoder(gz)
-
-	if err := enc.Encode(t.Header); err != nil {
+	tw, err := newWriter(w, t.Header, 0)
+	if err != nil {
 		return err
 	}
 
-	for i := range t.Records {
-		if err := enc.Encode(&t.Records[i]); err != nil {
+	for _, r := range t.Records {
+		if err := tw.WriteRecord(r); err != nil {
 			return err
 		}
 	}
 
-	return gz.Close()
+	return tw.Close()
 }
 
 // WriteFile validates the trace and writes it to path as gzipped NDJSON.

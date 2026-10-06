@@ -225,6 +225,10 @@ func replayTraces(t *testing.T, traces []*corpus.Trace) replayResult {
 	for _, tr := range traces {
 		reads := make([]trackRead, 0, len(tr.Records))
 		for _, rec := range tr.Records {
+			if rec.IsEvent() {
+				continue
+			}
+
 			read := trackRead{at: time.Duration(rec.AtUs) * time.Microsecond}
 			if rec.T == corpus.RecordEOF {
 				read.err = io.EOF

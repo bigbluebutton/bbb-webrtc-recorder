@@ -17,6 +17,8 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	tr.Header.TrackID = "TR_video"
 	tr.Header.Seed = &seed
 	tr.Header.Note = "round trip"
+	tr.Header.EpochUnixUs = 1791324538317000
+	tr.Records[0].Pad = true
 	tr.Records[1].RTX = true
 
 	var buf bytes.Buffer
@@ -72,6 +74,23 @@ func TestReadPlainAndGzip(t *testing.T) {
 	got, err = Read(&gz)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
+}
+
+func TestReadEvents(t *testing.T) {
+	const plain = `{"v":1,"kind":"video","codec":"vp8","clockRate":90000,"ssrc":1,"provenance":"capture"}
+{"t":"rtp","atUs":0,"seq":1,"ts":0,"m":true,"pt":96,"plen":1}
+{"t":"pli","atUs":10,"reason":"packet_drop"}
+{"t":"timeout","atUs":10}
+{"t":"eof","atUs":20,"reason":"truncated"}
+`
+	got, err := Read(strings.NewReader(plain))
+	require.NoError(t, err)
+	assert.Equal(t, []Record{
+		{T: RecordRTP, Seq: 1, M: true, PT: 96, PLen: 1},
+		{T: RecordPLI, AtUs: 10, Reason: "packet_drop"},
+		{T: RecordTimeout, AtUs: 10},
+		{T: RecordEOF, AtUs: 20, Reason: "truncated"},
+	}, got.Records)
 }
 
 func TestReadErrors(t *testing.T) {

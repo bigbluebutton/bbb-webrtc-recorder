@@ -1,6 +1,7 @@
 package corpus
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -39,7 +40,19 @@ func TestValidate(t *testing.T) {
 		{"atUs not monotone", func(t *Trace) { t.Records[0].AtUs = 5 }, "record 1: atUs 0 before the previous 5"},
 		{"plen short", func(t *Trace) { t.Records[0].PLen = 0 }, "plen 0 shorter than pay"},
 		{"eof not last", func(t *Trace) { t.Records[1].T = RecordEOF }, "record 1: eof before the last"},
-		{"unknown type", func(t *Trace) { t.Records[0].T = "pli" }, "unknown type"},
+		{"unknown type", func(t *Trace) { t.Records[0].T = "nack" }, "unknown type"},
+		{"pli without reason", func(t *Trace) { t.Records[1] = Record{T: RecordPLI} }, "record 1: pli without a reason"},
+		{"reason on timeout", func(t *Trace) { t.Records[1] = Record{T: RecordTimeout, Reason: "x"} }, "timeout record with a reason"},
+		{"reason on rtp", func(t *Trace) { t.Records[1].Reason = "x" }, "rtp record with a reason"},
+		{"packet fields on pli", func(t *Trace) { t.Records[1].T, t.Records[1].Reason = RecordPLI, "x" }, "pli record with packet fields"},
+		{"packet fields on timeout", func(t *Trace) { t.Records[1] = Record{T: RecordTimeout, PLen: 1} }, "timeout record with packet fields"},
+		{"packet fields on eof", func(t *Trace) { t.Records[2].Seq = 3 }, "eof record with packet fields"},
+		{"padding on event", func(t *Trace) { t.Records[1] = Record{T: RecordTimeout, Pad: true} }, "packet fields"},
+		{"event before previous", func(t *Trace) {
+			t.Records[1].AtUs = 50
+			t.Records = slices.Insert(t.Records, 2, Record{T: RecordTimeout, AtUs: 49})
+		}, "record 2: atUs 49 before the previous 50"},
+		{"eof before an event", func(t *Trace) { t.Records = append(t.Records, Record{T: RecordTimeout, AtUs: 100}) }, "record 2: eof before the last"},
 		{"payload type", func(t *Trace) { t.Records[0].PT = 200 }, "payload type 200"},
 		{"rtx and dup", func(t *Trace) { t.Records[0].RTX, t.Records[0].Dup = true, true }, "both rtx and dup"},
 	}
@@ -50,6 +63,24 @@ func TestValidate(t *testing.T) {
 			c.mutate(tr)
 			assert.ErrorContains(t, tr.Validate(), c.want)
 		})
+	}
+}
+
+func TestValidateEvents(t *testing.T) {
+	tr := validTrace()
+	tr.Header.Provenance = ProvenanceCapture
+	tr.Records = slices.Insert(tr.Records, 1,
+		Record{T: RecordPLI, AtUs: 0, Reason: "packet_drop"},
+		Record{T: RecordTimeout, AtUs: 0},
+	)
+	tr.Records[len(tr.Records)-1].Reason = "truncated"
+	require.NoError(t, tr.Validate(), "events share read times with packets; an eof may carry a reason")
+
+	for _, r := range tr.Records {
+		assert.Equal(t, r.T == RecordPLI || r.T == RecordTimeout, r.IsEvent(), r.T)
+		if r.IsEvent() {
+			assert.Nil(t, r.Packet())
+		}
 	}
 }
 
@@ -64,6 +95,9 @@ func TestRecordPacket(t *testing.T) {
 	assert.True(t, p.Marker)
 	assert.Equal(t, uint8(111), p.PayloadType)
 	assert.Equal(t, []byte{0xFC, 0x01, 0, 0, 0, 0}, p.Payload)
+	assert.False(t, p.Padding)
+	r.Pad = true
+	assert.True(t, r.Packet().Padding)
 
 	p.Payload[0] = 0
 	assert.Equal(t, byte(0xFC), r.Pay[0], "the packet must not alias the record's payload")

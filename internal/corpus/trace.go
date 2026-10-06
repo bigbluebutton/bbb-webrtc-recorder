@@ -21,7 +21,7 @@ type Codec string
 // Provenance says where a trace's packets came from.
 type Provenance string
 
-// RecordType tells an RTP record from an end-of-stream record.
+// RecordType tells an RTP record from an event or an end-of-stream record.
 type RecordType string
 
 const (
@@ -33,10 +33,15 @@ const (
 
 	ProvenanceSynthetic   Provenance = "synthetic"
 	ProvenancePcapExtract Provenance = "pcap-extract"
-	ProvenanceFakeDevice  Provenance = "capture:fake-device"
+	// ProvenanceCapture is a live capture by the LiveKit adapter.
+	ProvenanceCapture Provenance = "capture"
 
 	RecordRTP RecordType = "rtp"
 	RecordEOF RecordType = "eof"
+	// Event records log what the reader did; replay skips them, since the
+	// events re-emerge from the replayed packets and read times.
+	RecordPLI     RecordType = "pli"
+	RecordTimeout RecordType = "timeout"
 
 	vp8ClockRate  = 90000
 	opusClockRate = 48000
@@ -44,19 +49,23 @@ const (
 
 // Header is the first line of a trace and describes the traced track.
 type Header struct {
-	V          int        `json:"v"`
-	Kind       Kind       `json:"kind"`
-	Codec      Codec      `json:"codec"`
-	ClockRate  uint32     `json:"clockRate"`
-	SSRC       uint32     `json:"ssrc"`
-	TrackID    string     `json:"trackId,omitempty"`
-	Provenance Provenance `json:"provenance"`
-	Generator  string     `json:"generator,omitempty"`
-	Seed       *int64     `json:"seed,omitempty"`
-	Note       string     `json:"note,omitempty"`
+	V         int    `json:"v"`
+	Kind      Kind   `json:"kind"`
+	Codec     Codec  `json:"codec"`
+	ClockRate uint32 `json:"clockRate"`
+	SSRC      uint32 `json:"ssrc"`
+	TrackID   string `json:"trackId,omitempty"`
+	// EpochUnixUs is the wall-clock time of atUs 0: each recording session
+	// has its own clock, so the traces of a meeting align only through it.
+	EpochUnixUs int64      `json:"epochUnixUs,omitempty"`
+	Provenance  Provenance `json:"provenance"`
+	Generator   string     `json:"generator,omitempty"`
+	Seed        *int64     `json:"seed,omitempty"`
+	Note        string     `json:"note,omitempty"`
 }
 
-// Record is one packet read from the track, or the end of the stream.
+// Record is one packet read from the track, a reader event, or the end of
+// the stream. Non-RTP records carry only T, AtUs and Reason.
 type Record struct {
 	T RecordType `json:"t"`
 	// AtUs is the read-time offset from the start of the trace, not socket arrival.
@@ -67,9 +76,15 @@ type Record struct {
 	PT   uint8  `json:"pt"`
 	RTX  bool   `json:"rtx,omitempty"`
 	Dup  bool   `json:"dup,omitempty"`
-	PLen int    `json:"plen"`
+	// Pad is the RTP padding bit. The jitter buffer handles padding-only
+	// packets apart, so replay must not take them for media.
+	Pad  bool `json:"pad,omitempty"`
+	PLen int  `json:"plen"`
 	// Pay is a payload prefix (base64 in JSON); replay zero-pads it to PLen.
 	Pay []byte `json:"pay,omitempty"`
+	// Reason is required on a pli, optional on an eof (e.g. why a capture
+	// was truncated) and absent elsewhere.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Trace is a header plus its records in read order.
@@ -92,6 +107,11 @@ func NewSyntheticHeader(kind Kind, ssrc uint32, generator string) Header {
 	return h
 }
 
+// IsEvent reports whether r is an event record, which replay skips.
+func (r Record) IsEvent() bool {
+	return r.T == RecordPLI || r.T == RecordTimeout
+}
+
 // Packet returns the record as an RTP packet with its payload zero-padded to
 // PLen, or nil for a non-RTP record; SSRC is left zero, the header carries it.
 func (r Record) Packet() *rtp.Packet {
@@ -105,6 +125,7 @@ func (r Record) Packet() *rtp.Packet {
 	return &rtp.Packet{
 		Header: rtp.Header{
 			Version:        2,
+			Padding:        r.Pad,
 			Marker:         r.M,
 			PayloadType:    r.PT,
 			SequenceNumber: r.Seq,
@@ -142,7 +163,7 @@ func (h Header) validate() error {
 	}
 
 	switch h.Provenance {
-	case ProvenanceSynthetic, ProvenancePcapExtract, ProvenanceFakeDevice:
+	case ProvenanceSynthetic, ProvenancePcapExtract, ProvenanceCapture:
 	case "":
 		return errors.New("header: provenance is required")
 	default:
@@ -156,38 +177,66 @@ func validateRecords(recs []Record) error {
 	var prev int64
 
 	for i, r := range recs {
-		switch r.T {
-		case RecordRTP:
-		case RecordEOF:
-			if i != len(recs)-1 {
-				return fmt.Errorf("record %d: eof before the last record", i)
-			}
-		default:
-			return fmt.Errorf("record %d: unknown type %q", i, r.T)
+		if r.T == RecordEOF && i != len(recs)-1 {
+			return fmt.Errorf("record %d: eof before the last record", i)
 		}
 
-		if r.AtUs < 0 {
-			return fmt.Errorf("record %d: negative atUs %d", i, r.AtUs)
-		}
-
-		if r.AtUs < prev {
-			return fmt.Errorf("record %d: atUs %d before the previous %d", i, r.AtUs, prev)
+		if err := validateRecord(i, r, prev); err != nil {
+			return err
 		}
 
 		prev = r.AtUs
-
-		if r.PT > 127 {
-			return fmt.Errorf("record %d: payload type %d out of range", i, r.PT)
-		}
-
-		if r.PLen < len(r.Pay) {
-			return fmt.Errorf("record %d: plen %d shorter than pay (%d bytes)", i, r.PLen, len(r.Pay))
-		}
-
-		if r.RTX && r.Dup {
-			return fmt.Errorf("record %d: both rtx and dup", i)
-		}
 	}
 
 	return nil
+}
+
+// validateRecord checks record i on its own and against the previous read
+// time; equal read times are valid, as packets read in one batch share one.
+func validateRecord(i int, r Record, prev int64) error {
+	switch r.T {
+	case RecordRTP, RecordEOF:
+	case RecordPLI:
+		if r.Reason == "" {
+			return fmt.Errorf("record %d: pli without a reason", i)
+		}
+	case RecordTimeout:
+	default:
+		return fmt.Errorf("record %d: unknown type %q", i, r.T)
+	}
+
+	if r.Reason != "" && r.T != RecordPLI && r.T != RecordEOF {
+		return fmt.Errorf("record %d: %s record with a reason", i, r.T)
+	}
+
+	if r.T != RecordRTP && r.hasPacketFields() {
+		return fmt.Errorf("record %d: %s record with packet fields", i, r.T)
+	}
+
+	if r.AtUs < 0 {
+		return fmt.Errorf("record %d: negative atUs %d", i, r.AtUs)
+	}
+
+	if r.AtUs < prev {
+		return fmt.Errorf("record %d: atUs %d before the previous %d", i, r.AtUs, prev)
+	}
+
+	if r.PT > 127 {
+		return fmt.Errorf("record %d: payload type %d out of range", i, r.PT)
+	}
+
+	if r.PLen < len(r.Pay) {
+		return fmt.Errorf("record %d: plen %d shorter than pay (%d bytes)", i, r.PLen, len(r.Pay))
+	}
+
+	if r.RTX && r.Dup {
+		return fmt.Errorf("record %d: both rtx and dup", i)
+	}
+
+	return nil
+}
+
+func (r Record) hasPacketFields() bool {
+	return r.Seq != 0 || r.TS != 0 || r.M || r.PT != 0 ||
+		r.RTX || r.Dup || r.Pad || r.PLen != 0 || len(r.Pay) != 0
 }
