@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 * fix(livekit): drop an expired incomplete frame at its deadline
 * fix(livekit): look up the flow state under the lock on a read error
 * fix(livekit): keep the flow check running while a track is read
+* fix(livekit): write one RTP dump file per track
 
 ### v0.16.0
 

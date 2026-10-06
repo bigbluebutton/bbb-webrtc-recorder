@@ -216,17 +216,13 @@ func (w *LiveKitWebRTC) Close() time.Duration {
 
 	w.requestKeyframeWg.Wait()
 
-	if w.rtpWriters != nil {
-		for trackID, writer := range w.rtpWriters {
-			if err := writer.Close(); err != nil {
-				log.WithField("session", w.ctx.Value("session")).
-					WithField("trackID", trackID).
-					Warnf("Failed to close rtp writer for track %s: %v", trackID, err)
-			}
-		}
+	w.m.Lock()
+	for trackID := range w.rtpWriters {
+		w.closeRTPDump(trackID, log.WithField("session", w.ctx.Value("session")).WithField("trackID", trackID))
 	}
 
 	w.rtpWriters = nil
+	w.m.Unlock()
 
 	if w.rec != nil {
 		return w.rec.Close()
@@ -793,21 +789,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	}
 
 	if w.cfg.WriteRTPDump {
-		basePath := w.rec.GetFilePath()
-		ext := filepath.Ext(basePath)
-		rtpPath := fmt.Sprintf("%s.rtp", basePath[:len(basePath)-len(ext)])
-		rtpWriter, err := recorder.NewRTPWriter(rtpPath, net.IP{0, 0, 0, 0}, 0)
-
-		if err != nil {
-			log.WithField("session", w.ctx.Value("session")).
-				WithField("trackID", trackID).
-				Errorf("Failed to create RTP writer for track %s: %v", trackID, err)
-		} else {
-			log.WithField("session", w.ctx.Value("session")).
-				WithField("trackID", trackID).
-				Infof("RTP dump enabled for track %s to %s", trackID, rtpPath)
-			w.rtpWriters[trackID] = rtpWriter
-		}
+		w.openRTPDump(trackID)
 	}
 
 	w.m.Lock()
@@ -840,6 +822,72 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		ssrc:    ssrcForHandler,
 		pubMime: pub.MimeType(),
 	}, buffer)
+}
+
+// trackFilePath is <base>.<trackID><suffix> next to the recording at
+// recordingPath, with any character of trackID unsafe in a file name replaced.
+func trackFilePath(recordingPath, trackID, suffix string) string {
+	safeID := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, trackID)
+
+	return strings.TrimSuffix(recordingPath, filepath.Ext(recordingPath)) + "." + safeID + suffix
+}
+
+// openRTPDump starts trackID's rtpdump file, <base>.<trackID>.rtp next to
+// the recording, for readTrack to write the track's packets to.
+func (w *LiveKitWebRTC) openRTPDump(trackID string) {
+	logger := log.WithField("session", w.ctx.Value("session")).WithField("trackID", trackID)
+
+	// A track subscribed again reuses the path: its earlier dump must stop
+	// writing before the file is truncated.
+	w.m.Lock()
+	w.closeRTPDump(trackID, logger)
+	w.m.Unlock()
+
+	rtpPath := trackFilePath(w.rec.GetFilePath(), trackID, ".rtp")
+	rtpWriter, err := recorder.NewRTPWriter(rtpPath, net.IP{0, 0, 0, 0}, 0)
+
+	if err != nil {
+		logger.Errorf("Failed to create RTP writer for track %s: %v", trackID, err)
+
+		return
+	}
+
+	w.m.Lock()
+	// A subscription can land after Close, which disconnects the room but
+	// not the pion OnTrack goroutines already running.
+	if w.rtpWriters == nil {
+		w.m.Unlock()
+		_ = rtpWriter.Close()
+
+		return
+	}
+	w.closeRTPDump(trackID, logger)
+	w.rtpWriters[trackID] = rtpWriter
+	w.m.Unlock()
+
+	logger.Infof("RTP dump enabled for track %s to %s", trackID, rtpPath)
+}
+
+// closeRTPDump closes and forgets trackID's rtpdump writer, if any. Call it
+// with w.m held.
+func (w *LiveKitWebRTC) closeRTPDump(trackID string, logger *log.Entry) {
+	writer, ok := w.rtpWriters[trackID]
+	if !ok {
+		return
+	}
+
+	delete(w.rtpWriters, trackID)
+
+	if err := writer.Close(); err != nil {
+		logger.Warnf("Failed to close rtp writer for track %s: %v", trackID, err)
+	}
 }
 
 // watchFlow marks the track not flowing once a tick finds no media packet
@@ -933,7 +981,9 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 	defer close(flowCheckDone)
 	go w.watchFlow(info.id, flowCheckDone)
 
+	w.m.Lock()
 	rtpWriter, rtpWriterExists := w.rtpWriters[info.id]
+	w.m.Unlock()
 
 	writePackets := func(packets []*rtp.Packet) {
 		for _, p := range packets {
