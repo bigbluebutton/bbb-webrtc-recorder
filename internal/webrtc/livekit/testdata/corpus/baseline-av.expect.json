@@ -1,0 +1,32 @@
+{
+  "v": 1,
+  "class": "baseline",
+  "intent": "60 s clean camera (30 fps, key frame every 3 s, 1% shallow reordering) plus microphone, replayed together into one WebM. 0 requests, every frame written, no duplicate or backward PTS. Guards against regressions on the ordinary path and sets the replay time budget.",
+  "traces": [
+    "baseline-av.video.ndjson.gz",
+    "baseline-av.audio.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 4800
+  },
+  "packetsWritten": {
+    "min": 8500,
+    "max": 8500
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 1800,
+    "minAudioFrames": 3000,
+    "minKeyframes": 20
+  }
+}

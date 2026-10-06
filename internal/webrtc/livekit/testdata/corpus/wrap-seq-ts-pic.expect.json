@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "class": "wrap",
+  "intent": "Sequence, timestamp and picture ID wraps with a 50 ms repair of seq 0: no requests, no loss, every frame written. RED on a stats or gap underflow at the wrap (PacketsLost ~65535, a spurious request), or on a writer that mishandles the ts wrap: it then counts every frame but the file holds half of them, which minVideoFrames and the frame-count check catch and monotonic does not.",
+  "traces": [
+    "wrap-seq-ts-pic.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 180
+  },
+  "packetsWritten": {
+    "min": 364,
+    "max": 364
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 180,
+    "minKeyframes": 2
+  }
+}

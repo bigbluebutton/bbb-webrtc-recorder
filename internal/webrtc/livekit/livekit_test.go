@@ -196,30 +196,7 @@ func TestTrackMuteCallbacksDuringTrackRegistration(t *testing.T) {
 // writerFrame is frame f of a 30 fps VP8 stream: 4 packets from seq with
 // picture ID pic, the first carrying a 640x480 key frame header when key.
 func writerFrame(ssrc uint32, seq, pic uint16, f int, key bool) []*rtp.Packet {
-	pkts := make([]*rtp.Packet, 0, 4)
-	for j := range 4 {
-		desc := byte(0x80) // X: an extension byte follows
-		if j == 0 {
-			desc |= 0x10 // S: the frame starts here
-		}
-
-		// I: a 15-bit picture ID follows.
-		payload := []byte{desc, 0x80, 0x80 | byte(pic>>8)&0x7f, byte(pic)}
-		switch {
-		case j == 0 && key:
-			payload = append(payload, 0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a, 0x80, 0x02, 0xe0, 0x01)
-		case j == 0:
-			payload = append(payload, 0x11, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
-		}
-
-		pkts = append(pkts, &rtp.Packet{
-			Header: rtp.Header{Version: 2, PayloadType: 96, SSRC: ssrc, SequenceNumber: seq + uint16(j),
-				Timestamp: uint32(90000 + 3000*f), Marker: j == 3},
-			Payload: append(payload, 0xA0, 0xA1, 0xA2, 0xA3),
-		})
-	}
-
-	return pkts
+	return vp8Frame(ssrc, seq, pic, uint32(90000+3000*f), 4, key, []byte{0xA0, 0xA1, 0xA2, 0xA3})
 }
 
 type countingRequester struct{ n atomic.Int32 }

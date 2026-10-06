@@ -1,0 +1,35 @@
+{
+  "v": 1,
+  "class": "15",
+  "intent": "The first key frame loses a packet. An early request 200-240 ms after the reveal, which the trace does not answer, so the track buffer asks again a second later; the expiry's report is coalesced into them, and frames from the frame-60 key frame on are written. RED on more requests or a 2 s first request.",
+  "traces": [
+    "c15-start-kfloss.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 2,
+    "max": 2
+  },
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "firstRequestMinMs": 203,
+  "firstRequestMaxMs": 243,
+  "written": {
+    "min": 60
+  },
+  "packetsWritten": {
+    "min": 487,
+    "max": 487
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 60,
+    "minKeyframes": 1
+  },
+  "residuals": [
+    "writerRequests: ideal 0 (the track buffer's request is still due), pinned 1: webm.go's !hasKeyFrame && !isKeyFrame branch requests while !seenKeyFrame without consulting keyframeDue"
+  ]
+}

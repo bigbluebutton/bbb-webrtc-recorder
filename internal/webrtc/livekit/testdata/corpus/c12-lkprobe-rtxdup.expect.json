@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "class": "12",
+  "intent": "Probe copies of the last 6 packets over RTX, at a frame boundary or mid-frame, are duplicates, not losses: 0 requests, 0 lost, 0 dropped. RED when duplicates reach seqGaps or the jitter buffer.",
+  "traces": [
+    "c12-lkprobe-rtxdup.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 120
+  },
+  "packetsWritten": {
+    "min": 502,
+    "max": 502
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 120,
+    "minKeyframes": 2
+  }
+}

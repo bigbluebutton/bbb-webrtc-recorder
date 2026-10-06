@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "class": "5",
+  "intent": "At 5 fps a loss NACKed on the next frame's read and repaired 70 ms later (in band, then over RTX) must bring 0 key frame requests and 0 lost/dropped packets. RED when the gap request ignores the NACK round trip (fires 200 ms after the reveal, before the repair).",
+  "traces": [
+    "c05-repaired-5fps.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 30
+  },
+  "packetsWritten": {
+    "min": 240,
+    "max": 240
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 30,
+    "minKeyframes": 1
+  }
+}

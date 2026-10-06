@@ -1,0 +1,46 @@
+{
+  "v": 1,
+  "class": "9",
+  "intent": "Pinned residual of the push-lag window: of every packet of a live schedule withheld in turn while the stream flows, the one whose frames reach the writer latest: a loss early in a 21-packet key frame paced over ~600 ms. The early request comes ~240 ms after the drop. The schedule does not answer it, so the track buffer asks again a second later, and covers the jitter buffer's own report and the writer. One redundant request, pinned, not ideal; plus the close-out blank frames' writer request. RED if the residual grows, the early request disappears, or the track buffer stops repeating it: the second request then waits for the jitter buffer's own report, a second later. 11 key frames by size.",
+  "traces": [
+    "c09-mx-rev5-1-residual.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 2,
+    "max": 2
+  },
+  "bufferRequestsMs": [
+    {
+      "min": 14597.249,
+      "max": 14637.249
+    },
+    {
+      "min": 15617,
+      "max": 15657
+    }
+  ],
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "firstRequestMinMs": 14597.249,
+  "firstRequestMaxMs": 14637.249,
+  "written": {
+    "min": 85
+  },
+  "packetsWritten": {
+    "min": 588,
+    "max": 588
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 85,
+    "minKeyframes": 4
+  },
+  "residuals": [
+    "bufferRequests: ideal 1, pinned 2: the replayed schedule cannot answer the early request, so the track buffer repeats it. Answered, the frames behind the loss are still released 2,040 ms after the request, past the 2,020 ms coalescing window, and the jitter buffer's own report asks again: an accepted residual, rare among the positions a loss can take in a flowing stream",
+    "writerRequests: ideal 0, pinned 1, at the close-out blank frames: LiveKit's 8x8 key frames fail validateVP8Frame (dimensions < 16) and the writer asks once as the track ends; harmless, pinned"
+  ]
+}
