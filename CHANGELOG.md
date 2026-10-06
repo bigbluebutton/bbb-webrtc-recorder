@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ### UNRELEASED
 
 * fix(livekit): drop an expired incomplete frame at its deadline
+* fix(livekit): look up the flow state under the lock on a read error
 
 ### v0.16.0
 

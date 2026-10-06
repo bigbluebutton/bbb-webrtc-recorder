@@ -1060,7 +1060,15 @@ func (w *LiveKitWebRTC) trackReadErrorStats(err error, info trackInfo) {
 func (w *LiveKitWebRTC) handleReadRTPError(err error, info trackInfo) error {
 	trackID := info.id
 	var netErr net.Error
-	flowState := w.flowState[trackID]
+
+	// Other tracks add their entries concurrently.
+	w.m.Lock()
+	var flowState *trackFlowState
+	if state, ok := w.flowState[trackID]; ok {
+		snapshot := *state
+		flowState = &snapshot
+	}
+	w.m.Unlock()
 
 	log.WithField("session", w.ctx.Value("session")).
 		Tracef("Error reading RTP packet from track %s: %+v", trackID, err)

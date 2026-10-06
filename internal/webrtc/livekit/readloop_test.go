@@ -2,6 +2,7 @@ package livekit
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -337,4 +338,23 @@ func TestReadTrackPanicReportsFailed(t *testing.T) {
 		states, _ := h.reported()
 		assert.Equal(t, []utils.ConnectionState{utils.ConnectionStateFailed}, states)
 	})
+}
+
+// Run with -race: each track's first packet adds its flow-state entry while
+// other tracks' read errors look theirs up.
+func TestReadErrorReadsFlowStateUnderLock(t *testing.T) {
+	h := newLoopHarness(newPushRecorder(), audioInfo.id)
+	h.w.updateFlowState(audioInfo.id, 1, time.Now())
+	h.w.updateFlowState(audioInfo.id, 2, time.Now())
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for i := range 200 {
+			h.w.updateFlowState(fmt.Sprintf("track-%d", i), 1, time.Now())
+		}
+	})
+	for range 200 {
+		assert.NoError(t, h.w.handleReadRTPError(readTimeout{}, audioInfo))
+	}
+	wg.Wait()
 }
