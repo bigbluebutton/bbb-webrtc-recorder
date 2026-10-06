@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
@@ -226,10 +227,11 @@ type countingRequester struct{ n atomic.Int32 }
 func (c *countingRequester) RequestKeyframe()              { c.n.Add(1) }
 func (c *countingRequester) RequestKeyframeForSSRC(uint32) { c.n.Add(1) }
 
-// writerStream drives the LiveKit video path without a room: a track buffer
-// registered as onTrackSubscribed registers it, into a WebmRecorder whose
-// requester is the adapter, so both kinds of request reach its channel. A
-// request is answered with a key frame at the first frame 100 ms later.
+// writerStream drives the LiveKit video path without a room, in virtual time:
+// a track buffer registered as onTrackSubscribed registers it, into a
+// WebmRecorder whose requester is the adapter, so both kinds of request reach
+// its channel. A request is answered with a key frame at the first frame
+// 100 ms later.
 type writerStream struct {
 	frames    int
 	lost      int           // the frame missing packet 1, or -1
@@ -244,92 +246,96 @@ type writerStream struct {
 }
 
 func (s writerStream) run(t *testing.T) (requests []time.Duration, written int) {
-	const ssrc = 1234
-	rec := recorder.NewWebmRecorder(filepath.Join(t.TempDir(), "video.webm"), 0o600, 256, 32, true, false)
-	rec.SetHasVideo(true)
-	w := &LiveKitWebRTC{
-		ctx:                 context.WithValue(context.Background(), "session", "test-session"), //nolint:staticcheck // SA1029: the key livekit.go reads
-		cfg:                 (&config.Config{}).GetDefaults().LiveKit,
-		rec:                 rec,
-		pliStats:            map[uint32]pliTracker{},
-		jitterBuffers:       map[string]*trackBuffer{},
-		videoBuffers:        map[uint32]*trackBuffer{},
-		keyframeRequestChan: make(chan uint32, 100),
-		requestKeyframeCtx:  context.Background(),
-	}
-	b := newTrackBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval, func() {
-		w.queueKeyframeRequest(ssrc, "packet_drop")
-	})
-	defer b.close()
-	w.registerTrackBuffer("video", true, ssrc, b)
-	if s.requester != nil {
-		rec.SetKeyframeRequester(s.requester)
-	}
-
-	start := time.Now()
-	drain := func() bool {
-		asked := false
-		for len(w.keyframeRequestChan) > 0 {
-			<-w.keyframeRequestChan
-			requests = append(requests, time.Since(start))
-			asked = true
+	synctest.Test(t, func(t *testing.T) {
+		const ssrc = 1234
+		rec := recorder.NewWebmRecorder(filepath.Join(t.TempDir(), "video.webm"), 0o600, 256, 32, true, false)
+		rec.SetHasVideo(true)
+		w := &LiveKitWebRTC{
+			ctx:                 context.WithValue(context.Background(), "session", "test-session"), //nolint:staticcheck // SA1029: the key livekit.go reads
+			cfg:                 (&config.Config{}).GetDefaults().LiveKit,
+			rec:                 rec,
+			pliStats:            map[uint32]pliTracker{},
+			jitterBuffers:       map[string]*trackBuffer{},
+			videoBuffers:        map[uint32]*trackBuffer{},
+			keyframeRequestChan: make(chan uint32, 100),
+			requestKeyframeCtx:  context.Background(),
+		}
+		b := newTrackBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval, func() {
+			w.queueKeyframeRequest(ssrc, "packet_drop")
+		})
+		defer b.close()
+		w.registerTrackBuffer("video", true, ssrc, b)
+		if s.requester != nil {
+			rec.SetKeyframeRequester(s.requester)
 		}
 
-		return asked
-	}
-	push := func(p *rtp.Packet) {
-		for _, out := range b.push(p) {
-			rec.PushVideo(out)
-		}
-	}
+		start := time.Now()
+		drain := func() bool {
+			asked := false
+			for len(w.keyframeRequestChan) > 0 {
+				<-w.keyframeRequestChan
+				requests = append(requests, time.Since(start))
+				asked = true
+			}
 
-	var keyAt time.Time
-	var held *rtp.Packet
-	var heldAt time.Time
-	ignored := 0
-	seq, pic := uint16(1000), uint16(100)
-	for f := range s.frames {
-		at := start.Add(time.Duration(f) * time.Second / 30)
-		if s.stall > 0 && f >= s.stallAt {
-			at = at.Add(s.stall)
+			return asked
 		}
-		time.Sleep(time.Until(at))
-		if drain() && keyAt.IsZero() && !s.deaf {
-			if ignored < s.ignore {
-				ignored++
-			} else {
-				keyAt = time.Now().Add(100 * time.Millisecond)
+		push := func(p *rtp.Packet) {
+			for _, out := range b.push(p) {
+				rec.PushVideo(out)
 			}
 		}
-		if held != nil && !time.Now().Before(heldAt) {
-			push(held)
-			held = nil
-		}
 
-		key := f == 0 || f == s.unasked || (!keyAt.IsZero() && !time.Now().Before(keyAt))
-		if key {
-			keyAt = time.Time{}
-		}
-		if f == s.skipPicAt {
+		var keyAt time.Time
+		var held *rtp.Packet
+		var heldAt time.Time
+		ignored := 0
+		seq, pic := uint16(1000), uint16(100)
+		for f := range s.frames {
+			at := start.Add(time.Duration(f) * time.Second / 30)
+			if s.stall > 0 && f >= s.stallAt {
+				at = at.Add(s.stall)
+			}
+			time.Sleep(time.Until(at))
+			// The track buffer's timer runs first at an instant it shares with a frame.
+			synctest.Wait()
+			if drain() && keyAt.IsZero() && !s.deaf {
+				if ignored < s.ignore {
+					ignored++
+				} else {
+					keyAt = time.Now().Add(100 * time.Millisecond)
+				}
+			}
+			if held != nil && !time.Now().Before(heldAt) {
+				push(held)
+				held = nil
+			}
+
+			key := f == 0 || f == s.unasked || (!keyAt.IsZero() && !time.Now().Before(keyAt))
+			if key {
+				keyAt = time.Time{}
+			}
+			if f == s.skipPicAt {
+				pic++
+			}
+
+			for j, p := range writerFrame(ssrc, seq, pic&0x7fff, f, key) {
+				if f == s.lost && j == 1 {
+					if s.late > 0 {
+						held, heldAt = p, time.Now().Add(s.late)
+					}
+
+					continue
+				}
+				push(p)
+			}
+			seq += 4
 			pic++
 		}
-
-		for j, p := range writerFrame(ssrc, seq, pic&0x7fff, f, key) {
-			if f == s.lost && j == 1 {
-				if s.late > 0 {
-					held, heldAt = p, time.Now().Add(s.late)
-				}
-
-				continue
-			}
-			push(p)
-		}
-		seq += 4
-		pic++
-	}
-	drain()
-	written = rec.GetStats().Video.WrittenSamples
-	rec.Close()
+		drain()
+		written = rec.GetStats().Video.WrittenSamples
+		rec.Close()
+	})
 
 	return requests, written
 }
