@@ -24,6 +24,7 @@ import (
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
@@ -876,96 +877,124 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 	appstats.OnTrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
 
-	go func() {
-		defer buffer.close()
-		defer func() {
-			appstats.OnTrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
+	go w.readTrack(track, trackInfo{
+		id:      trackID,
+		kind:    trackKind,
+		mime:    mimeType,
+		source:  pub.Source().String(),
+		ssrc:    ssrcForHandler,
+		pubMime: pub.MimeType(),
+	}, buffer)
+}
+
+// trackSource is the part of *webrtc.TrackRemote the read loop uses.
+type trackSource interface {
+	ReadRTP() (*rtp.Packet, interceptor.Attributes, error)
+	SetReadDeadline(time.Time) error
+}
+
+type trackInfo struct {
+	id     string
+	kind   TrackKind
+	mime   MimeType // the negotiated codec's, lowercased
+	source string
+	ssrc   uint32
+	// The publication's MIME type as LiveKit signals it ("video/VP8"), which
+	// the read-error metric and the stop logs carry.
+	pubMime string
+}
+
+// readTrack feeds the recorder from src until the track ends, then closes
+// buffer and reports the connection closed, or failed on a panic.
+func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *trackBuffer) {
+	defer buffer.close()
+	defer func() {
+		appstats.OnTrackRecordingStopped(string(info.kind), string(info.mime), info.source)
+		log.WithField("session", w.ctx.Value("session")).
+			WithField("trackID", info.id).
+			WithField("source", info.source).
+			WithField("kind", info.kind).
+			WithField("mime", info.mime).
+			WithField("ssrc", info.ssrc).
+			Info("Track recording stopped")
+
+		// If a panic occurs, notify the connection state callback as failed so clients can retry/handle it
+		if err := recover(); err != nil {
 			log.WithField("session", w.ctx.Value("session")).
-				WithField("trackID", trackID).
-				WithField("source", pub.Source().String()).
-				WithField("kind", trackKind).
-				WithField("mime", mimeType).
-				WithField("ssrc", track.SSRC()).
-				Info("Track recording stopped")
+				WithField("error", err).
+				WithField("stack", string(debug.Stack())).
+				Error("Panic detected in LiveKit packet processing, emit failed state")
 
-			// If a panic occurs, notify the connection state callback as failed so clients can retry/handle it
-			if err := recover(); err != nil {
-				log.WithField("session", w.ctx.Value("session")).
-					WithField("error", err).
-					WithField("stack", string(debug.Stack())).
-					Error("Panic detected in LiveKit packet processing, emit failed state")
-
-				w.connStateCallback(utils.ConnectionStateFailed)
-			} else {
-				w.connStateCallback(utils.ConnectionStateClosed)
-			}
-		}()
-
-		rtpWriter, rtpWriterExists := w.rtpWriters[trackID]
-
-		writePackets := func(packets []*rtp.Packet) {
-			for _, p := range packets {
-				switch trackKind {
-				case TrackKindVideo:
-					w.rec.PushVideo(p)
-				case TrackKindAudio:
-					w.rec.PushAudio(p)
-				}
-			}
-		}
-
-		push := w.packetPusher(trackID, buffer)
-
-		for {
-			readDeadline := time.Now().Add(w.cfg.PacketReadTimeout)
-			// Ignore error from SetReadDeadline - it comes from pion/packetio
-			// but it'll never throw - probably conforming to some interface
-			_ = track.SetReadDeadline(readDeadline)
-			packet, _, err := track.ReadRTP()
-
-			if err != nil {
-				if procErr := w.handleReadRTPError(err, trackID, pub); procErr != nil {
-					if procErr == io.EOF {
-						log.WithField("session", w.ctx.Value("session")).
-							Infof("%s track=%s stopped", pub.MimeType(), trackID)
-
-						// No later packet hands out what the jitter buffer holds.
-						if tail := buffer.flush(); len(tail) > 0 {
-							writePackets(tail)
-							w.processPacketStats(trackID, tail)
-						}
-					} else {
-						log.WithField("session", w.ctx.Value("session")).
-							Errorf("Unexpected error handling RTP packet from track %s: %v", trackID, procErr)
-						// TODO this should be a panic-like situation
-					}
-
-					return
-				}
-			}
-
-			if packet == nil {
-				continue
-			}
-
-			if rtpWriterExists {
-				if err := rtpWriter.WriteRTP(packet); err != nil {
-					log.WithField("session", w.ctx.Value("session")).
-						WithField("trackID", trackID).
-						Warnf("failed to write RTP packet for track %s: %v", trackID, err)
-				}
-			}
-
-			packets := push(packet)
-
-			if len(packets) == 0 {
-				continue
-			}
-
-			writePackets(packets)
-			w.processPacketStats(trackID, packets)
+			w.connStateCallback(utils.ConnectionStateFailed)
+		} else {
+			w.connStateCallback(utils.ConnectionStateClosed)
 		}
 	}()
+
+	rtpWriter, rtpWriterExists := w.rtpWriters[info.id]
+
+	writePackets := func(packets []*rtp.Packet) {
+		for _, p := range packets {
+			switch info.kind {
+			case TrackKindVideo:
+				w.rec.PushVideo(p)
+			case TrackKindAudio:
+				w.rec.PushAudio(p)
+			}
+		}
+	}
+
+	push := w.packetPusher(info.id, buffer)
+
+	for {
+		readDeadline := time.Now().Add(w.cfg.PacketReadTimeout)
+		// Ignore error from SetReadDeadline - it comes from pion/packetio
+		// but it'll never throw - probably conforming to some interface
+		_ = src.SetReadDeadline(readDeadline)
+		packet, _, err := src.ReadRTP()
+
+		if err != nil {
+			if procErr := w.handleReadRTPError(err, info); procErr != nil {
+				if procErr == io.EOF {
+					log.WithField("session", w.ctx.Value("session")).
+						Infof("%s track=%s stopped", info.pubMime, info.id)
+
+					// No later packet hands out what the jitter buffer holds.
+					if tail := buffer.flush(); len(tail) > 0 {
+						writePackets(tail)
+						w.processPacketStats(info.id, tail)
+					}
+				} else {
+					log.WithField("session", w.ctx.Value("session")).
+						Errorf("Unexpected error handling RTP packet from track %s: %v", info.id, procErr)
+					// TODO this should be a panic-like situation
+				}
+
+				return
+			}
+		}
+
+		if packet == nil {
+			continue
+		}
+
+		if rtpWriterExists {
+			if err := rtpWriter.WriteRTP(packet); err != nil {
+				log.WithField("session", w.ctx.Value("session")).
+					WithField("trackID", info.id).
+					Warnf("failed to write RTP packet for track %s: %v", info.id, err)
+			}
+		}
+
+		packets := push(packet)
+
+		if len(packets) == 0 {
+			continue
+		}
+
+		writePackets(packets)
+		w.processPacketStats(info.id, packets)
+	}
 }
 
 // packetPusher returns the push the read loop hands trackID's packets to.
@@ -1019,22 +1048,23 @@ func (w *LiveKitWebRTC) observeSubscription(trackID string) {
 	}
 }
 
-func (w *LiveKitWebRTC) trackReadErrorStats(err error, trackID string, pub *lksdk.RemoteTrackPublication) {
+func (w *LiveKitWebRTC) trackReadErrorStats(err error, info trackInfo) {
 	if err != io.EOF {
-		appstats.OnRTPReadError(pub.Source().String(), string(pub.Kind()), string(pub.MimeType()), err.Error())
+		appstats.OnRTPReadError(info.source, string(info.kind), info.pubMime, err.Error())
 		w.m.Lock()
-		w.trackStats[trackID].RTPReadErrors++
+		w.trackStats[info.id].RTPReadErrors++
 		w.m.Unlock()
 	}
 }
 
-func (w *LiveKitWebRTC) handleReadRTPError(err error, trackID string, pub *lksdk.RemoteTrackPublication) error {
+func (w *LiveKitWebRTC) handleReadRTPError(err error, info trackInfo) error {
+	trackID := info.id
 	var netErr net.Error
 	flowState := w.flowState[trackID]
 
 	log.WithField("session", w.ctx.Value("session")).
 		Tracef("Error reading RTP packet from track %s: %+v", trackID, err)
-	w.trackReadErrorStats(err, trackID, pub)
+	w.trackReadErrorStats(err, info)
 
 	switch {
 	case errors.As(err, &netErr) && netErr.Timeout():
@@ -1056,7 +1086,7 @@ func (w *LiveKitWebRTC) handleReadRTPError(err error, trackID string, pub *lksdk
 
 	case err.Error() == "EOF" || err == io.EOF:
 		log.WithField("session", w.ctx.Value("session")).
-			Infof("%s track stopped", pub.MimeType())
+			Infof("%s track stopped", info.pubMime)
 		return err
 
 	default:
