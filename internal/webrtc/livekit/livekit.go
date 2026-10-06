@@ -830,51 +830,6 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 	buffer := w.addJitterBuffer(trackID, depacketizer, jitterLatencyFor(trackKind), ssrcForHandler, isVideo && track != nil)
 
-	flowCheckDone := make(chan bool)
-	defer func() {
-		flowCheckDone <- true
-	}()
-	go func() {
-		ticker := time.NewTicker(notFlowingTicker)
-		var lastSeqNum uint16
-		for {
-			select {
-			case <-flowCheckDone:
-				ticker.Stop()
-				return
-			case <-ticker.C:
-				var currentSeqNum uint16
-				var currentRecvTs time.Time
-				var isFlowing bool
-				var staleSeqNum bool
-
-				w.m.Lock()
-				state, exists := w.flowState[trackID]
-
-				if exists {
-					currentSeqNum = state.lastSeqNum
-					currentRecvTs = state.lastRecvTs
-					isFlowing = state.isFlowing
-					staleSeqNum = currentSeqNum == lastSeqNum
-				}
-				w.m.Unlock()
-
-				if staleSeqNum {
-					// No new packets received == not flowing
-					isFlowing = w.updateFlowState(trackID, currentSeqNum, currentRecvTs)
-				}
-
-				if isFlowing {
-					ticker.Reset(flowingTicker)
-				} else {
-					ticker.Reset(notFlowingTicker)
-				}
-
-				lastSeqNum = currentSeqNum
-			}
-		}
-	}()
-
 	appstats.OnTrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
 
 	go w.readTrack(track, trackInfo{
@@ -885,6 +840,49 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		ssrc:    ssrcForHandler,
 		pubMime: pub.MimeType(),
 	}, buffer)
+}
+
+// watchFlow marks the track not flowing once a tick finds no media packet
+// read since the previous one, until done is closed.
+func (w *LiveKitWebRTC) watchFlow(trackID string, done <-chan struct{}) {
+	ticker := time.NewTicker(notFlowingTicker)
+	var lastSeqNum uint16
+	for {
+		select {
+		case <-done:
+			ticker.Stop()
+
+			return
+		case <-ticker.C:
+			var currentSeqNum uint16
+			var currentRecvTs time.Time
+			var isFlowing bool
+			var staleSeqNum bool
+
+			w.m.Lock()
+			state, exists := w.flowState[trackID]
+
+			if exists {
+				currentSeqNum = state.lastSeqNum
+				currentRecvTs = state.lastRecvTs
+				isFlowing = state.isFlowing
+				staleSeqNum = currentSeqNum == lastSeqNum
+			}
+			w.m.Unlock()
+
+			if staleSeqNum {
+				isFlowing = w.updateFlowState(trackID, currentSeqNum, currentRecvTs)
+			}
+
+			if isFlowing {
+				ticker.Reset(flowingTicker)
+			} else {
+				ticker.Reset(notFlowingTicker)
+			}
+
+			lastSeqNum = currentSeqNum
+		}
+	}
 }
 
 // trackSource is the part of *webrtc.TrackRemote the read loop uses.
@@ -930,6 +928,10 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 			w.connStateCallback(utils.ConnectionStateClosed)
 		}
 	}()
+
+	flowCheckDone := make(chan struct{})
+	defer close(flowCheckDone)
+	go w.watchFlow(info.id, flowCheckDone)
 
 	rtpWriter, rtpWriterExists := w.rtpWriters[info.id]
 

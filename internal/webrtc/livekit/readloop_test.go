@@ -358,3 +358,34 @@ func TestReadErrorReadsFlowStateUnderLock(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Reads keep coming while they carry only padding, such as LiveKit's probes
+// and mute padding: only the flow check sees no media arrive.
+func TestReadTrackFlowCheckMarksStall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newLoopHarness(newPushRecorder(), videoInfo.id)
+		var reads []trackRead
+		seq := uint16(100)
+		for i := range 40 {
+			at := time.Duration(i) * 100 * time.Millisecond
+			if i >= 10 && i < 30 {
+				reads = append(reads, readsAt(at, &rtp.Packet{Header: rtp.Header{SequenceNumber: seq, Padding: true}})...)
+				seq++
+				continue
+			}
+
+			ts := uint32(3000 * (i + 1))
+			reads = append(reads, readsAt(at, vp8Packet(seq, ts, true, false), vp8Packet(seq+1, ts, false, true))...)
+			seq += 2
+		}
+		reads = append(reads, trackRead{at: 4 * time.Second, err: io.EOF})
+		src := newFakeTrack(reads)
+
+		h.run(src, videoInfo)
+
+		assert.False(t, src.staleDeadline)
+		assert.Zero(t, src.timeouts, "no read waits past its deadline")
+		_, flows := h.reported()
+		assert.Equal(t, []bool{true, false, true}, flows)
+	})
+}
