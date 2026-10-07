@@ -82,6 +82,9 @@ A scenario that needs root, as the NACK scenario does for its network
 namespaces, skips unless `E2E_NETEM=1` and fails instead when
 `E2E_NETEM_REQUIRED=1` (see `netemSkipReason`).
 
+CI runs the whole package unprivileged. A root-only scenario also needs its
+own step in `.github/workflows/e2e.yml`, as the NACK scenario has.
+
 ## Running locally
 
 You need Go (the version in `go.mod`), `livekit-server` 1.13.7 and
@@ -188,3 +191,45 @@ until the recorder's next request up to 1 s later. Frames are compared from
 the first one written: when netem drops the first packet of the first key
 frame, no NACK can name it, and the recording starts only once the jitter
 buffer's 2 s have passed.
+
+## CI
+
+`.github/workflows/e2e.yml` runs on `ubuntu-latest`:
+- nightly;
+- on demand (`workflow_dispatch`);
+- on pull requests that touch the recorder (`internal/`, `cmd/`,
+  `third_party/`, `tests/e2e/`, `go.mod`, `go.sum` or the workflow itself),
+  when opened, pushed to or reopened;
+- on any other pull request that carries the `e2e` label: when the label is
+  added, on every later push, and when the PR is reopened.
+
+A `changes` job lists the paths a PR changes, against the base it would
+merge into. A newer run for a PR cancels the one in progress; a run skipped
+for another label does not.
+
+A separate `vet` job runs `go vet -tags e2e ./tests/e2e/...` on every pull
+request, labelled or not, and on every other trigger, since the per-push
+test workflow builds without the tag. The per-push golangci-lint job lints the
+suite with it.
+
+The e2e job sets up Go from `go.mod` and downloads `livekit-server` 1.13.7 from
+the official GitHub release, checking it against a pinned sha256. The tarball
+is cached under that version and checksum, and checked again on a cache hit.
+It installs `redis-server` from apt and stops the system service, then runs
+two steps:
+1. `go test -tags e2e -v -timeout 15m ./tests/e2e/...`, the whole suite
+   unprivileged. The NACK scenario's privileged test skips here.
+2. The NACK scenario as root, as shown above, with
+   `-test.run '^TestNACKRepairUnderLoss$'` and `E2E_NETEM_REQUIRED=1`, so a
+   skip fails the step. This step runs even if step 1 failed, but not if
+   setup did, and has its own 10-minute limit. It loads `sch_netem`, and
+   installs `linux-modules-extra` for the running kernel if the module is
+   missing.
+
+`E2E_ARTIFACTS` points at `$RUNNER_TEMP/e2e-artifacts`, so every test's
+artifacts are kept. When the job fails or is cancelled (as a timeout does),
+it uploads them (14-day retention), after a `chown`, because the NACK
+scenario writes them as root with mode 0600.
+
+To bump LiveKit, change `LIVEKIT_VERSION` and `LIVEKIT_SHA256` together. The
+checksum is the `linux_amd64` line of the release's `checksums.txt`.

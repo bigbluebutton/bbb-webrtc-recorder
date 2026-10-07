@@ -25,3 +25,5 @@ jobs:
         with:
           only-new-issues: true
           version: v2.14
+          # The end-to-end suite builds only with this tag.
+          args: --build-tags=e2e
