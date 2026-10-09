@@ -289,21 +289,17 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 
 		var bufferStatsData *jitter.BufferStats
 
-		if jb, ok := w.jitterBuffers[trackID]; ok && jb != nil {
+		if jb, ok := jitterBuffers[trackID]; ok && jb != nil {
 			bufferStatsData = jb.Stats()
 		} else {
 			bufferStatsData = &jitter.BufferStats{}
 		}
 
-		currentTrackAdapterStats := appstats.AdapterTrackStats{}
-
-		if ts, ok := w.trackStats[trackID]; ok {
-			currentTrackAdapterStats = *ts
-		}
+		currentTrackAdapterStats := trackStats[trackID]
 
 		pliCount := 0
 		if remoteTrackPub.Kind() == lksdk.TrackKindVideo {
-			for _, tracker := range w.pliStats {
+			for _, tracker := range pliStats {
 				pliCount += tracker.count
 			}
 		}
@@ -779,7 +775,9 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		// TODO: plug logger via jitter.WithLogger(logger)
 	)
 
+	w.m.Lock()
 	w.jitterBuffers[trackID] = buffer
+	w.m.Unlock()
 
 	if isVideo {
 		w.m.Lock()
