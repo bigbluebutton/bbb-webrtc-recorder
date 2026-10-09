@@ -11,6 +11,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
@@ -23,10 +24,23 @@ type Server struct {
 	sessions sync.Map
 	// shutdownWg is used to wait for graceful shutdowns
 	shutdownWg sync.WaitGroup
+
+	// constraintsMu is held while a session is registered and while a
+	// constraint changes.
+	constraintsMu sync.Mutex
+	constraints   map[string]types.CaptureConstraint
+	reasons       map[string]struct{}
+	reconciler    *constraintReconciler
+	closed        bool
 }
 
 func NewServer(cfg *config.Config, ps pubsub.PubSub) *Server {
-	return &Server{cfg: cfg, pubsub: ps}
+	return &Server{
+		cfg:         cfg,
+		pubsub:      ps,
+		constraints: make(map[string]types.CaptureConstraint),
+		reasons:     make(map[string]struct{}),
+	}
 }
 
 func (s *Server) HandlePubSubMsg(ctx context.Context, msg []byte) {
@@ -122,9 +136,7 @@ func (s *Server) HandlePubSubEvent(ctx context.Context, event *events.Event) {
 		}
 
 		sess := NewSession(e.SessionId, s, wrtc, lk, rec)
-		s.sessions.Store(e.SessionId, sess)
-		s.shutdownWg.Add(1)
-		go sess.Run(&s.shutdownWg)
+		s.runSession(sess)
 
 		if err := sess.StartRecording(e, start); err != nil {
 			log.WithField("session", e.SessionId).Errorf("failed to send start command: %v", err)
@@ -208,11 +220,26 @@ func (s *Server) OnStart() error {
 	return nil
 }
 
+func (s *Server) runSession(sess *Session) {
+	s.constraintsMu.Lock()
+	defer s.constraintsMu.Unlock()
+
+	for _, c := range s.constraints {
+		sess.applyConstraint(c)
+	}
+
+	s.sessions.Store(sess.id, sess)
+	s.shutdownWg.Add(1)
+	go sess.Run(&s.shutdownWg)
+}
+
 func (s *Server) CloseSession(id string) {
 	s.sessions.Delete(id)
 }
 
 func (s *Server) Close() error {
+	s.stopReconciler()
+
 	// Close all sessions gracefully
 	s.sessions.Range(func(key, value interface{}) bool {
 		sess := value.(*Session)

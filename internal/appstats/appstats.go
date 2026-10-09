@@ -108,3 +108,30 @@ func OnCaptureConstraintLifted(reason string) {
 func OnConstrainedCaptureStopped(reason string) {
 	ConstrainedCapturesActive.WithLabelValues(reason).Dec()
 }
+
+func OnDiskCheck(freeBytes, totalBytes uint64) {
+	DiskFreeBytes.Set(float64(freeBytes))
+	DiskTotalBytes.Set(float64(totalBytes))
+}
+
+func OnDiskCheckError() {
+	DiskCheckErrors.Inc()
+}
+
+func OnDiskPressureChange(active bool) {
+	if active {
+		DiskPressureActive.Set(1)
+		DiskPressureTransitions.WithLabelValues("engaged").Inc()
+	} else {
+		DiskPressureActive.Set(0)
+		DiskPressureTransitions.WithLabelValues("released").Inc()
+	}
+}
+
+func SetDiskPressureEnabled(enabled bool) {
+	if enabled {
+		DiskPressureEnabled.Set(1)
+	} else {
+		DiskPressureEnabled.Set(0)
+	}
+}

@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ### UNRELEASED
 
 * feat(livekit): support quality constraints on captures
+* feat: add disk pressure guard for LiveKit captures
 
 ### v0.14.0
 
