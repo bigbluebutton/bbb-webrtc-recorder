@@ -86,6 +86,10 @@ func (lk *mockLiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 }
 func (lk *mockLiveKitWebRTC) HasTrack(trackID string) bool { return true }
 
+func (lk *mockLiveKitWebRTC) ApplyConstraint(c types.CaptureConstraint) bool { return true }
+func (lk *mockLiveKitWebRTC) LiftConstraint(reason string) bool              { return true }
+func (lk *mockLiveKitWebRTC) StopConstraints()                               {}
+
 var _ interfaces.LiveKitWebRTCInterface = (*mockLiveKitWebRTC)(nil)
 
 func TestDoubleStopSession(t *testing.T) {

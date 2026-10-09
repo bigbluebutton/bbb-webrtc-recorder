@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"path/filepath"
 	"runtime/debug"
@@ -90,6 +91,13 @@ type LiveKitWebRTC struct {
 	requestKeyframeWg     sync.WaitGroup
 
 	pendingSubscriptions map[string]time.Time
+
+	// constraintMu is held from computing a track's quality until it is
+	// sent via sendVideoQuality. Taken before m; constraints itself is guarded by m.
+	constraintMu sync.Mutex
+	constraints  *constraintBook
+	// sendVideoQuality sends a track's subscribed quality to LiveKit
+	sendVideoQuality func(trackID string, pub *lksdk.RemoteTrackPublication, quality livekit.VideoQuality)
 }
 
 func NewLiveKitWebRTC(
@@ -122,6 +130,8 @@ func NewLiveKitWebRTC(
 		requestKeyframeCtx:    requestKeyframeCtx,
 		requestKeyframeCancel: requestKeyframeCancel,
 		pendingSubscriptions:  make(map[string]time.Time),
+		constraints:           newConstraintBook(cfg.PreferredVideoQuality),
+		sendVideoQuality:      sendPubVideoQuality,
 	}
 
 	w.initTrackStats()
@@ -174,6 +184,8 @@ func (w *LiveKitWebRTC) Init() error {
 }
 
 func (w *LiveKitWebRTC) Close() time.Duration {
+	w.StopConstraints()
+
 	if w.room != nil {
 		w.room.Disconnect()
 	}
@@ -249,6 +261,8 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 		recorderRef = w.rec
 	}
 
+	constrained, constraintRecords := w.constraints.snapshot(time.Now())
+
 	w.m.Unlock()
 
 	var recStats *types.RecorderStats
@@ -265,9 +279,11 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 		ParticipantID:       currentParticipantID,
 		FileName:            recorderFilePath,
 		Tracks:              make(map[string]*appstats.TrackStats),
+		Constrained:         constrained,
+		Constraints:         constraintRecords,
 	}
 
-	for trackID, remoteTrackPub := range w.remoteTrackPubs {
+	for trackID, remoteTrackPub := range remoteTrackPubs {
 		trackInfo := remoteTrackPub.TrackInfo()
 		mimeType := trackInfo.MimeType
 
@@ -396,6 +412,171 @@ func (w *LiveKitWebRTC) HasTrack(trackID string) bool {
 	return slices.Contains(w.trackIds, trackID)
 }
 
+// ApplyConstraint caps the video quality of the capture tracks whose
+// source c lists, including tracks subscribed later. Idempotent per
+// reason: an active reason must be lifted before it can be changed. It
+// reports whether it lowered the quality of at least one track.
+func (w *LiveKitWebRTC) ApplyConstraint(c types.CaptureConstraint) bool {
+	logger := log.WithFields(log.Fields{
+		"session":      w.ctx.Value("session"),
+		"reason":       c.Reason,
+		"videoQuality": c.VideoQuality.String(),
+		"sources":      sourceNames(c.Sources),
+	})
+
+	if c.Reason == "" || c.VideoQuality < livekit.VideoQuality_LOW || c.VideoQuality > livekit.VideoQuality_HIGH {
+		logger.Warn("Ignoring invalid capture constraint")
+
+		return false
+	}
+
+	w.constraintMu.Lock()
+	defer w.constraintMu.Unlock()
+
+	w.m.Lock()
+	ev, noop := w.constraints.apply(c, time.Now())
+	pubs := w.constrainedPubs(ev.Tracks)
+	w.m.Unlock()
+
+	if noop != "" {
+		logger.Debugf("Capture constraint not applied: %s", noop)
+
+		return false
+	}
+
+	w.setVideoQualities(pubs, ev.Tracks)
+	w.onConstraintApplied(ev, "mid_capture")
+
+	return qualityChanged(ev.Tracks)
+}
+
+// LiftConstraint removes the constraint of the given reason and restores
+// the quality of the tracks it capped. It reports whether it raised the
+// quality of at least one track.
+func (w *LiveKitWebRTC) LiftConstraint(reason string) bool {
+	w.constraintMu.Lock()
+	defer w.constraintMu.Unlock()
+
+	w.m.Lock()
+	ev, noop := w.constraints.lift(reason, time.Now())
+	pubs := w.constrainedPubs(ev.Tracks)
+	w.m.Unlock()
+
+	if noop != "" {
+		log.WithField("session", w.ctx.Value("session")).
+			WithField("reason", reason).
+			Debugf("Capture constraint not lifted: %s", noop)
+
+		return false
+	}
+
+	w.setVideoQualities(pubs, ev.Tracks)
+	duration := time.Duration(ev.Record.EndTimeMs-ev.Record.StartTimeMs) * time.Millisecond
+
+	for _, tq := range ev.Tracks {
+		log.WithFields(log.Fields{
+			"session":             w.ctx.Value("session"),
+			"reason":              reason,
+			"trackId":             tq.TrackID,
+			"source":              tq.Source.String(),
+			"fromQuality":         tq.From.String(),
+			"toQuality":           tq.To.String(),
+			"constrainedDuration": duration.String(),
+		}).Infof("Capture constraint lifted, video quality %s -> %s after %s", tq.From, tq.To, duration)
+	}
+
+	appstats.OnCaptureConstraintLifted(reason)
+
+	return qualityChanged(ev.Tracks)
+}
+
+// setSubscribeVideoQuality registers pub into the constraints book and
+// computes its target quality at subscription time.
+func (w *LiveKitWebRTC) setSubscribeVideoQuality(trackID string, source livekit.TrackSource, pub *lksdk.RemoteTrackPublication) {
+	w.constraintMu.Lock()
+	defer w.constraintMu.Unlock()
+
+	w.m.Lock()
+	w.remoteTrackPubs[trackID] = pub
+	quality, events := w.constraints.addTrack(trackID, source, time.Now())
+	w.m.Unlock()
+
+	log.WithField("session", w.ctx.Value("session")).
+		Debugf("Setting video quality to %s for track %s", quality, trackID)
+	w.sendVideoQuality(trackID, pub, quality)
+
+	for _, ev := range events {
+		w.onConstraintApplied(ev, "subscribe")
+	}
+}
+
+// constrainedPubs must be called with m held.
+func (w *LiveKitWebRTC) constrainedPubs(tracks []trackQuality) map[string]*lksdk.RemoteTrackPublication {
+	pubs := make(map[string]*lksdk.RemoteTrackPublication, len(tracks))
+
+	for _, tq := range tracks {
+		if pub, ok := w.remoteTrackPubs[tq.TrackID]; ok {
+			pubs[tq.TrackID] = pub
+		}
+	}
+
+	return pubs
+}
+
+// setVideoQualities must be called with constraintMu held and m released:
+// SetVideoQuality writes to the signal connection.
+func (w *LiveKitWebRTC) setVideoQualities(pubs map[string]*lksdk.RemoteTrackPublication, tracks []trackQuality) {
+	for _, tq := range tracks {
+		if pub, ok := pubs[tq.TrackID]; ok && tq.From != tq.To {
+			w.sendVideoQuality(tq.TrackID, pub, tq.To)
+		}
+	}
+}
+
+func sendPubVideoQuality(_ string, pub *lksdk.RemoteTrackPublication, quality livekit.VideoQuality) {
+	// Ignore error - only throws when video quality = OFF which we do not care about
+	_ = pub.SetVideoQuality(quality)
+}
+
+func (w *LiveKitWebRTC) onConstraintApplied(ev constraintEvent, phase string) {
+	for _, tq := range ev.Tracks {
+		log.WithFields(log.Fields{
+			"session":     w.ctx.Value("session"),
+			"reason":      ev.Reason,
+			"trackId":     tq.TrackID,
+			"source":      tq.Source.String(),
+			"fromQuality": tq.From.String(),
+			"toQuality":   tq.To.String(),
+			"phase":       phase,
+		}).Infof("Capture constraint applied, video quality %s -> %s", tq.From, tq.To)
+	}
+
+	if ev.Opened {
+		appstats.OnCaptureConstrained(ev.Reason, ev.FirstForReason)
+	}
+}
+
+// StopConstraints closes the constraint intervals still open and makes
+// later ApplyConstraint/LiftConstraint calls no-ops, so stats taken after
+// it no longer change. Close calls it too; only the first call acts.
+func (w *LiveKitWebRTC) StopConstraints() {
+	w.m.Lock()
+	records := w.constraints.stop(time.Now())
+	w.m.Unlock()
+
+	for _, record := range records {
+		duration := time.Duration(record.EndTimeMs-record.StartTimeMs) * time.Millisecond
+
+		log.WithFields(log.Fields{
+			"session":             w.ctx.Value("session"),
+			"reason":              record.Reason,
+			"videoQuality":        record.VideoQuality,
+			"constrainedDuration": duration.String(),
+		}).Infof("Capture stopped while constrained, video quality %s for %s", record.VideoQuality, duration)
+		appstats.OnConstrainedCaptureStopped(record.Reason)
+	}
+}
+
 func (w *LiveKitWebRTC) initTrackStats() {
 	for _, trackID := range w.trackIds {
 		w.trackStats[trackID] = &appstats.AdapterTrackStats{
@@ -445,13 +626,13 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 	}
 
 	w.remoteParticipants = remoteParticipants
-	w.remoteTrackPubs = subscribedTrackPubs
 
 	if len(pendingSubscriptions) == 0 {
 		return nil, fmt.Errorf("no tracks available")
 	}
 
 	w.m.Lock()
+	maps.Copy(w.remoteTrackPubs, subscribedTrackPubs)
 	w.pendingSubscriptions = pendingSubscriptions
 	w.m.Unlock()
 
@@ -468,10 +649,7 @@ func (w *LiveKitWebRTC) subscribe(track lksdk.TrackPublication) error {
 			Debugf("Subscribing to track %s", pub.SID())
 
 		if pub.Kind() == lksdk.TrackKindVideo {
-			log.WithField("session", w.ctx.Value("session")).
-				Debugf("Setting video quality to %s for track %s", w.cfg.PreferredVideoQuality, pub.SID())
-			// Ignore error - only throws when video quality = OFF which we do not care about
-			_ = pub.SetVideoQuality(w.cfg.PreferredVideoQuality)
+			w.setSubscribeVideoQuality(pub.SID(), pub.Source(), pub)
 		}
 
 		return pub.SetSubscribed(true)
@@ -898,7 +1076,7 @@ func (w *LiveKitWebRTC) onTrackUnmuted(
 	trackID := pub.SID()
 
 	// Only track mute/unmute events for tracks we're *subscribed* to
-	if _, exists := w.remoteTrackPubs[trackID]; !exists {
+	if !w.hasRemoteTrackPub(trackID) {
 		return
 	}
 
@@ -913,12 +1091,21 @@ func (w *LiveKitWebRTC) onTrackMuted(
 	trackID := pub.SID()
 
 	// Only track mute/unmute events for tracks we're *subscribed* to
-	if _, exists := w.remoteTrackPubs[trackID]; !exists {
+	if !w.hasRemoteTrackPub(trackID) {
 		return
 	}
 
 	log.WithField("session", w.ctx.Value("session")).
 		Infof("Track muted: %s", trackID)
+}
+
+func (w *LiveKitWebRTC) hasRemoteTrackPub(trackID string) bool {
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	_, exists := w.remoteTrackPubs[trackID]
+
+	return exists
 }
 
 func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {

@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+### UNRELEASED
+
+* feat(livekit): support quality constraints on captures
+
 ### v0.14.0
 
 * feat: add docker matrix build to support arm64

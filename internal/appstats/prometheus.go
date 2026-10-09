@@ -232,6 +232,34 @@ var (
 		Help:      "Duration of the LiveKit track subscribe procedure.",
 		Buckets:   []float64{0.01, 0.02, 0.03, 0.05, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0},
 	})
+
+	ConstrainedCapturesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "constrained_captures_total",
+		Help:      "Total number of captures constrained at least once, counted once per capture and reason.",
+	},
+		[]string{
+			"reason",
+		})
+
+	ConstrainedCapturesActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Subsystem: "recorder",
+		Name:      "constrained_captures_active",
+		Help:      "Current number of constrained captures.",
+	},
+		[]string{
+			"reason",
+		})
+
+	CaptureConstraintChanges = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "capture_constraint_changes_total",
+		Help:      "Total number of constraints applied to or lifted from captures.",
+	},
+		[]string{
+			"reason",
+			"action", // apply/lift
+		})
 )
 
 func RegisterMetrics() {
@@ -258,6 +286,9 @@ func RegisterMetrics() {
 	prometheus.MustRegister(SessionErrors)
 	prometheus.MustRegister(LiveKitConnectDuration)
 	prometheus.MustRegister(LiveKitSubscribeDuration)
+	prometheus.MustRegister(ConstrainedCapturesTotal)
+	prometheus.MustRegister(ConstrainedCapturesActive)
+	prometheus.MustRegister(CaptureConstraintChanges)
 }
 
 func newMetricsHandler() *metricsHandler {
