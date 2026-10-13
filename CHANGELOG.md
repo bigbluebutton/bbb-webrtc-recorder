@@ -2,11 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-### UNRELEASED
+### v0.15.0
 
 * feat(livekit): support quality constraints on captures
 * feat: add disk pressure guard for LiveKit captures
 * fix(livekit): read stats maps from locked copies
+* ci: set up Go from go.mod
 
 ### v0.14.0
 
