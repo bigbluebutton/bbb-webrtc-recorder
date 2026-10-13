@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -129,6 +130,32 @@ func TestDoubleClose(t *testing.T) {
 	assert.Equal(t, time.Duration(0), secondDuration, "Second close should still return same duration")
 	assert.Nil(t, lk.room, "Room should be nil after close")
 	assert.NotNil(t, lk.keyframeRequestChan, "Channel should not be nil even after close")
+}
+
+// GetStats can run while a track subscribes, which writes the maps it reads
+// under w.m. Run with -race. pliStats is read only for video publications,
+// which a test cannot build, so its copy goes unchecked.
+func TestGetStatsDuringSubscription(t *testing.T) {
+	h := newLoopHarness(newPushRecorder(), audioInfo.id)
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for i := range 1000 {
+			h.w.registerTrackBuffer("late", true, 4321, nil)
+
+			trackID := fmt.Sprintf("late-%d", i)
+			h.w.m.Lock()
+			h.w.remoteTrackPubs[trackID] = &lksdk.RemoteTrackPublication{}
+			h.w.trackStats[trackID] = &appstats.AdapterTrackStats{}
+			h.w.m.Unlock()
+		}
+	})
+	wg.Go(func() {
+		for range 200 {
+			assert.NotNil(t, h.w.GetStats())
+		}
+	})
+	wg.Wait()
 }
 
 func setupMockLK() (*LiveKitWebRTC, *mockRecorder) {

@@ -167,6 +167,8 @@ func newLoopHarness(rec recorder.Recorder, trackIDs ...string) *loopHarness {
 		requestKeyframeCtx:   context.Background(),
 		pendingSubscriptions: map[string]time.Time{},
 	}
+	h.w.constraints = newConstraintBook(h.w.cfg.PreferredVideoQuality)
+	h.w.sendVideoQuality = sendPubVideoQuality
 	h.w.initTrackStats()
 	h.w.connStateCallback = func(state utils.ConnectionState) {
 		h.mu.Lock()
