@@ -10,8 +10,10 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/diskpressure"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/server"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/coreos/go-systemd/daemon"
@@ -33,6 +35,7 @@ var (
 	cfg *config.Config
 	ps  pubsub.PubSub
 	sv  *server.Server
+	dp  *diskpressure.Monitor
 )
 
 func init() {
@@ -139,13 +142,63 @@ func Run() {
 	}
 
 	sv = server.NewServer(cfg, ps)
+	startDiskPressureGuard()
 
 	if err := ps.Subscribe(cfg.PubSub.Channels.Subscribe, sv.HandlePubSubMsg, sv.OnStart); err != nil {
 		log.Fatalf("failed to subscribe to pubsub %s: %s", cfg.PubSub.Channels.Subscribe, err)
 	}
 }
 
+func startDiskPressureGuard() {
+	dpCfg := cfg.Constraints.DiskPressure
+
+	if !dpCfg.Enable {
+		log.Debug("Disk pressure guard disabled")
+
+		return
+	}
+
+	for _, issue := range dpCfg.Normalize(cfg.Recorder.Directory) {
+		logger := log.WithFields(log.Fields{
+			"field": "constraints.diskPressure." + issue.Field,
+			"given": issue.Given,
+			"used":  issue.Used,
+		})
+
+		if issue.Severe {
+			logger.Error(issue.Message)
+		} else {
+			logger.Warn(issue.Message)
+		}
+	}
+
+	if !dpCfg.Enable {
+		return
+	}
+
+	constraint := types.CaptureConstraint{
+		Reason:       types.ConstraintReasonDiskPressure,
+		VideoQuality: dpCfg.Quality(),
+		Sources:      dpCfg.TrackSources(),
+	}
+
+	monitor := diskpressure.NewMonitor(dpCfg, diskpressure.Statfs)
+	monitor.OnChange(func(active bool, _ diskpressure.Sample) {
+		if active {
+			sv.SetConstraint(constraint)
+		} else {
+			sv.ClearConstraint(constraint.Reason)
+		}
+	})
+	monitor.Start()
+	dp = monitor
+}
+
 func shutdown(code int) {
+	if dp != nil {
+		dp.Stop()
+	}
+
 	if ps != nil {
 		if err := ps.Close(); err != nil {
 			log.Errorf("failed to close pubsub: %s", err)

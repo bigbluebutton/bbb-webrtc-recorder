@@ -1,10 +1,12 @@
 package appstats
 
 import (
+	"math"
 	"net/http"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
@@ -232,6 +234,73 @@ var (
 		Help:      "Duration of the LiveKit track subscribe procedure.",
 		Buckets:   []float64{0.01, 0.02, 0.03, 0.05, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0},
 	})
+
+	ConstrainedCapturesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "constrained_captures_total",
+		Help:      "Total number of captures constrained at least once, counted once per capture and reason.",
+	},
+		[]string{
+			"reason",
+		})
+
+	ConstrainedCapturesActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Subsystem: "recorder",
+		Name:      "constrained_captures_active",
+		Help:      "Current number of constrained captures.",
+	},
+		[]string{
+			"reason",
+		})
+
+	CaptureConstraintChanges = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "capture_constraint_changes_total",
+		Help:      "Total number of constraints applied to or lifted from captures.",
+	},
+		[]string{
+			"reason",
+			"action", // apply/lift
+		})
+
+	DiskPressureEnabled = prometheus.NewGauge(prometheus.GaugeOpts{
+		Subsystem: "recorder",
+		Name:      "disk_pressure_enabled",
+		Help:      "Whether the disk pressure guard is running (1) or not (0).",
+	})
+
+	DiskPressureActive = prometheus.NewGauge(prometheus.GaugeOpts{
+		Subsystem: "recorder",
+		Name:      "disk_pressure_active",
+		Help:      "Whether the disk pressure guard is engaged (1) or not (0).",
+	})
+
+	DiskFreeBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Subsystem: "recorder",
+		Name:      "disk_free_bytes",
+		Help:      "Bytes available to unprivileged users on the recorder's configured filesystem.",
+	})
+
+	DiskTotalBytes = prometheus.NewGauge(prometheus.GaugeOpts{
+		Subsystem: "recorder",
+		Name:      "disk_total_bytes",
+		Help:      "Size in bytes of the recorder's configured filesystem.",
+	})
+
+	DiskPressureTransitions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "disk_pressure_transitions_total",
+		Help:      "Total number of disk pressure guard state changes.",
+	},
+		[]string{
+			"state", // engaged/released
+		})
+
+	DiskCheckErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "disk_check_errors_total",
+		Help:      "Total number of failed disk pressure guard checks.",
+	})
 )
 
 func RegisterMetrics() {
@@ -258,6 +327,26 @@ func RegisterMetrics() {
 	prometheus.MustRegister(SessionErrors)
 	prometheus.MustRegister(LiveKitConnectDuration)
 	prometheus.MustRegister(LiveKitSubscribeDuration)
+	prometheus.MustRegister(ConstrainedCapturesTotal)
+	prometheus.MustRegister(ConstrainedCapturesActive)
+	prometheus.MustRegister(CaptureConstraintChanges)
+	prometheus.MustRegister(DiskPressureEnabled)
+	prometheus.MustRegister(DiskPressureActive)
+	prometheus.MustRegister(DiskFreeBytes)
+	prometheus.MustRegister(DiskTotalBytes)
+	prometheus.MustRegister(DiskPressureTransitions)
+	prometheus.MustRegister(DiskCheckErrors)
+
+	reason := types.ConstraintReasonDiskPressure
+	ConstrainedCapturesTotal.WithLabelValues(reason)
+	ConstrainedCapturesActive.WithLabelValues(reason)
+	CaptureConstraintChanges.WithLabelValues(reason, "apply")
+	CaptureConstraintChanges.WithLabelValues(reason, "lift")
+	DiskPressureTransitions.WithLabelValues("engaged")
+	DiskPressureTransitions.WithLabelValues("released")
+
+	DiskFreeBytes.Set(math.NaN())
+	DiskTotalBytes.Set(math.NaN())
 }
 
 func newMetricsHandler() *metricsHandler {

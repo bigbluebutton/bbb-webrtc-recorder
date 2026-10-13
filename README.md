@@ -76,6 +76,26 @@ webrtc:
 http:
   port: 8080
   enable: true
+
+constraints:
+  # Caps the video quality of LiveKit captures while the recordings
+  # filesystem is low on free space.
+  diskPressure:
+    enable: false
+    # Filesystem to watch; empty means recorder.directory
+    path: ""
+    checkInterval: 15s
+    # Engage when free space is below EITHER level; 0 disables a criterion.
+    # Levels are whole numbers: MiB, and percents of the filesystem size.
+    engageFreeMiB: 20480     # MiB
+    engageFreePercent: 10    # percent of the filesystem size
+    # Release when free space is at or above EVERY enabled release level
+    releaseFreeMiB: 25600    # MiB
+    releaseFreePercent: 15   # percent of the filesystem size
+    # LOW | MEDIUM | HIGH
+    videoQuality: LOW
+    # LiveKit track sources to cap: camera, screen_share
+    sources: [camera]
 ```
 
 Default `env` file used by SystemD service:
@@ -83,6 +103,8 @@ Default `env` file used by SystemD service:
     * Note: all environment variables must be upper case
     * Note: nested objects are separated by `_` (underscore)
         - Example: `BBBRECORDER_RECORDER_DIRECTORY=/var/lib/bbb-webrtc-recorder` (equivalent of `recorder.directory` in config file)
+    * Note: lists are comma-separated
+        - Example: `BBBRECORDER_CONSTRAINTS_DISKPRESSURE_SOURCES=camera,screen_share` (equivalent of `constraints.diskPressure.sources` in config file)
 
 ```
 /etc/default/bbb-webrtc-recorder
@@ -110,6 +132,7 @@ Examples of how to print out config values:
 bbb-webrtc-recorder [-c config.yml] --dump http
 bbb-webrtc-recorder [-c config.yml] --dump http.port
 bbb-webrtc-recorder [-c config.yml] --dump recorder.directory
+bbb-webrtc-recorder [-c config.yml] --dump constraints.diskPressure
 ```
 
 Viewing SystemD logs:

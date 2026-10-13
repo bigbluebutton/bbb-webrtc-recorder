@@ -60,3 +60,23 @@ livekit:
     enable: false
     interval: 1m
     abortBootOnFailure: false
+
+constraints:
+  # Caps the video quality of LiveKit captures while the recordings
+  # filesystem is low on free space.
+  diskPressure:
+    enable: false
+    # Filesystem to watch; empty means recorder.directory
+    path: ""
+    checkInterval: 15s
+    # Engage when free space is below EITHER level; 0 disables a criterion.
+    # Levels are whole numbers: MiB, and percents of the filesystem size.
+    engageFreeMiB: 20480
+    engageFreePercent: 10
+    # Release when free space is at or above EVERY enabled release level
+    releaseFreeMiB: 25600
+    releaseFreePercent: 15
+    # LOW | MEDIUM | HIGH
+    videoQuality: LOW
+    # LiveKit track sources to cap: camera, screen_share
+    sources: [camera]

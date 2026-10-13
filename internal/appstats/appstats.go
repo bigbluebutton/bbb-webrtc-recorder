@@ -41,12 +41,31 @@ type TrackStats struct {
 	MimeType           string                    `json:"mimeType"`
 }
 
+const (
+	ConstraintEndReleased       = "released"
+	ConstraintEndCaptureStopped = "capture_stopped"
+)
+
+// ConstraintRecord is one interval during which a constraint lowered the
+// quality of a capture. Times are Unix milliseconds; an open interval has
+// a zero EndTimeMs and an empty EndReason.
+type ConstraintRecord struct {
+	Reason       string   `json:"reason"`
+	VideoQuality string   `json:"videoQuality"`
+	TrackIDs     []string `json:"trackIds"`
+	StartTimeMs  int64    `json:"startTimeMs"`
+	EndTimeMs    int64    `json:"endTimeMs"`
+	EndReason    string   `json:"endReason"`
+}
+
 type CaptureStats struct {
 	RecorderSessionUUID string                 `json:"recorderSessionUuid"`
 	RoomID              string                 `json:"roomId"`
 	ParticipantID       string                 `json:"participantId"`
 	Tracks              map[string]*TrackStats `json:"tracks"`
 	FileName            string                 `json:"fileName"`
+	Constrained         bool                   `json:"constrained"`
+	Constraints         []ConstraintRecord     `json:"constraints"`
 }
 
 func GetUptime() time.Duration {
@@ -67,4 +86,52 @@ func ObserveLiveKitConnectDuration(duration time.Duration) {
 
 func ObserveLiveKitSubscribeDuration(duration time.Duration) {
 	LiveKitSubscribeDuration.Observe(duration.Seconds())
+}
+
+func OnCaptureConstrained(reason string, firstForReason bool) {
+	CaptureConstraintChanges.WithLabelValues(reason, "apply").Inc()
+	ConstrainedCapturesActive.WithLabelValues(reason).Inc()
+
+	// firstForReason is true the first time the capture is constrained for that reason.
+	if firstForReason {
+		ConstrainedCapturesTotal.WithLabelValues(reason).Inc()
+	}
+}
+
+func OnCaptureConstraintLifted(reason string) {
+	CaptureConstraintChanges.WithLabelValues(reason, "lift").Inc()
+	ConstrainedCapturesActive.WithLabelValues(reason).Dec()
+}
+
+// OnConstrainedCaptureStopped records a capture that stopped while still
+// constrained. Same metric as lifted, different trigger/nature.
+func OnConstrainedCaptureStopped(reason string) {
+	ConstrainedCapturesActive.WithLabelValues(reason).Dec()
+}
+
+func OnDiskCheck(freeBytes, totalBytes uint64) {
+	DiskFreeBytes.Set(float64(freeBytes))
+	DiskTotalBytes.Set(float64(totalBytes))
+}
+
+func OnDiskCheckError() {
+	DiskCheckErrors.Inc()
+}
+
+func OnDiskPressureChange(active bool) {
+	if active {
+		DiskPressureActive.Set(1)
+		DiskPressureTransitions.WithLabelValues("engaged").Inc()
+	} else {
+		DiskPressureActive.Set(0)
+		DiskPressureTransitions.WithLabelValues("released").Inc()
+	}
+}
+
+func SetDiskPressureEnabled(enabled bool) {
+	if enabled {
+		DiskPressureEnabled.Set(1)
+	} else {
+		DiskPressureEnabled.Set(0)
+	}
 }

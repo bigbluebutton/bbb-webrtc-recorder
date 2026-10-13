@@ -2,6 +2,7 @@ package livekit
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
+	"github.com/livekit/protocol/livekit"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/assert"
 )
@@ -156,4 +159,31 @@ func makeFullRangePackets(start uint16) []*rtp.Packet {
 	}
 
 	return packets
+}
+
+// lksdk runs mute callbacks for any track in the room, so they can race
+// the subscribe loop registering this capture's tracks.
+func TestTrackMuteCallbacksDuringTrackRegistration(t *testing.T) {
+	lk, _ := setupMockLK()
+	defer lk.Close()
+
+	lk.sendVideoQuality = func(string, *lksdk.RemoteTrackPublication, livekit.VideoQuality) {}
+	pub := &lksdk.RemoteTrackPublication{}
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		for i := 0; i < 1000; i++ {
+			lk.setSubscribeVideoQuality(fmt.Sprintf("track-%d", i), livekit.TrackSource_CAMERA, pub)
+		}
+	}()
+
+	for i := 0; i < 1000; i++ {
+		lk.onTrackMuted(pub, nil)
+		lk.onTrackUnmuted(pub, nil)
+	}
+
+	<-done
+	assert.Len(t, lk.remoteTrackPubs, 1000)
 }

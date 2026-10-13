@@ -15,9 +15,13 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
+	livekitproto "github.com/livekit/protocol/livekit"
 	"github.com/pion/rtp"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -67,6 +71,20 @@ var _ recorder.Recorder = (*mockRecorder)(nil)
 type mockLiveKitWebRTC struct {
 	closeOnce sync.Once
 	closed    chan struct{}
+
+	// block, when set, stalls ApplyConstraint and LiftConstraint like a
+	// signal socket that stopped draining; entered receives each stalled call.
+	block   chan struct{}
+	entered chan struct{}
+	// noChange makes the capture ignore constraints, as one whose source
+	// is not listed does.
+	noChange bool
+
+	mu      sync.Mutex
+	applied []types.CaptureConstraint
+	lifted  []string
+	active  map[string]bool
+	calls   []string
 }
 
 func (lk *mockLiveKitWebRTC) SetConnectionStateCallback(callback func(state utils.ConnectionState)) {
@@ -80,11 +98,85 @@ func (lk *mockLiveKitWebRTC) Close() time.Duration {
 	})
 	return 0
 }
-func (lk *mockLiveKitWebRTC) GetStats() *appstats.CaptureStats { return nil }
-func (lk *mockLiveKitWebRTC) RequestKeyframe()                 {}
+func (lk *mockLiveKitWebRTC) GetStats() *appstats.CaptureStats {
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+	lk.calls = append(lk.calls, "GetStats")
+
+	return nil
+}
+func (lk *mockLiveKitWebRTC) RequestKeyframe() {}
 func (lk *mockLiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 }
 func (lk *mockLiveKitWebRTC) HasTrack(trackID string) bool { return true }
+
+func (lk *mockLiveKitWebRTC) stall() {
+	if lk.block == nil {
+		return
+	}
+
+	if lk.entered != nil {
+		lk.entered <- struct{}{}
+	}
+
+	<-lk.block
+}
+
+// ApplyConstraint and LiftConstraint report a change like the adapter
+// does: only when the reason's state flips on a capture it binds.
+func (lk *mockLiveKitWebRTC) ApplyConstraint(c types.CaptureConstraint) bool {
+	lk.stall()
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+	lk.applied = append(lk.applied, c)
+
+	if lk.active == nil {
+		lk.active = make(map[string]bool)
+	}
+
+	changed := !lk.active[c.Reason] && !lk.noChange
+	lk.active[c.Reason] = true
+
+	return changed
+}
+
+func (lk *mockLiveKitWebRTC) LiftConstraint(reason string) bool {
+	lk.stall()
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+	lk.lifted = append(lk.lifted, reason)
+	changed := lk.active[reason] && !lk.noChange
+	delete(lk.active, reason)
+
+	return changed
+}
+
+func (lk *mockLiveKitWebRTC) StopConstraints() {
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+	lk.calls = append(lk.calls, "StopConstraints")
+}
+
+func (lk *mockLiveKitWebRTC) constraintCalls() ([]types.CaptureConstraint, []string) {
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+
+	return append([]types.CaptureConstraint(nil), lk.applied...), append([]string(nil), lk.lifted...)
+}
+
+func (lk *mockLiveKitWebRTC) isConstrained(reason string) bool {
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+
+	return lk.active[reason]
+}
+
+func (lk *mockLiveKitWebRTC) stopCalls() []string {
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+
+	return append([]string(nil), lk.calls...)
+}
 
 var _ interfaces.LiveKitWebRTCInterface = (*mockLiveKitWebRTC)(nil)
 
@@ -430,4 +522,265 @@ func TestGetRecordings(t *testing.T) {
 			}
 		})
 	}
+}
+
+var diskPressureConstraint = types.CaptureConstraint{
+	Reason:       types.ConstraintReasonDiskPressure,
+	VideoQuality: livekitproto.VideoQuality_LOW,
+	Sources:      []livekitproto.TrackSource{livekitproto.TrackSource_CAMERA},
+}
+
+func runMockLiveKitSession(server *Server, id string) *mockLiveKitWebRTC {
+	lk := &mockLiveKitWebRTC{closed: make(chan struct{})}
+	server.runSession(NewSession(id, server, (*webrtc.WebRTC)(nil), lk, &mockRecorder{}))
+
+	return lk
+}
+
+func TestNewSessionGetsActiveConstraints(t *testing.T) {
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+
+	server.SetConstraint(diskPressureConstraint)
+
+	lk := runMockLiveKitSession(server, "test-constrained-start")
+	applied, lifted := lk.constraintCalls()
+
+	assert.Equal(t, []types.CaptureConstraint{diskPressureConstraint}, applied)
+	assert.Empty(t, lifted)
+
+	assert.NoError(t, server.Close())
+}
+
+func TestConstraintTransitionsReachLiveSessions(t *testing.T) {
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+	lk := runMockLiveKitSession(server, "test-constrained-live")
+
+	server.SetConstraint(diskPressureConstraint)
+	assert.Eventually(t, func() bool {
+		return lk.isConstrained(types.ConstraintReasonDiskPressure)
+	}, time.Second, 5*time.Millisecond)
+
+	server.ClearConstraint(types.ConstraintReasonDiskPressure)
+	server.ClearConstraint(types.ConstraintReasonDiskPressure)
+	assert.Eventually(t, func() bool {
+		_, lifted := lk.constraintCalls()
+
+		return len(lifted) == 1
+	}, time.Second, 5*time.Millisecond)
+
+	applied, lifted := lk.constraintCalls()
+	assert.Equal(t, []types.CaptureConstraint{diskPressureConstraint}, applied)
+	assert.Equal(t, []string{types.ConstraintReasonDiskPressure}, lifted)
+
+	// A session started after the clear subscribes unconstrained.
+	lkAfter := runMockLiveKitSession(server, "test-unconstrained-start")
+	applied, _ = lkAfter.constraintCalls()
+	assert.Empty(t, applied)
+
+	assert.NoError(t, server.Close())
+}
+
+func TestConstraintsSkipMediasoupSessions(t *testing.T) {
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+
+	// The mediasoup path hands NewSession a typed nil LiveKit adapter.
+	server.sessions.Store("test-mediasoup", &Session{
+		id:      "test-mediasoup",
+		webrtc:  &webrtc.WebRTC{},
+		livekit: (*livekit.LiveKitWebRTC)(nil),
+	})
+	lk := runMockLiveKitSession(server, "test-livekit")
+
+	server.SetConstraint(diskPressureConstraint)
+	server.ClearConstraint(types.ConstraintReasonDiskPressure)
+
+	// The two changes may be reconciled in one pass or two.
+	assert.Eventually(t, func() bool {
+		_, lifted := lk.constraintCalls()
+
+		return len(lifted) > 0 && !lk.isConstrained(types.ConstraintReasonDiskPressure)
+	}, time.Second, 5*time.Millisecond)
+
+	server.sessions.Delete("test-mediasoup")
+	assert.NoError(t, server.Close())
+}
+
+// within reports whether fn returns before the timeout; a stalled fn keeps
+// running in the background.
+func within(timeout time.Duration, fn func()) bool {
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		fn()
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+func TestStalledConstraintSendDoesNotBlockSessions(t *testing.T) {
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+	stalled := &mockLiveKitWebRTC{
+		closed:  make(chan struct{}),
+		block:   make(chan struct{}),
+		entered: make(chan struct{}, 10),
+	}
+	server.runSession(NewSession("test-stalled", server, (*webrtc.WebRTC)(nil), stalled, &mockRecorder{}))
+
+	assert.True(t, within(time.Second, func() { server.SetConstraint(diskPressureConstraint) }),
+		"SetConstraint waits for a stalled capture")
+
+	var fresh *mockLiveKitWebRTC
+
+	assert.True(t, within(time.Second, func() { fresh = runMockLiveKitSession(server, "test-fresh") }),
+		"a new session waits for a stalled capture")
+	assert.True(t, within(time.Second, func() { server.ClearConstraint(types.ConstraintReasonDiskPressure) }),
+		"ClearConstraint waits for a stalled capture")
+
+	close(stalled.block)
+
+	assert.Eventually(t, func() bool {
+		return !stalled.isConstrained(types.ConstraintReasonDiskPressure) &&
+			fresh != nil && !fresh.isConstrained(types.ConstraintReasonDiskPressure)
+	}, time.Second, 5*time.Millisecond)
+
+	assert.NoError(t, server.Close())
+}
+
+func TestConstraintTransitionsCoalesceWhileStalled(t *testing.T) {
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+	stalled := &mockLiveKitWebRTC{
+		closed:  make(chan struct{}),
+		block:   make(chan struct{}),
+		entered: make(chan struct{}, 10),
+	}
+	server.runSession(NewSession("test-coalesce", server, (*webrtc.WebRTC)(nil), stalled, &mockRecorder{}))
+
+	server.SetConstraint(diskPressureConstraint)
+	<-stalled.entered
+
+	for range 2 {
+		server.ClearConstraint(types.ConstraintReasonDiskPressure)
+		server.SetConstraint(diskPressureConstraint)
+	}
+
+	close(stalled.block)
+
+	assert.Eventually(t, func() bool {
+		applied, _ := stalled.constraintCalls()
+
+		return len(applied) == 2
+	}, time.Second, 5*time.Millisecond)
+
+	// The two clears were folded into the pass after the stall: the
+	// capture ends constrained and was never lifted.
+	applied, lifted := stalled.constraintCalls()
+	assert.Len(t, applied, 2)
+	assert.Empty(t, lifted)
+	assert.True(t, stalled.isConstrained(types.ConstraintReasonDiskPressure))
+
+	assert.NoError(t, server.Close())
+}
+
+func TestCloseBoundsWaitForStalledConstraintSend(t *testing.T) {
+	timeout := reconcilerStopTimeout
+	reconcilerStopTimeout = 50 * time.Millisecond
+
+	defer func() { reconcilerStopTimeout = timeout }()
+
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+	stalled := &mockLiveKitWebRTC{
+		closed:  make(chan struct{}),
+		block:   make(chan struct{}),
+		entered: make(chan struct{}, 10),
+	}
+	server.runSession(NewSession("test-close-stalled", server, (*webrtc.WebRTC)(nil), stalled, &mockRecorder{}))
+	server.SetConstraint(diskPressureConstraint)
+	<-stalled.entered
+
+	assert.True(t, within(time.Second, func() { assert.NoError(t, server.Close()) }),
+		"Close waits for a stalled constraint send")
+
+	// A change after Close starts no pass.
+	server.ClearConstraint(types.ConstraintReasonDiskPressure)
+	close(stalled.block)
+	assert.Never(t, func() bool {
+		_, lifted := stalled.constraintCalls()
+
+		return len(lifted) > 0
+	}, 100*time.Millisecond, 5*time.Millisecond)
+}
+
+func TestConstraintPassLogsOnlyChangedCaptures(t *testing.T) {
+	hook := logtest.NewGlobal()
+	defer hook.Reset()
+
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+	server.sessions.Store("test-mediasoup", &Session{
+		id:      "test-mediasoup",
+		webrtc:  &webrtc.WebRTC{},
+		livekit: (*livekit.LiveKitWebRTC)(nil),
+	})
+	changed := runMockLiveKitSession(server, "test-changed")
+	ignored := &mockLiveKitWebRTC{closed: make(chan struct{}), noChange: true}
+	server.runSession(NewSession("test-ignored", server, (*webrtc.WebRTC)(nil), ignored, &mockRecorder{}))
+
+	passLog := func(action string) *log.Entry {
+		for _, entry := range hook.AllEntries() {
+			if entry.Data["reason"] == types.ConstraintReasonDiskPressure && entry.Data["action"] == action {
+				return entry
+			}
+		}
+
+		return nil
+	}
+
+	for _, action := range []string{"apply", "lift"} {
+		if action == "apply" {
+			server.SetConstraint(diskPressureConstraint)
+		} else {
+			server.ClearConstraint(types.ConstraintReasonDiskPressure)
+		}
+
+		assert.Eventually(t, func() bool { return passLog(action) != nil }, time.Second, 5*time.Millisecond)
+
+		if entry := passLog(action); assert.NotNil(t, entry) {
+			assert.Equal(t, log.InfoLevel, entry.Level)
+			assert.Equal(t, 1, entry.Data["captures"], action)
+		}
+	}
+
+	applied, lifted := ignored.constraintCalls()
+	assert.Len(t, applied, 1)
+	assert.Len(t, lifted, 1)
+	assert.False(t, changed.isConstrained(types.ConstraintReasonDiskPressure))
+
+	server.sessions.Delete("test-mediasoup")
+	assert.NoError(t, server.Close())
+}
+
+func TestStopRecordingStopsConstraintsBeforeStats(t *testing.T) {
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+	lk := runMockLiveKitSession(server, "test-stop-constraints")
+
+	sess, ok := server.sessions.Load("test-stop-constraints")
+	assert.True(t, ok)
+	assert.NoError(t, sess.(*Session).StopRecording(nil, events.StopReasonNormal, time.Time{}))
+	<-lk.closed
+
+	assert.Equal(t, []string{"StopConstraints", "GetStats"}, lk.stopCalls())
+	assert.NoError(t, server.Close())
 }

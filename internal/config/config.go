@@ -26,6 +26,8 @@ type Config struct {
 	Prometheus Prometheus `yaml:"prometheus,omitempty"`
 	LiveKit    LiveKit    `yaml:"livekit,omitempty"`
 	Log        LogConfig  `yaml:"log"`
+
+	Constraints Constraints `yaml:"constraints"`
 }
 
 func (cfg *Config) GetDefaults() *Config {
@@ -86,6 +88,19 @@ func (cfg *Config) SetDefaults() {
 			AbortBootOnFailure: false,
 		},
 		WriteRTPDump: false,
+	}
+	cfg.Constraints = Constraints{
+		DiskPressure: DiskPressure{
+			Enable:             false,
+			Path:               "",
+			CheckInterval:      15 * time.Second,
+			EngageFreeMiB:      20480,
+			ReleaseFreeMiB:     25600,
+			EngageFreePercent:  10,
+			ReleaseFreePercent: 15,
+			VideoQuality:       livekit.VideoQuality_LOW.String(),
+			Sources:            []string{"camera"},
+		},
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
@@ -284,6 +285,7 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 			// Reset state callbacks to avoid any potential race conditions or duplicated events.
 			s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {})
 			s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {})
+			s.livekit.StopConstraints()
 			stats := s.livekit.GetStats()
 			appstats.UpdateCaptureMetrics(stats)
 
@@ -332,6 +334,28 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 		s.server.CloseSession(s.id)
 		close(s.commands)
 	})
+}
+
+// applyConstraint reports whether c changed the capture's video quality;
+// only LiveKit captures can change it.
+func (s *Session) applyConstraint(c types.CaptureConstraint) bool {
+	if isInterfaceNil(s.livekit) {
+		log.WithField("session", s.id).
+			WithField("reason", c.Reason).
+			Debug("Capture constraint skipped: adapter is not LiveKit")
+
+		return false
+	}
+
+	return s.livekit.ApplyConstraint(c)
+}
+
+func (s *Session) liftConstraint(reason string) bool {
+	if isInterfaceNil(s.livekit) {
+		return false
+	}
+
+	return s.livekit.LiftConstraint(reason)
 }
 
 func (s *Session) handleFirstMediaFlow(isFlowing bool, timestamp time.Duration) {

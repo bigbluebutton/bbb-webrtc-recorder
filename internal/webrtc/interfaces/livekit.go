@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 )
 
@@ -17,4 +18,7 @@ type LiveKitWebRTCInterface interface {
 	RequestKeyframe()
 	RequestKeyframeForSSRC(ssrc uint32)
 	HasTrack(trackID string) bool
+	ApplyConstraint(c types.CaptureConstraint) bool
+	LiftConstraint(reason string) bool
+	StopConstraints()
 }
