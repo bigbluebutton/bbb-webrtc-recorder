@@ -284,8 +284,7 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 	}
 
 	for trackID, remoteTrackPub := range remoteTrackPubs {
-		trackInfo := remoteTrackPub.TrackInfo()
-		mimeType := trackInfo.MimeType
+		mimeType := remoteTrackPub.MimeType()
 
 		var bufferStatsData *jitter.BufferStats
 
@@ -763,21 +762,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		ssrcForHandler = uint32(track.SSRC())
 	}
 
-	buffer := jitter.NewBuffer(
-		depacketizer,
-		clockRate,
-		latency,
-		jitter.WithPacketDroppedHandler(func() {
-			if isVideo && track != nil {
-				w.queueKeyframeRequest(ssrcForHandler, "packet_drop")
-			}
-		}),
-		// TODO: plug logger via jitter.WithLogger(logger)
-	)
-
-	w.m.Lock()
-	w.jitterBuffers[trackID] = buffer
-	w.m.Unlock()
+	buffer := w.addJitterBuffer(trackID, depacketizer, clockRate, latency, ssrcForHandler, isVideo && track != nil)
 
 	if isVideo {
 		w.m.Lock()
@@ -922,6 +907,37 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 			w.processPacketStats(trackID, packets)
 		}
 	}()
+}
+
+// addJitterBuffer creates and registers the jitter buffer of trackID. m and
+// a buffer's lock are never held together, and the buffer calls its drop
+// handler with its lock held, so the handler only queues the keyframe
+// request.
+func (w *LiveKitWebRTC) addJitterBuffer(
+	trackID string,
+	depacketizer rtp.Depacketizer,
+	clockRate uint32,
+	latency time.Duration,
+	ssrc uint32,
+	requestKeyframes bool,
+) *jitter.Buffer {
+	buffer := jitter.NewBuffer(
+		depacketizer,
+		clockRate,
+		latency,
+		jitter.WithPacketDroppedHandler(func() {
+			if requestKeyframes {
+				w.queueKeyframeRequest(ssrc, "packet_drop")
+			}
+		}),
+		// TODO: plug logger via jitter.WithLogger(logger)
+	)
+
+	w.m.Lock()
+	w.jitterBuffers[trackID] = buffer
+	w.m.Unlock()
+
+	return buffer
 }
 
 func (w *LiveKitWebRTC) observeSubscription(trackID string) {
