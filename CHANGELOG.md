@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 * fix(webm): skip audio frames that do not advance the timestamp
 * fix(webm): check a VP8 payload's length before its frame header
+* fix(mediasoup): recover from a panic in a track's handler
 
 ### v0.15.0
 
