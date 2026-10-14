@@ -14,7 +14,25 @@ Read traces for the in-process replay of the LiveKit path (read loop, `trackBuff
   - `synthetic`: built with the `corpus` generators and mutations. The header's `generator` field records the exact call chain.
   - `pcap-extract`: per-packet read schedules taken from header-only SRTP captures of live test runs. The header `note` says what was synthesized.
   - `capture`: a live capture written by the LiveKit adapter with `livekit.traceCapture` enabled. Its `generator` names the payload mode; in `full` mode the trace carries the media. No seed uses it.
-- **Regenerating:** the converters that wrote these traces are not in this repository, only their output is. The expect files are calibrated by hand from measured runs.
+- **Regenerating:** `go run ./internal/corpus/seedgen`, from the repository root, rewrites every synthetic and pcap-extract trace. `TestCorpusMatchesGenerator` fails when a committed trace differs from what the generator writes. The expect files are written by hand.
+
+## Adding a seed
+
+A seed is one or more traces plus one expect file. `TestCorpusReplay` replays every `*.expect.json` in this directory, and fails on a trace that no expect file lists.
+
+1. **Write the trace.**
+   - **Synthetic:** add a block at the end of `seeds()` in `internal/corpus/seedgen/main.go`, then run `go run ./internal/corpus/seedgen`. Build it from the `internal/corpus` generators (`GenerateVP8`, `GenerateOpus`) and operators (`DropSeqs`, `Retransmit`, `Duplicate`, `Reorder`, `StartAt`, `EOFAt`). Each seed takes the next SSRC, so a block inserted earlier changes every trace after it.
+   - **Live capture:** run the recorder with `livekit.traceCapture` enabled and record the session. `payload: header` keeps the media out of the trace. Copy the track's `<recording>.<trackID>.trace.ndjson.gz` here under the seed's name. `seedgen` does not write it, so `TestCorpusMatchesGenerator` only checks that its provenance is `capture`. To look at a capture before making it a seed, replay it with no expect file: `go test ./internal/webrtc/livekit/ -run 'TestReplayTraces$' -v -args -corpus.replay=<trace>[,<trace>...]`, with absolute paths, logs the same `measured:` line.
+2. **Write `<name>.expect.json`** with `v`, `class`, `intent` and `traces`, and no checks yet.
+3. **Measure:** run `go test ./internal/webrtc/livekit/ -run 'TestCorpusReplay/<name>$' -v`. It logs a `measured:` line with:
+   - the requests and their times;
+   - the frames and packets written;
+   - `PacketsLost`.
+4. **Pin the checks** that guard the defect, from the measured values. See Expect v1 below.
+5. **Prove the RED:**
+   - Put the defect back, or the setting the intent names, such as `videoJitterLatency` at 200 ms.
+   - Check that the seed fails, then revert.
+   - Say what the RED is in `intent`, and add the seed to the Seeds table.
 
 ## Seeds
 
@@ -86,7 +104,11 @@ The test requires exactly 1 request, within `lossKeyframeInterval` of the loss, 
 
 ## pcap-extract details
 
-These traces carry header fields and capture times only:
+The pcaps and the extractor that read them are not in this repository. The read schedules extracted from them are, in `internal/corpus/seedgen/schedules/`:
+- **Per packet:** seq, RTP timestamp, marker, padding bit, payload type, the estimated `plen` and the capture time.
+- **`mx-rev5b-2-drop1.json`:** the slice of `mx-rev5b-2` that `c09-mx-rev5b-2-drop1` starts from, and the seq it withholds.
+
+`seedgen` turns a schedule into a trace that carries header fields and capture times only:
 - **Times:** capture time is used as read time.
 - **Payload:** S is set on the lowest seq of each RTP timestamp, and every frame gets a picture ID.
 - **Key frames:** the first frame of the trace, and every frame of 10 or more packets.
