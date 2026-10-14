@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ### UNRELEASED
 
 * fix(webm): skip audio frames that do not advance the timestamp
+* fix(webm): check a VP8 payload's length before its frame header
 
 ### v0.15.0
 

@@ -658,7 +658,13 @@ func IsVP8KeyFrame(packet *rtp.Packet) bool {
 		return false
 	}
 
-	return vp8Packet.S != 0 && (vp8Packet.Payload[0]&0x1 == 0) && vp8Packet.PID == 0
+	return isVP8KeyFrameStart(&vp8Packet)
+}
+
+// isVP8KeyFrameStart reports whether vp8Packet starts a key frame. Its
+// payload descriptor can fill the RTP payload, leaving no frame header.
+func isVP8KeyFrameStart(vp8Packet *codecs.VP8Packet) bool {
+	return vp8Packet.S != 0 && vp8Packet.PID == 0 && len(vp8Packet.Payload) > 0 && vp8Packet.Payload[0]&0x1 == 0
 }
 
 func GetVP8KFDimension(packet *rtp.Packet) (int, int) {
@@ -672,7 +678,7 @@ func GetVP8KFDimension(packet *rtp.Packet) (int, int) {
 		return 0, 0
 	}
 
-	if vp8Packet.S != 0 || vp8Packet.PID != 0 {
+	if vp8Packet.S != 0 || vp8Packet.PID != 0 || len(vp8Packet.Payload) < 10 {
 		return 0, 0
 	}
 
@@ -745,8 +751,7 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 		return
 	}
 
-	// Lifted from LK
-	isKeyFrame := vp8Packet.S != 0 && (vp8Packet.Payload[0]&0x1 == 0) && vp8Packet.PID == 0
+	isKeyFrame := isVP8KeyFrameStart(&vp8Packet)
 	pictureID := vp8Packet.PictureID
 
 	log.WithField("session", r.ctx.Value("session")).
