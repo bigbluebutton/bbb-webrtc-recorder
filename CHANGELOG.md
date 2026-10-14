@@ -2,12 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-### UNRELEASED
+### v0.16.0
 
 * fix(webm): skip audio frames that do not advance the timestamp
 * fix(webm): check a VP8 payload's length before its frame header
 * fix(mediasoup): recover from a panic in a track's handler
 * fix(livekit): request a keyframe as soon as a gap goes unrepaired
+* build: bump Go to 1.26.0
+* build: bump server-sdk-go to v2.18.1
+* build(livekit): port the jitter buffer to media-sdk v0.1.1
 
 ### v0.15.0
 
