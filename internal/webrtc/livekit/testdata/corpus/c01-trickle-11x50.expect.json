@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "class": "1",
+  "intent": "8 frames of 11 packets read 50 ms apart, back to back (500 ms spread, 550 ms period), no loss. Written whole at 2 s; RED at videoJitterLatency = 200 ms (0/8, 88 dropped in the source probe).",
+  "traces": [
+    "c01-trickle-11x50.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 8
+  },
+  "packetsWritten": {
+    "min": 88,
+    "max": 88
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 8,
+    "minKeyframes": 2
+  }
+}

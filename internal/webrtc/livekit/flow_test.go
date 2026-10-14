@@ -52,9 +52,6 @@ func TestFirstFlowingFollowsArrival(t *testing.T) {
 					time.Sleep(100 * time.Millisecond)
 				}
 
-				// A second of frames, ending before the first frame's latency:
-				// under synctest, media-sdk v0.1.1 spins on a head that expires
-				// on its timer.
 				start := time.Now()
 				var held *rtp.Packet
 				for f := range 30 {

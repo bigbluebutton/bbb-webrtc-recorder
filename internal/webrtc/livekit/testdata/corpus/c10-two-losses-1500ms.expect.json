@@ -1,0 +1,35 @@
+{
+  "v": 1,
+  "class": "10",
+  "intent": "Loss chain: two unrepaired losses 1.5 s apart (beyond the 1 s loss-request limit). Ideal 2 requests, one per loss; the count is pinned at the measured value. RED if it grows, or if the second loss gets no request of its own.",
+  "traces": [
+    "c10-two-losses-1500ms.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 2,
+    "max": 2
+  },
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "firstRequestMinMs": 1103,
+  "firstRequestMaxMs": 1143,
+  "written": {
+    "min": 114
+  },
+  "packetsWritten": {
+    "min": 1184,
+    "max": 1184
+  },
+  "packetsLostMax": 2,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 114,
+    "minKeyframes": 3
+  },
+  "residuals": [
+    "writerRequests: ideal 0, pinned 1: when the second loss's frames are released (~4.4 s) the only request after the frame-45 key frame is 1.8 s old, so the writer asks again (an open residual)"
+  ]
+}

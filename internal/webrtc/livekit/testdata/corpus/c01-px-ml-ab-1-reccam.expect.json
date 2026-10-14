@@ -1,0 +1,33 @@
+{
+  "v": 1,
+  "class": "1",
+  "intent": "Live paced camera downtrack (3.5 fps; 29 of 37 multi-packet frames read over 200 ms, max 497 ms; 29 key frames by size). At 2 s all 37 media frames are written with no buffer request, as in the live run; the 6 close-out blank frames are not media. RED at 200 ms: 0 written and 17 buffer requests.",
+  "traces": [
+    "c01-px-ml-ab-1-reccam.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "written": {
+    "min": 37
+  },
+  "packetsWritten": {
+    "min": 430,
+    "max": 430
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 37,
+    "minKeyframes": 23
+  },
+  "residuals": [
+    "writerRequests: ideal 0, pinned 1, at the close-out blank frames: LiveKit's 8x8 key frames fail validateVP8Frame (dimensions < 16) and the writer asks once as the track ends; harmless, pinned"
+  ]
+}

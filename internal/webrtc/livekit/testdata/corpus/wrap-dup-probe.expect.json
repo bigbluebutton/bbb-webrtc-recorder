@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "class": "wrap",
+  "intent": "RTX probe copies of pre-wrap packets arriving after the sequence wrap are duplicates, not losses: 0 requests, 0 lost. RED when the duplicate window mistakes the wrap for a jump back and resets: the copies reach the jitter buffer and underflow PacketsLost.",
+  "traces": [
+    "wrap-dup-probe.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 120
+  },
+  "packetsWritten": {
+    "min": 502,
+    "max": 502
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 120,
+    "minKeyframes": 2
+  }
+}

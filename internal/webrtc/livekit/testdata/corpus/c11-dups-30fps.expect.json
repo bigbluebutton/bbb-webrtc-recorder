@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "class": "11",
+  "intent": "Spurious duplicates, one inside a frame still assembling and one after its frame was popped. 0 requests, 0 lost; RED when the track buffer stops dropping duplicates (media-sdk pops the second copy and underflows PacketsLost to ~65535).",
+  "traces": [
+    "c11-dups-30fps.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 120
+  },
+  "packetsWritten": {
+    "min": 502,
+    "max": 502
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 120,
+    "minKeyframes": 2
+  }
+}

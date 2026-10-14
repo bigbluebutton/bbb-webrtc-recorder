@@ -1,0 +1,21 @@
+{
+  "v": 1,
+  "class": "2",
+  "intent": "5 s of 20 ms Opus, then LiveKit's close-out blank pair: ts+1 tick (same ms PTS as the last frame) and 41 ms later, then eof. The +1-tick frame must be skipped: PTS tail ...4960 4980 5021, no duplicate. RED when the writer stops skipping an audio frame that does not advance the PTS: tail 4980 4980 5021.",
+  "traces": [
+    "c02-opus-tail-blank.ndjson.gz"
+  ],
+  "written": {
+    "min": 251
+  },
+  "packetsWritten": {
+    "min": 252,
+    "max": 252
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minAudioFrames": 251
+  }
+}

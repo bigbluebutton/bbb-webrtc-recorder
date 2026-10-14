@@ -1,0 +1,32 @@
+{
+  "v": 1,
+  "class": "3",
+  "intent": "At 3.4fps, an unrepaired mid-frame loss requests one key frame 580-620 ms after the revealing packet (gap NACK round trip is read-driven, so the bound depends on fps), not at the 2 s expiry. The expiry's own report coalesces into it. RED when the early gap request is removed (first request at ~2 s) or fires before its NACK window.",
+  "traces": [
+    "c03-d11-3.4fps.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "firstRequestMinMs": 2347.706,
+  "firstRequestMaxMs": 2387.706,
+  "written": {
+    "min": 21
+  },
+  "packetsWritten": {
+    "min": 184,
+    "max": 184
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 21,
+    "minKeyframes": 2
+  }
+}

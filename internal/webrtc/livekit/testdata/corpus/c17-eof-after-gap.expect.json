@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "class": "17",
+  "intent": "At eof the read loop's flush must write the complete frames held behind the incomplete one (key frame 61 and deltas 62-65) and drop frame 60 without a request. RED without the eof flush: 60 frames written instead of 65.",
+  "traces": [
+    "c17-eof-after-gap.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 65
+  },
+  "packetsWritten": {
+    "min": 197,
+    "max": 197
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 65,
+    "minKeyframes": 2
+  }
+}

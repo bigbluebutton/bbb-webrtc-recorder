@@ -1,0 +1,32 @@
+{
+  "v": 1,
+  "class": "9",
+  "intent": "A live schedule where the frames behind the loss reach the writer 20 ms past latency+slack after the early request. The writer must leave the request to the track buffer: 1 request (~240 ms after the drop), no writer picture_id_gap request. RED with the writer's push wait (requestedSince's pushWait) at 0: a second, writer request at ~4280 ms. 3 key frames by size.",
+  "traces": [
+    "c09-mx-rev5b-2-drop1.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "firstRequestMinMs": 2220.149,
+  "firstRequestMaxMs": 2260.149,
+  "written": {
+    "min": 11
+  },
+  "packetsWritten": {
+    "min": 99,
+    "max": 99
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 11,
+    "minKeyframes": 3
+  }
+}

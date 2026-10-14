@@ -56,6 +56,23 @@ livekit:
   # Write a raw RTP dump (in rtpdump format) for recorded tracks. Used for
   # debugging and test environments.
   writeRTPDump: false
+  # Write a read trace (internal/corpus format v1) per recorded track, as
+  # <recording>.<trackID>.trace.ndjson.gz: each packet read, read timeout and
+  # keyframe request, timed from the session start. Used for debugging and
+  # for replay tests. Each captured track holds about 800 KB of gzip state.
+  # Skipped when the recording goes to /dev/null. Environment variables:
+  # BBBRECORDER_LIVEKIT_TRACECAPTURE_ENABLED, _PAYLOAD, _MAXBYTESPERTRACK.
+  traceCapture:
+    enabled: false
+    # header: VP8 descriptor and frame header, or Opus TOC byte (whole
+    # payloads of up to 3 bytes, such as DTX frames), no media.
+    # full: whole payloads, so the trace carries the media.
+    payload: header
+    # Compressed size cap per trace, in bytes; past it, the trace ends with
+    # an eof record whose reason is "truncated". 0 means no cap; a negative
+    # value means the default. A trace whose writer fell behind and dropped
+    # records ends with the reason "dropped" instead.
+    maxBytesPerTrack: 16777216
   healthCheck:
     enable: false
     interval: 1m

@@ -1,0 +1,33 @@
+{
+  "v": 1,
+  "class": "15",
+  "intent": "Starting inside the first key frame leaves an orphan tail that expires; the writer waits for the frame-60 key frame. Requests stay bounded (the orphan tail's one report at its 2 s expiry, one writer ask); frames from the key frame on are written. RED on a request storm (one per orphan packet) or if the stream never starts.",
+  "traces": [
+    "c15-start-midframe.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "written": {
+    "min": 60
+  },
+  "packetsWritten": {
+    "min": 487,
+    "max": 487
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 60,
+    "minKeyframes": 1
+  },
+  "residuals": [
+    "writerRequests: ideal 0 (the track buffer's request is still due), pinned 1: webm.go's !hasKeyFrame && !isKeyFrame branch requests while !seenKeyFrame without consulting keyframeDue"
+  ]
+}
