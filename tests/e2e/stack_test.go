@@ -23,6 +23,31 @@ type StackOptions struct {
 	// RecorderConfig edits the generated recorder config, with Redis and
 	// LiveKit already up: e.g. to point livekit.host at a proxy.
 	RecorderConfig func(s *Stack, cfg map[string]any)
+	// Servers places livekit-server and redis-server; nil keeps them on
+	// 127.0.0.1 (or REDIS_ADDR) on the host.
+	Servers *ServerNet
+}
+
+// ServerNet is where a stack's livekit-server and redis-server listen and run.
+type ServerNet struct {
+	// Addrs are the addresses both servers listen on; the test reaches them
+	// on the first.
+	Addrs []string
+	// Wrap, if set, returns the command that runs a server's binary bin,
+	// writing any script it needs to dir: e.g. one that enters a namespace.
+	Wrap func(dir, name, bin string) string
+}
+
+var loopbackServers = ServerNet{Addrs: []string{"127.0.0.1"}}
+
+func (n *ServerNet) host() string { return n.Addrs[0] }
+
+func (n *ServerNet) command(dir, name, bin string) string {
+	if n.Wrap == nil {
+		return bin
+	}
+
+	return n.Wrap(dir, name, bin)
 }
 
 // Stack is one test's redis-server, livekit-server, recorder and driver.
@@ -43,8 +68,8 @@ func NewStack(t *testing.T, o StackOptions) *Stack {
 	s := &Stack{T: t, Artifacts: ArtifactDir(t)}
 	redirectStdLog(t, filepath.Join(s.Artifacts, "lksdk-test-process.log"))
 
-	s.Redis = StartRedis(t, s.Artifacts)
-	s.LiveKit = StartLiveKit(t, s.Artifacts, o.LiveKitConfig)
+	s.Redis = StartRedis(t, s.Artifacts, o.Servers)
+	s.LiveKit = StartLiveKit(t, s.Artifacts, o.Servers, o.LiveKitConfig)
 
 	to, from := defaultToRecorder, defaultFromRecorder
 	if s.Redis.Proc == nil {

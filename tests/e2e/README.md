@@ -34,6 +34,8 @@ recorder's trace, the `recordingStopped` events and the `/metrics` deltas.
 | `TestBaselineRecording` | **Baseline.** A camera and a microphone, one session per track, about 10 s on a clean path. It checks the frame counts against what was sent and the PTS (increasing, no duplicates, gaps bounded), that the trace and the metrics agree, and that the recorder asks for no key frames. |
 | `TestUnrepairedLossRequestsKeyframe` | **Unrepaired loss.** One packet is withheld from the middle of a camera frame, at 15 and at 5 fps. The trace must show exactly one unrepaired gap, at that packet. The recorder must request a key frame early, from the sequence gap (trace PLI reason `packet_drop`), within a bound that depends on the fps, and frames must be written again after the publisher answers. |
 | `TestPacedKeyframesNoLoop` | **Paced key frames.** A 3.4 fps camera whose key frames are paced over 664 ms, plus one lost packet. Key-frame requests must stay bounded (no keyframe loop) and frames must keep being written. |
+| `TestNACKRepairUnderLoss` | **NACK/RTX repair under loss.** `livekit-server` and `redis-server` run in one network namespace and the recorder in another, and netem drops 3% of what the servers send the recorder. The test checks that the recorder's ICE pair uses the link between the namespaces, that lost packets were read later (by sequence number, whichever SSRC carried them), that nearly every frame was written, and that there was no keyframe loop. It needs root and `E2E_NETEM=1`, and is skipped otherwise, or fails with `E2E_NETEM_REQUIRED=1`. |
+| `TestNACKRepairControl`, `TestNetemPlan` | The NACK scenario's stack and checks without the namespaces or the loss, with loopback addresses standing in for the links, and the namespace plan and config edits. Both run unprivileged. The control cannot show that ICE uses the link between the namespaces; only the NACK scenario can. |
 | `TestSignalCutResumesInPlace` | **Signal cut.** A TCP proxy resets the recorder's signalling connections and lets the redial through. Each session resumes in place, in its one file. |
 | `TestSignalRefusedSplitsFile` | **Signal refused.** The proxy also refuses redials for 5 s. The SDK falls back to a full reconnect and every session stops as `closed`. The test retries as the SFU does, so each session ends with two files. This pins today's behaviour; it is not a target. |
 | `TestPublisherSendLoop`, `TestVP8PayloadHelpers` | The publisher's send loop (PLI answers, pacing, drops, pauses) and the VP8 payload helpers, with no servers involved. |
@@ -76,6 +78,10 @@ of the in-process replay corpus
    (`-count=3`) to check that its bounds hold.
 7. **Register it** with a row in the table above.
 
+A scenario that needs root, as the NACK scenario does for its network
+namespaces, skips unless `E2E_NETEM=1` and fails instead when
+`E2E_NETEM_REQUIRED=1` (see `netemSkipReason`).
+
 ## Running locally
 
 You need Go (the version in `go.mod`), `livekit-server` 1.13.7 and
@@ -95,12 +101,14 @@ Environment:
 |---|---|
 | `LIVEKIT_SERVER_BIN` | The `livekit-server` binary. Default: `livekit-server` on `PATH`. |
 | `REDIS_SERVER_BIN` | The `redis-server` binary. Default: `redis-server` on `PATH`. |
-| `REDIS_ADDR` | Use this Redis instead of starting one. Channel names get a suffix naming the run (stamp and PID) and the test, so concurrent runs and tests do not cross. |
+| `REDIS_ADDR` | Use this Redis instead of starting one. Channel names get a suffix naming the run (stamp and PID) and the test, so concurrent runs and tests do not cross. The NACK scenario and its control always start their own. |
 | `E2E_RECORDER_BIN` | Use this recorder binary instead of building one. |
 | `E2E_RECORDER_RACE=1` | Build the recorder with `-race`; a test fails when its recorder's log reports a data race. The race build needs a lot of cache space. |
 | `E2E_ARTIFACTS` | Root directory for artifacts. When set, every test's artifacts are kept. |
 | `E2E_KEEP_ARTIFACTS=1` | Keep the artifacts of passing tests under the default root. |
 | `E2E_RECORDER_LOG_LEVEL`, `E2E_LIVEKIT_LOG_LEVEL` | Log levels. Defaults: `debug` and `info`. |
+| `E2E_NETEM=1` | Allow the NACK scenario's privileged path. The test must also run as root. |
+| `E2E_NETEM_REQUIRED=1` | Fail the NACK scenario instead of skipping it when the privileged path cannot run. |
 
 The child processes do not inherit `BBBRECORDER_*`, `LIVEKIT_*`, `REDIS_*`,
 `NODE_IP` or `UDP_PORT`, so a shell set up for a dev recorder cannot override
@@ -126,3 +134,57 @@ recorder/recordings/<room>/<trackSID>-<session>.webm
 ```
 
 A test run takes a few hundred KB.
+
+### The NACK scenario (root)
+
+The NACK scenario builds two network namespaces and three veth links, with
+addresses from three /30s in `198.18.0.0/15` derived from the test's PID:
+- the server namespace runs `livekit-server` and `redis-server`, which
+  listen on both of its addresses;
+- the recorder namespace runs the recorder;
+- host <-> server: the test's publisher and Redis driver reach the servers
+  here;
+- host <-> recorder: only the test's scrape of the recorder's metrics;
+- server <-> recorder: the recorder's signalling, Redis and media. netem
+  drops 3% of the server end's egress, so only what the servers send the
+  recorder is lost.
+
+Every connection that enters the host namespace is opened from the host, and
+the replies to it are established traffic; the publisher's own ICE checks
+set that up for LiveKit's media. The NACK scenario therefore does not depend
+on the host firewall, which may drop new inbound connections. It turns on no
+forwarding, adds no route and changes no firewall rule. The publisher's
+checks toward the servers' recorder-side address follow the host's default
+route and are lost there, as that range is never routed.
+
+The kernel needs the `sch_netem` module. Build both binaries as your user
+into a private directory, then run only the test binary as root, with its
+artifacts in that directory too:
+
+```sh
+d=$(mktemp -d) &&
+  go build -o "$d/bwr" ./cmd/bbb-webrtc-recorder &&
+  go test -c -tags e2e -o "$d/e2e.test" ./tests/e2e &&
+  cd tests/e2e && sudo env "PATH=$PATH" "LIVEKIT_SERVER_BIN=$LIVEKIT_SERVER_BIN" \
+    "REDIS_SERVER_BIN=$REDIS_SERVER_BIN" E2E_NETEM=1 E2E_RECORDER_BIN="$d/bwr" \
+    E2E_ARTIFACTS="$d/artifacts" "$d/e2e.test" -test.run '^TestNACKRepairUnderLoss$' -test.v
+```
+
+`go test -tags e2e -v -run TestNetemPlan ./tests/e2e/...` logs the exact
+setup and teardown commands for a sample PID.
+
+Do this only on a disposable machine: it changes the host's network
+configuration while it runs. The test removes the namespaces and their
+links when it ends, and at startup it removes any that a dead run left
+behind.
+
+The NACK scenario's bounds are derived from the loss rate, packets per frame
+and the recorder's keyframe requests (see `netem_test.go`). Netem dropping a
+packet and every retransmission of it is rare. Most unrepaired losses come
+from LiveKit: after a subscriber's PLI, it stops retransmitting on that
+downtrack until it forwards a key frame, and it does not forward a PLI
+within 500 ms of the previous one. So a dropped request leaves one outage,
+until the recorder's next request up to 1 s later. Frames are compared from
+the first one written: when netem drops the first packet of the first key
+frame, no NACK can name it, and the recording starts only once the jitter
+buffer's 2 s have passed.

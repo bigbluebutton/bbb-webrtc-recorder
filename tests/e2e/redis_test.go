@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,32 +27,41 @@ type Redis struct {
 	Proc *Proc // nil when REDIS_ADDR names an external server
 }
 
-// StartRedis starts redis-server (REDIS_SERVER_BIN) on a free loopback port
-// with persistence off, or uses REDIS_ADDR when it is set.
-func StartRedis(t *testing.T, dir string) *Redis {
+// StartRedis starts redis-server (REDIS_SERVER_BIN) on a free port with
+// persistence off, where srv places it. With srv nil it listens on loopback,
+// or REDIS_ADDR is used when set: a placed server must listen where srv says.
+func StartRedis(t *testing.T, dir string, srv *ServerNet) *Redis {
 	t.Helper()
 
-	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" && srv == nil {
 		require.NoError(t, WaitFor(10*time.Second, nil, func() error { return redisPing(addr) }), "REDIS_ADDR %s", addr)
 
 		return &Redis{Addr: addr}
 	}
 
-	bin := envOr("REDIS_SERVER_BIN", "redis-server")
+	if srv == nil {
+		srv = &loopbackServers
+	}
+
+	bin := srv.command(dir, "redis-server", envOr("REDIS_SERVER_BIN", "redis-server"))
 	rd := &Redis{}
 
 	StartRetryingPorts(t, func() (*Proc, error) {
 		port := FreePort(t, "tcp")
-		rd.Addr = fmt.Sprintf("127.0.0.1:%d", port)
+		rd.Addr = net.JoinHostPort(srv.host(), strconv.Itoa(port))
 
-		rd.Proc = StartProc(t, "redis-server", filepath.Join(dir, "redis-server.log"), dir, childEnv(), bin,
-			"--port", strconv.Itoa(port),
-			"--bind", "127.0.0.1",
+		args := append([]string{"--port", strconv.Itoa(port), "--bind"}, srv.Addrs...)
+		args = append(args,
+			// Protected mode refuses clients off loopback, which is where the
+			// NACK scenario's are; the binds keep the server private.
+			"--protected-mode", "no",
 			"--save", "",
 			"--appendonly", "no",
 			"--dir", dir,
 			"--daemonize", "no",
 		)
+
+		rd.Proc = StartProc(t, "redis-server", filepath.Join(dir, "redis-server.log"), dir, childEnv(), bin, args...)
 
 		return rd.Proc, WaitFor(10*time.Second, rd.Proc, func() error { return redisPing(rd.Addr) })
 	})
