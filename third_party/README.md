@@ -18,3 +18,6 @@ Local changes:
   `jitter/buffer_test.go`). Without it, a timer that fires exactly
   at the deadline drops nothing and re-arms itself for zero, which never
   ends under `testing/synctest`.
+- `jitter/packet.go`, `newPacket`: upstream's 1420485, applied verbatim. A
+  recycled packet entry starts with its `discont` flag cleared, so a frame
+  behind an open gap is not released as the start of a new stream.

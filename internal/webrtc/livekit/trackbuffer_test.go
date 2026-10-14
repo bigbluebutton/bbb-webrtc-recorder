@@ -210,10 +210,35 @@ func TestTrackBufferVideoRetransmitOutsideWindow(t *testing.T) {
 		assert.Equal(t, uint64(2), b.stats().PacketsDropped)
 		assert.Equal(t, []uint16{6}, seqNums(b.push(vp8Packet(4, 6000, false, false))))
 
-		// PacketsLost is not checked: media-sdk v0.1.1 recycles packet entries
-		// without clearing their discont flag, which can hide this gap.
-		assert.Equal(t, uint64(3), b.stats().PacketsDropped)
+		stats := b.stats()
+		assert.Equal(t, uint64(3), stats.PacketsDropped)
+		assert.Equal(t, uint64(1), stats.PacketsLost)
 		assert.Equal(t, int32(1), losses.Load())
+	})
+}
+
+func TestTrackBufferRetransmitIntoRecycledEntry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b, losses := newCountingBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval)
+		defer b.close()
+
+		frame := func(seq uint16) *rtp.Packet { return vp8Packet(seq, 3000*uint32(seq), true, true) }
+
+		assert.Equal(t, []uint16{1, 2, 3, 4}, seqNums(pushAll(b,
+			vp8Packet(1, 3000, true, false), vp8Packet(2, 3000, false, false), vp8Packet(3, 3000, false, true),
+			frame(4))))
+		// 5 and 8 are missing. 6, 7 and 9 take the entries 1-4 left, one of
+		// which held the packet that started the stream.
+		assert.Empty(t, pushAll(b, frame(6), frame(7), frame(9)))
+
+		time.Sleep(60 * time.Millisecond)
+		assert.Equal(t, []uint16{5, 6, 7}, seqNums(b.push(frame(5))))
+		assert.Equal(t, []uint16{8, 9}, seqNums(b.push(frame(8))))
+
+		stats := b.stats()
+		assert.Equal(t, uint64(0), stats.PacketsDropped)
+		assert.Equal(t, uint64(0), stats.PacketsLost)
+		assert.Equal(t, int32(0), losses.Load())
 	})
 }
 
