@@ -5,7 +5,6 @@ import (
 	"time"
 
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/livekit/server-sdk-go/v2/pkg/jitter"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
@@ -13,8 +12,7 @@ import (
 
 const jitterLatency = 200 * time.Millisecond
 
-// vp8StartPacket is a one-packet VP8 frame. A buffer that got sequence
-// number n drops any later packet with a lower one.
+// vp8StartPacket is a one-packet VP8 frame.
 func vp8StartPacket(sn uint16) *rtp.Packet {
 	return &rtp.Packet{
 		Header:  rtp.Header{SequenceNumber: sn, Timestamp: uint32(sn) * 3000, Marker: true},
@@ -45,53 +43,66 @@ func adapterLockFree(lk *LiveKitWebRTC) func() bool {
 	}
 }
 
-func TestJitterDropHandlerDoesNotTakeAdapterLock(t *testing.T) {
+// lostAfterGap pushes two frames around a missing sequence number. The
+// buffer reports the loss from its timer, with its lock held, once the
+// second frame's latency expires.
+func lostAfterGap(b *trackBuffer) {
+	b.push(vp8StartPacket(1000))
+	b.push(vp8StartPacket(1002))
+}
+
+func TestJitterLossHandlerDoesNotTakeAdapterLock(t *testing.T) {
 	lk, _ := setupMockLK()
 	defer lk.Close()
 
-	buffer := lk.addJitterBuffer("test-track", &codecs.VP8Packet{}, 90000, jitterLatency, 1234, true)
-	buffer.Push(vp8StartPacket(1000))
+	buffer := lk.addJitterBuffer("test-track", &codecs.VP8Packet{}, jitterLatency, 1234, true)
+	defer buffer.close()
 
 	lk.m.Lock()
+	lostAfterGap(buffer)
 
-	pushed := make(chan struct{})
+	// stats takes the buffer's lock, which a handler waiting for the
+	// adapter lock would keep held.
+	lost := make(chan struct{})
 
 	go func() {
-		defer close(pushed)
-		buffer.Push(vp8StartPacket(990))
+		defer close(lost)
+
+		for buffer.stats().PacketsLost == 0 {
+			time.Sleep(time.Millisecond)
+		}
 	}()
 
-	assert.Eventually(t, closed(pushed), time.Second, time.Millisecond,
-		"a dropped packet blocked on the adapter lock")
+	assert.Eventually(t, closed(lost), jitterLatency+time.Second, time.Millisecond,
+		"a lost packet blocked on the adapter lock")
 	lk.m.Unlock()
-	<-pushed
-
-	assert.Equal(t, uint64(1), buffer.Stats().PacketsDropped)
+	<-lost
 }
 
 func TestGetStatsReadsJitterStatsWithoutAdapterLock(t *testing.T) {
 	lk, _ := setupMockLK()
 	defer lk.Close()
 
-	// A drop handler that blocks keeps the buffer's lock held.
+	// A loss handler that blocks keeps the buffer's lock held.
 	inHandler := make(chan struct{})
 	release := make(chan struct{})
-	buffer := jitter.NewBuffer(&codecs.VP8Packet{}, 90000, jitterLatency,
-		jitter.WithPacketDroppedHandler(func() {
-			close(inHandler)
-			<-release
-		}))
-	buffer.Push(vp8StartPacket(1000))
+	buffer := newTrackBuffer(&codecs.VP8Packet{}, jitterLatency, 0, func() {
+		close(inHandler)
+		<-release
+	})
+	defer buffer.close()
 
 	lk.m.Lock()
 	lk.jitterBuffers["test-track"] = buffer
 	lk.remoteTrackPubs["test-track"] = &lksdk.RemoteTrackPublication{}
 	lk.m.Unlock()
 
-	go buffer.Push(vp8StartPacket(990))
+	lostAfterGap(buffer)
 
-	if !assert.Eventually(t, closed(inHandler), time.Second, time.Millisecond,
-		"the buffer did not drop the late packet") {
+	if !assert.Eventually(t, closed(inHandler), jitterLatency+time.Second, time.Millisecond,
+		"the buffer did not report the loss") {
+		close(release)
+
 		return
 	}
 

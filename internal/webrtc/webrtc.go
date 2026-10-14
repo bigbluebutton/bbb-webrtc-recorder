@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math/rand"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -166,6 +167,25 @@ func (w *WebRTC) Init() (webrtc.SessionDescription, error) {
 	// Set a handler for when a new remote track starts, this handler copies inbound RTP packets,
 	// replaces the SSRC and sends them back
 	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		// pion runs this on a goroutine of its own, so a panic would end the
+		// process and every session in it. Fail this session instead.
+		defer func() {
+			if err := recover(); err != nil {
+				log.WithField("session", w.ctx.Value("session")).
+					WithField("error", err).
+					WithField("stack", string(debug.Stack())).
+					Error("Panic detected in WebRTC track processing, emit failed state")
+
+				w.m.Lock()
+				callback := w.connStateCallbackFn
+				w.m.Unlock()
+
+				if callback != nil {
+					callback(utils.ConnectionStateFailed)
+				}
+			}
+		}()
+
 		isAudio := track.Kind() == webrtc.RTPCodecTypeAudio
 		isVideo := track.Kind() == webrtc.RTPCodecTypeVideo
 

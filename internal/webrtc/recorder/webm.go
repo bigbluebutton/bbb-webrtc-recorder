@@ -12,6 +12,7 @@ import (
 	"github.com/at-wat/ebml-go/webm"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/jech/samplebuilder"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
@@ -551,8 +552,20 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 			duration := sample.Duration
 			r.trackSampleStats(&r.stats.Audio.BaseTrackStats, duration)
 			r.audioTimestamp += duration
+			pts := int64(r.audioTimestamp / time.Millisecond)
 
-			if _, err := r.audioWriter.Write(true, int64(r.audioTimestamp/time.Millisecond), sample.Data); err != nil {
+			// LiveKit's blank frames at downtrack close can carry the previous
+			// frame's RTP timestamp plus one tick: same ms, overlapping audio.
+			if r.stats.Audio.WrittenSamples > 0 && pts <= r.lastAudioPTS {
+				log.WithField("session", r.ctx.Value("session")).
+					WithField("duration", duration).
+					WithField("timestamp", r.audioTimestamp).
+					Debug("Skipping audio frame that does not advance the timestamp")
+
+				continue
+			}
+
+			if _, err := r.audioWriter.Write(true, pts, sample.Data); err != nil {
 				log.WithField("session", r.ctx.Value("session")).
 					WithField("error", err).
 					WithField("duration", duration).
@@ -561,6 +574,7 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 				r.hasValidAudio = false
 			} else {
 				r.stats.Audio.WrittenSamples++
+				r.lastAudioPTS = pts
 				r.hasValidAudio = true
 				log.WithField("session", r.ctx.Value("session")).
 					WithField("duration", duration).
@@ -585,6 +599,14 @@ func (r *WebmRecorder) RequestKeyframe() {
 		log.WithField("session", r.ctx.Value("session")).Debug("Recorder is requesting keyframe")
 		r.keyframeRequester.RequestKeyframe()
 	}
+}
+
+// keyframeDue reports whether the requester already asked for a key frame
+// since the last one arrived.
+func (r *WebmRecorder) keyframeDue(ssrc uint32) bool {
+	t, ok := r.keyframeRequester.(interfaces.KeyframeRequestTracker)
+
+	return ok && t.KeyframeRequestedSince(ssrc, r.lastKeyFrameTime)
 }
 
 // Some validations here are kind of duplicate from the depayloader (pushVP8)
@@ -645,7 +667,13 @@ func IsVP8KeyFrame(packet *rtp.Packet) bool {
 		return false
 	}
 
-	return vp8Packet.S != 0 && (vp8Packet.Payload[0]&0x1 == 0) && vp8Packet.PID == 0
+	return isVP8KeyFrameStart(&vp8Packet)
+}
+
+// isVP8KeyFrameStart reports whether vp8Packet starts a key frame. Its
+// payload descriptor can fill the RTP payload, leaving no frame header.
+func isVP8KeyFrameStart(vp8Packet *codecs.VP8Packet) bool {
+	return vp8Packet.S != 0 && vp8Packet.PID == 0 && len(vp8Packet.Payload) > 0 && vp8Packet.Payload[0]&0x1 == 0
 }
 
 func GetVP8KFDimension(packet *rtp.Packet) (int, int) {
@@ -659,7 +687,7 @@ func GetVP8KFDimension(packet *rtp.Packet) (int, int) {
 		return 0, 0
 	}
 
-	if vp8Packet.S != 0 || vp8Packet.PID != 0 {
+	if vp8Packet.S != 0 || vp8Packet.PID != 0 || len(vp8Packet.Payload) < 10 {
 		return 0, 0
 	}
 
@@ -732,8 +760,7 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 		return
 	}
 
-	// Lifted from LK
-	isKeyFrame := vp8Packet.S != 0 && (vp8Packet.Payload[0]&0x1 == 0) && vp8Packet.PID == 0
+	isKeyFrame := isVP8KeyFrameStart(&vp8Packet)
 	pictureID := vp8Packet.PictureID
 
 	log.WithField("session", r.ctx.Value("session")).
@@ -782,6 +809,10 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 		r.vp8Tracker.partitionsStarted++
 		r.vp8Tracker.currentPartitionSize = 0
 		r.frameStartTime = time.Now()
+
+		if isKeyFrame {
+			r.lastKeyFrameTime = r.frameStartTime
+		}
 
 		r.currentFrameInfo = &VP8FrameInfo{
 			startSequence: p.SequenceNumber,
@@ -835,7 +866,9 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet) {
 				} else {
 					// For non-keyframes with discontinuity, reject and request keyframe
 					r.hasKeyFrame = false
-					r.RequestKeyframe()
+					if !r.keyframeDue(p.SSRC) {
+						r.RequestKeyframe()
+					}
 					return
 				}
 			}

@@ -20,10 +20,10 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
+	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/livekit/server-sdk-go/v2/pkg/jitter"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
@@ -45,6 +45,23 @@ const (
 	flowingTicker      = time.Millisecond * 1000
 	tokenTTL           = 24 * time.Hour
 	baseSystemMetadata = "{\"bbb_system\": true}"
+	// The jitter buffer drops a frame still incomplete this long after its
+	// first packet. libwebrtc paces at 1.1x the target rate with
+	// transport-wide feedback [1] and lets a VP8 key frame take about 300 ms
+	// of that rate [2], so a key frame's packets spread over hundreds of ms,
+	// and its pacer queue may reach 2 s [3]. The cost: an unrecoverable video
+	// loss holds the track that long, though the track buffer usually
+	// requests its key frame much sooner.
+	//
+	// [1] https://webrtc.googlesource.com/src/+/ac9591c580ac697e7bb604debf8a141b18626204/modules/congestion_controller/goog_cc/goog_cc_network_control.cc#58
+	// [2] https://webrtc.googlesource.com/src/+/ac9591c580ac697e7bb604debf8a141b18626204/modules/video_coding/codecs/vp8/libvpx_vp8_encoder.cc#927
+	// [3] https://webrtc.googlesource.com/src/+/ac9591c580ac697e7bb604debf8a141b18626204/modules/pacing/pacing_controller.h#92
+	videoJitterLatency = 2 * time.Second
+	audioJitterLatency = 200 * time.Millisecond
+	// Each keyframe request also stops LiveKit's NACK repair on the downtrack
+	// until it forwards a key frame. Must stay below videoJitterLatency: the
+	// key frame the last request brings then follows every loss it suppresses.
+	lossKeyframeInterval = time.Second
 )
 
 type MimeType string
@@ -75,7 +92,8 @@ type LiveKitWebRTC struct {
 	identity           string
 	trackIds           []string
 	pliStats           map[uint32]pliTracker
-	jitterBuffers      map[string]*jitter.Buffer
+	jitterBuffers      map[string]*trackBuffer
+	videoBuffers       map[uint32]*trackBuffer // SSRC -> video track buffer
 	hasAudio           bool
 	hasVideo           bool
 	flowState          map[string]*trackFlowState
@@ -120,7 +138,8 @@ func NewLiveKitWebRTC(
 		trackIds:              trackIds,
 		remoteTrackPubs:       make(map[string]*lksdk.RemoteTrackPublication),
 		pliStats:              make(map[uint32]pliTracker),
-		jitterBuffers:         make(map[string]*jitter.Buffer),
+		jitterBuffers:         make(map[string]*trackBuffer),
+		videoBuffers:          make(map[uint32]*trackBuffer),
 		flowState:             make(map[string]*trackFlowState),
 		trackStats:            make(map[string]*appstats.AdapterTrackStats),
 		participantIDs:        make(map[string]string),
@@ -237,7 +256,7 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 		remoteTrackPubs[k] = v
 	}
 
-	jitterBuffers := make(map[string]*jitter.Buffer, len(w.jitterBuffers))
+	jitterBuffers := make(map[string]*trackBuffer, len(w.jitterBuffers))
 	for k, v := range w.jitterBuffers {
 		jitterBuffers[k] = v
 	}
@@ -289,10 +308,15 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 		var bufferStatsData *jitter.BufferStats
 
 		if jb, ok := jitterBuffers[trackID]; ok && jb != nil {
-			bufferStatsData = jb.Stats()
+			bufferStatsData = jb.stats()
 		} else {
 			bufferStatsData = &jitter.BufferStats{}
 		}
+
+		// PacketsDropped counts only packets that arrived; missing packets the
+		// buffer stopped waiting for are PacketsLost. Both feed the buffer loss
+		// metric.
+		packetsDropped := bufferStatsData.PacketsDropped + bufferStatsData.PacketsLost
 
 		currentTrackAdapterStats := trackStats[trackID]
 
@@ -310,7 +334,7 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 			Buffer: &appstats.BufferStatsWrapper{
 				PacketsPushed:  bufferStatsData.PacketsPushed,
 				PacketsPopped:  bufferStatsData.PacketsPopped,
-				PacketsDropped: bufferStatsData.PacketsDropped,
+				PacketsDropped: packetsDropped,
 				PaddingPushed:  bufferStatsData.PaddingPushed,
 				SamplesPopped:  bufferStatsData.SamplesPopped,
 			},
@@ -398,6 +422,17 @@ func (w *LiveKitWebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	w.pliStats[ssrc] = pliTracker{count: newCount, timestamp: now}
 
 	w.m.Unlock()
+}
+
+// KeyframeRequestedSince answers for the video track buffer of ssrc, from
+// its own loss reports. While the track flows, the read loop pushes a packet
+// at least every PacketReadTimeout.
+func (w *LiveKitWebRTC) KeyframeRequestedSince(ssrc uint32, since time.Time) bool {
+	w.m.Lock()
+	buffer := w.videoBuffers[ssrc]
+	w.m.Unlock()
+
+	return buffer != nil && buffer.requestedSince(since, w.cfg.PacketReadTimeout)
 }
 
 func (w *LiveKitWebRTC) HasTrack(trackID string) bool {
@@ -694,6 +729,38 @@ func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, recvTs ti
 	return state.isFlowing
 }
 
+func jitterLatencyFor(kind TrackKind) time.Duration {
+	if kind == TrackKindVideo {
+		return videoJitterLatency
+	}
+
+	return audioJitterLatency
+}
+
+// registerTrackBuffer wires a track's buffer into the adapter, apart from
+// addJitterBuffer so that the writer tests register buffers of their own:
+// without the SSRC entry, the writer repeats every request the buffer made.
+func (w *LiveKitWebRTC) registerTrackBuffer(trackID string, isVideo bool, ssrcForHandler uint32, buffer *trackBuffer) {
+	w.m.Lock()
+	w.jitterBuffers[trackID] = buffer
+
+	if isVideo {
+		if _, exists := w.pliStats[ssrcForHandler]; !exists {
+			w.pliStats[ssrcForHandler] = pliTracker{count: 0, timestamp: time.Now()}
+		}
+		w.videoBuffers[ssrcForHandler] = buffer
+	}
+	w.m.Unlock()
+
+	if isVideo {
+		if kfr, ok := w.rec.(interface {
+			SetKeyframeRequester(interfaces.KeyframeRequester)
+		}); ok {
+			kfr.SetKeyframeRequester(w)
+		}
+	}
+}
+
 func (w *LiveKitWebRTC) onTrackSubscribed(
 	track *webrtc.TrackRemote,
 	pub *lksdk.RemoteTrackPublication,
@@ -754,29 +821,13 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	w.remoteParticipants[rp.Identity()] = rp
 	w.m.Unlock()
 
-	latency := time.Duration(200) * time.Millisecond
-
 	var ssrcForHandler uint32
 
 	if track != nil {
 		ssrcForHandler = uint32(track.SSRC())
 	}
 
-	buffer := w.addJitterBuffer(trackID, depacketizer, clockRate, latency, ssrcForHandler, isVideo && track != nil)
-
-	if isVideo {
-		w.m.Lock()
-		if _, exists := w.pliStats[ssrcForHandler]; !exists {
-			w.pliStats[ssrcForHandler] = pliTracker{count: 0, timestamp: time.Now()}
-		}
-		w.m.Unlock()
-
-		if kfr, ok := w.rec.(interface {
-			SetKeyframeRequester(interfaces.KeyframeRequester)
-		}); ok {
-			kfr.SetKeyframeRequester(w)
-		}
-	}
+	buffer := w.addJitterBuffer(trackID, depacketizer, jitterLatencyFor(trackKind), ssrcForHandler, isVideo && track != nil)
 
 	flowCheckDone := make(chan bool)
 	defer func() {
@@ -826,6 +877,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	appstats.OnTrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
 
 	go func() {
+		defer buffer.close()
 		defer func() {
 			appstats.OnTrackRecordingStopped(string(trackKind), string(mimeType), pub.Source().String())
 			log.WithField("session", w.ctx.Value("session")).
@@ -851,6 +903,19 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 		rtpWriter, rtpWriterExists := w.rtpWriters[trackID]
 
+		writePackets := func(packets []*rtp.Packet) {
+			for _, p := range packets {
+				switch trackKind {
+				case TrackKindVideo:
+					w.rec.PushVideo(p)
+				case TrackKindAudio:
+					w.rec.PushAudio(p)
+				}
+			}
+		}
+
+		push := w.packetPusher(trackID, buffer)
+
 		for {
 			readDeadline := time.Now().Add(w.cfg.PacketReadTimeout)
 			// Ignore error from SetReadDeadline - it comes from pion/packetio
@@ -863,6 +928,12 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 					if procErr == io.EOF {
 						log.WithField("session", w.ctx.Value("session")).
 							Infof("%s track=%s stopped", pub.MimeType(), trackID)
+
+						// No later packet hands out what the jitter buffer holds.
+						if tail := buffer.flush(); len(tail) > 0 {
+							writePackets(tail)
+							w.processPacketStats(trackID, tail)
+						}
 					} else {
 						log.WithField("session", w.ctx.Value("session")).
 							Errorf("Unexpected error handling RTP packet from track %s: %v", trackID, procErr)
@@ -885,57 +956,54 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 				}
 			}
 
-			buffer.Push(packet)
-			packets := buffer.Pop(false)
+			packets := push(packet)
 
 			if len(packets) == 0 {
 				continue
 			}
 
-			recvTs := time.Now()
-
-			for _, p := range packets {
-				switch trackKind {
-				case TrackKindVideo:
-					w.rec.PushVideo(p)
-				case TrackKindAudio:
-					w.rec.PushAudio(p)
-				}
-			}
-
-			w.updateFlowState(trackID, packets[0].SequenceNumber, recvTs)
+			writePackets(packets)
 			w.processPacketStats(trackID, packets)
 		}
 	}()
 }
 
+// packetPusher returns the push the read loop hands trackID's packets to.
+// The flow state follows their arrival, not buffer's release: the SFU stamps
+// the recording's start when the first flowing event reaches it, and buffer
+// can hold a video frame, and the frames behind it, for its whole latency.
+// Padding, which LiveKit sends a Go subscriber's video until its first key
+// frame, is not media arriving, nor is a duplicate.
+func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*rtp.Packet) []*rtp.Packet {
+	var arrived seqWindow
+
+	return func(packet *rtp.Packet) []*rtp.Packet {
+		if len(packet.Payload) > 0 && !arrived.duplicate(packet.SequenceNumber) {
+			w.updateFlowState(trackID, packet.SequenceNumber, time.Now())
+		}
+
+		return buffer.push(packet)
+	}
+}
+
 // addJitterBuffer creates and registers the jitter buffer of trackID. m and
-// a buffer's lock are never held together, and the buffer calls its drop
-// handler with its lock held, so the handler only queues the keyframe
-// request.
+// a buffer's lock are never held together, and the buffer calls its loss
+// handler with its lock held, also on its timer goroutine outside the read
+// loop's recover, so the handler only queues the keyframe request.
 func (w *LiveKitWebRTC) addJitterBuffer(
 	trackID string,
 	depacketizer rtp.Depacketizer,
-	clockRate uint32,
 	latency time.Duration,
 	ssrc uint32,
 	requestKeyframes bool,
-) *jitter.Buffer {
-	buffer := jitter.NewBuffer(
-		depacketizer,
-		clockRate,
-		latency,
-		jitter.WithPacketDroppedHandler(func() {
-			if requestKeyframes {
-				w.queueKeyframeRequest(ssrc, "packet_drop")
-			}
-		}),
-		// TODO: plug logger via jitter.WithLogger(logger)
-	)
+) *trackBuffer {
+	buffer := newTrackBuffer(depacketizer, latency, lossKeyframeInterval, func() {
+		if requestKeyframes {
+			w.queueKeyframeRequest(ssrc, "packet_drop")
+		}
+	})
 
-	w.m.Lock()
-	w.jitterBuffers[trackID] = buffer
-	w.m.Unlock()
+	w.registerTrackBuffer(trackID, requestKeyframes, ssrc, buffer)
 
 	return buffer
 }
