@@ -98,6 +98,9 @@ func (lk *mockLiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, times
 func (lk *mockLiveKitWebRTC) Init() error { return lk.initErr }
 func (lk *mockLiveKitWebRTC) Close() time.Duration {
 	lk.closeOnce.Do(func() {
+		lk.mu.Lock()
+		lk.calls = append(lk.calls, "Close")
+		lk.mu.Unlock()
 		close(lk.closed)
 	})
 	return 0
@@ -856,6 +859,8 @@ func TestStopRecordingStopsConstraintsBeforeStats(t *testing.T) {
 	assert.NoError(t, sess.(*Session).StopRecording(nil, events.StopReasonNormal, time.Time{}))
 	<-lk.closed
 
-	assert.Equal(t, []string{"StopConstraints", "GetStats"}, lk.stopCalls())
+	// Stats are taken after Close, so they include the frames written while
+	// closing.
+	assert.Equal(t, []string{"StopConstraints", "Close", "GetStats"}, lk.stopCalls())
 	assert.NoError(t, server.Close())
 }

@@ -22,6 +22,7 @@ All notable changes to this project will be documented in this file.
 * ci: run the e2e suite with a race-enabled recorder too
 * fix(webm): write the held audio frames when the recorder closes
 * fix(livekit): close the recorder after the track readers end
+* fix(server): take the LiveKit stats after the recorder closes
 
 ### v0.16.0
 

@@ -164,10 +164,9 @@ func TestBaselineRecording(t *testing.T) {
 			assert.LessOrEqual(t, webm.Blocks, out.ReadFrames, "frames written but never read")
 			assert.LessOrEqual(t, out.ReadFrames-webm.Blocks, stopTailFrames, "frames read but not written")
 
-			// Metrics: taken from the session's stats just before the recorder
-			// closes its file, so they may miss only the stop tail.
-			assert.LessOrEqual(t, written, webm.Blocks, "%s %v", metricWrittenSamples, labels)
-			assert.LessOrEqual(t, webm.Blocks-written, stopTailFrames, "%s %v", metricWrittenSamples, labels)
+			// Metrics are taken after the recorder closes its file, so they
+			// must match it.
+			assert.Equal(t, webm.Blocks, written, "%s %v", metricWrittenSamples, labels)
 			assert.Equal(t, out.PLIs["packet_drop"]+out.PLIs["direct_request"], plis, metricPLIRequests)
 		})
 	}

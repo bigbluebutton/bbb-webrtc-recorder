@@ -298,6 +298,10 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 			s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {})
 			s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {})
 			s.livekit.StopConstraints()
+			duration = s.livekit.Close()
+
+			// Take the stats after Close, so they include the frames written
+			// while closing.
 			stats := s.livekit.GetStats()
 			appstats.UpdateCaptureMetrics(stats)
 
@@ -312,8 +316,6 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 					log.WithError(err).Error("Failed to write recording stats")
 				}
 			}
-
-			duration = s.livekit.Close()
 		}
 
 		if s.webrtc != nil {
