@@ -110,6 +110,14 @@ type LiveKitWebRTC struct {
 	traceCaptures       map[string]*trackCapture
 	traceCapturesClosed bool
 
+	// Flow events wait here, in transition order, for dispatchFlowEvents to
+	// deliver them: the callback publishes to Redis, which must not stall the
+	// packet intake that takes m. Guarded by m.
+	flowEvents      []flowEvent
+	flowDispatching bool
+	flowDispatched  chan struct{} // closed when the running dispatcher returns
+	flowStopped     bool
+
 	keyframeRequestChan   chan uint32
 	requestKeyframeCtx    context.Context
 	requestKeyframeCancel context.CancelFunc
@@ -210,6 +218,7 @@ func (w *LiveKitWebRTC) Init() error {
 }
 
 func (w *LiveKitWebRTC) Close() time.Duration {
+	w.stopFlowEvents()
 	w.StopConstraints()
 
 	if w.room != nil {
@@ -731,13 +740,80 @@ func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, recvTs ti
 			}
 		}
 
-		w.flowCallback(state.isFlowing, latestRecvTs.Sub(w.startTs), false)
+		w.queueFlowEvent(flowEvent{isFlowing: state.isFlowing, timestamp: latestRecvTs.Sub(w.startTs)})
 		log.WithField("session", w.ctx.Value("session")).
 			Tracef("Flow state changed for track %s: flowing=%v latestRecvTs=%s",
 				trackID, state.isFlowing, latestRecvTs)
 	}
 
 	return state.isFlowing
+}
+
+type flowEvent struct {
+	isFlowing bool
+	timestamp time.Duration
+	closed    bool
+}
+
+// queueFlowEvent queues e for the flow callback. The caller holds m.
+func (w *LiveKitWebRTC) queueFlowEvent(e flowEvent) {
+	if w.flowStopped {
+		return
+	}
+
+	w.flowEvents = append(w.flowEvents, e)
+
+	if !w.flowDispatching {
+		w.flowDispatching = true
+		w.flowDispatched = make(chan struct{})
+		go w.dispatchFlowEvents(w.flowDispatched)
+	}
+}
+
+// dispatchFlowEvents delivers the queued flow events in order, with m
+// released, and returns once the queue is empty. At most one runs at a time.
+// It reads the callback at delivery, so the no-op a stopping session installs
+// drops what is still queued.
+func (w *LiveKitWebRTC) dispatchFlowEvents(dispatched chan<- struct{}) {
+	defer close(dispatched)
+
+	for {
+		w.m.Lock()
+		if w.flowStopped || len(w.flowEvents) == 0 {
+			w.flowDispatching = false
+			w.m.Unlock()
+
+			return
+		}
+
+		e := w.flowEvents[0]
+		w.flowEvents = w.flowEvents[1:]
+		callback := w.flowCallback
+		w.m.Unlock()
+
+		if callback != nil {
+			callback(e.isFlowing, e.timestamp, e.closed)
+		}
+	}
+}
+
+// stopFlowEvents drops the queued flow events and any queued later, and
+// waits for an event being delivered, so none reaches the session after it
+// returns. The flow callback must not call it: it would wait for itself.
+func (w *LiveKitWebRTC) stopFlowEvents() {
+	w.m.Lock()
+	w.flowStopped = true
+	w.flowEvents = nil
+
+	var dispatched chan struct{}
+	if w.flowDispatching {
+		dispatched = w.flowDispatched
+	}
+	w.m.Unlock()
+
+	if dispatched != nil {
+		<-dispatched
+	}
 }
 
 func jitterLatencyFor(kind TrackKind) time.Duration {
@@ -1337,14 +1413,12 @@ func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 		callback(state)
 	}
 
-	// If this is a terminal state, also notify via flow callback
-	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
-	w.m.Lock()
-	fcb := w.flowCallback
-	w.m.Unlock()
-
-	if state.IsTerminalState() && fcb != nil {
-		fcb(false, time.Since(w.startTs), true)
+	// If this is a terminal state, also notify via flow callback, after the
+	// transitions already queued.
+	if state.IsTerminalState() {
+		w.m.Lock()
+		w.queueFlowEvent(flowEvent{isFlowing: false, timestamp: time.Since(w.startTs), closed: true})
+		w.m.Unlock()
 	}
 }
 

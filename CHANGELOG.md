@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 * ci: run the unit tests with the race detector
 * build: pin golangci-lint and commit its configuration
 * build: add a Makefile
+* fix(livekit): deliver flow events without holding the adapter lock
 
 ### v0.16.0
 
