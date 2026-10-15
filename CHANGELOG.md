@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 * fix(livekit): clear the discont flag of a recycled jitter packet
 * fix(livekit): do not report flowing on LiveKit's padding
 * fix(mediasoup): guard the keyframe request state with the adapter lock
+* fix(server): do not close a session's command channel on stop
 
 ### v0.16.0
 
