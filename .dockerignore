@@ -21,3 +21,9 @@ tools/
 ## Build
 build/
 Makefile
+
+## Agent instructions
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+.claude/
