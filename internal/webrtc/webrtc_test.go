@@ -2,6 +2,7 @@ package webrtc
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
+	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,4 +78,47 @@ func TestTrackPanicFailsSession(t *testing.T) {
 			require.FailNow(t, "the session never reported failed")
 		}
 	}
+}
+
+// The PLI ticker, the recorder's keyframe requests and a second video track's
+// arrival run on different goroutines.
+func TestConcurrentKeyframeRequests(t *testing.T) {
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	require.NoError(t, err)
+	defer func() { _ = pc.Close() }()
+
+	// Every PLI on the unconnected PeerConnection logs an error.
+	level := log.GetLevel()
+	log.SetLevel(log.FatalLevel)
+	t.Cleanup(func() { log.SetLevel(level) })
+
+	w := NewWebRTC(context.Background(), config.WebRTC{}, nil)
+	w.pc = pc
+	w.addVideoTrack(1111)
+
+	var wg sync.WaitGroup
+	for _, run := range []func(){
+		func() {
+			for range 50000 {
+				w.RequestKeyframeForSSRC(1111)
+			}
+		},
+		func() {
+			for range 200 {
+				w.RequestKeyframe()
+			}
+		},
+		func() {
+			for i := range 2000 {
+				w.addVideoTrack(uint32(2000 + i))
+			}
+		},
+	} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			run()
+		}()
+	}
+	wg.Wait()
 }

@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 * feat(livekit): capture each track's reads as a trace
 * fix(livekit): clear the discont flag of a recycled jitter packet
 * fix(livekit): do not report flowing on LiveKit's padding
+* fix(mediasoup): guard the keyframe request state with the adapter lock
 
 ### v0.16.0
 
