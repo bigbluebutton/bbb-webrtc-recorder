@@ -1,0 +1,177 @@
+name: Recorder E2E Tests
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize, opened, reopened]
+
+permissions:
+  contents: read
+
+env:
+  LIVEKIT_VERSION: '1.13.7'
+  # livekit_1.13.7_linux_amd64.tar.gz, as listed in the release's checksums.txt
+  LIVEKIT_SHA256: 6634aeeb2fb1366b6723708ae4320b9d5408106a4c63457c5e845ae3979c90e2
+  GOFLAGS: -mod=readonly
+
+jobs:
+  # The suite builds only with the e2e tag, which the per-push test workflow
+  # does not set, so every pull request vets it here.
+  vet:
+    name: Vet the E2E suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet with the e2e tag
+        run: go vet -tags e2e ./tests/e2e/...
+
+  # Whether a pull request touches the recorder: its code, its dependencies,
+  # the suite or this workflow. A PR's checkout is the merge commit, so its
+  # first parent is the base the PR would land on.
+  changes:
+    name: Detect recorder changes
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      recorder: ${{ steps.diff.outputs.recorder }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: List the changed paths
+        id: diff
+        run: |
+          git diff --name-only HEAD^1 HEAD | tee changed.txt
+          if grep -qE '^(internal/|cmd/|third_party/|tests/e2e/|go\.(mod|sum)$|\.github/workflows/e2e\.yml$)' changed.txt; then
+            echo "recorder=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "recorder=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  e2e:
+    name: Run E2E Tests
+    needs: changes
+    # Nightly and on demand, always. On a PR: when it is opened, pushed to or
+    # reopened, if it touches the recorder or carries the e2e label; on a
+    # labeled event, only when that label is e2e. !cancelled() lets it run
+    # when changes is skipped, as it is outside pull requests and on labeled
+    # events.
+    if: >-
+      !cancelled() && (
+        github.event_name != 'pull_request' ||
+        (github.event.action == 'labeled' && github.event.label.name == 'e2e') ||
+        (github.event.action != 'labeled' &&
+         (needs.changes.outputs.recorder == 'true' ||
+          contains(github.event.pull_request.labels.*.name, 'e2e'))))
+    runs-on: ubuntu-latest
+    # The suite runs for minutes, plus two builds on a cold cache. This limit
+    # and the ones below only stop a hung run; they are not a time budget.
+    timeout-minutes: 30
+    # Here, not on the workflow: a run whose job the if above skips, such as
+    # one for another label, must not cancel the run in progress.
+    concurrency:
+      group: e2e-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      REDIS_SERVER_BIN: /usr/bin/redis-server
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up the environment
+        run: |
+          echo "E2E_ARTIFACTS=$RUNNER_TEMP/e2e-artifacts" >> "$GITHUB_ENV"
+          echo "LIVEKIT_SERVER_BIN=$RUNNER_TEMP/livekit/livekit-server" >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The release tarball is cached by its checksum, so a run does not
+      # depend on GitHub's release download; it is checked either way.
+      - name: Cache the livekit-server release
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/livekit-dl
+          key: livekit-${{ env.LIVEKIT_VERSION }}-${{ env.LIVEKIT_SHA256 }}
+
+      - name: Install livekit-server
+        run: |
+          mkdir -p "$RUNNER_TEMP/livekit" "$RUNNER_TEMP/livekit-dl"
+          tarball="$RUNNER_TEMP/livekit-dl/livekit_${LIVEKIT_VERSION}_linux_amd64.tar.gz"
+          if [ ! -f "$tarball" ]; then
+            curl -fsSL --retry 3 -o "$tarball" \
+              "https://github.com/livekit/livekit/releases/download/v${LIVEKIT_VERSION}/$(basename "$tarball")"
+          fi
+          echo "${LIVEKIT_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" -C "$RUNNER_TEMP/livekit" livekit-server
+          "$LIVEKIT_SERVER_BIN" --version
+
+      - name: Install redis-server
+        id: redis
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends redis-server
+          # The harness starts its own redis-server per test on a free port.
+          sudo systemctl disable --now redis-server
+          "$REDIS_SERVER_BIN" --version
+
+      - name: Run E2E tests
+        run: go test -tags e2e -v -timeout 15m ./tests/e2e/...
+
+      # The NACK scenario builds two network namespaces with a netem qdisc, so
+      # it runs as root:
+      # after the suite even if that failed, not after a failed setup (redis
+      # is the last setup step). Both binaries are built as the runner user
+      # first: root has no Go toolchain on PATH, and its build cache would be
+      # root-owned. The variables go on the command line, where sudo's
+      # env_reset cannot drop them.
+      - name: Run the NACK/RTX scenario as root (netem loss)
+        if: ${{ !cancelled() && steps.redis.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          sudo modprobe sch_netem || {
+            sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)"
+            sudo modprobe sch_netem
+          }
+          bin="$RUNNER_TEMP/e2e-bin"
+          mkdir -p "$bin"
+          go build -o "$bin/bbb-webrtc-recorder" ./cmd/bbb-webrtc-recorder
+          go test -c -tags e2e -o "$bin/e2e.test" ./tests/e2e
+          cd tests/e2e
+          sudo env "PATH=$PATH" "E2E_ARTIFACTS=$E2E_ARTIFACTS" \
+            "LIVEKIT_SERVER_BIN=$LIVEKIT_SERVER_BIN" "REDIS_SERVER_BIN=$REDIS_SERVER_BIN" \
+            E2E_NETEM=1 E2E_NETEM_REQUIRED=1 "E2E_RECORDER_BIN=$bin/bbb-webrtc-recorder" \
+            "$bin/e2e.test" -test.run '^TestNACKRepairUnderLoss$' -test.v -test.timeout 5m
+
+      # A job that hits timeout-minutes ends cancelled, not failed.
+      - name: Make artifacts readable
+        if: failure() || cancelled()
+        run: |
+          if [ -d "$E2E_ARTIFACTS" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "$E2E_ARTIFACTS"
+            chmod -R u+rwX "$E2E_ARTIFACTS"
+          fi
+
+      - name: Upload artifacts
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
