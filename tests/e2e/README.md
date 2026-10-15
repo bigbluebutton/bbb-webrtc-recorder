@@ -227,6 +227,13 @@ two steps:
    installs `linux-modules-extra` for the running kernel if the module is
    missing.
 
+The job runs twice on every trigger, as a matrix: once with the plain
+recorder, and once as `Run E2E Tests (race)` with `E2E_RECORDER_RACE=1`,
+where the NACK step builds its recorder with `-race` too. A race report in
+the recorder's log fails that leg. The race detector does not catch every
+race on every run, so a race-leg failure that passes on a rerun is still a
+race in the recorder, not a flake.
+
 `E2E_ARTIFACTS` points at `$RUNNER_TEMP/e2e-artifacts`, so every test's
 artifacts are kept. When the job fails or is cancelled (as a timeout does),
 it uploads them (14-day retention), after a `chown`, because the NACK

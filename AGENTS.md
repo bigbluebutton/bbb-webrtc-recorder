@@ -43,7 +43,7 @@ Write new tests with testify (`assert`, `require`), not `testing.T.Error/Fatal/F
   - Run: `LIVEKIT_SERVER_BIN=/usr/bin/livekit-server make test-e2e`
   - `TestNACKRepairUnderLoss` needs root and `E2E_NETEM=1`; without sudo, run it inside `unshare --user --map-root-user --net --mount` with a tmpfs over `/run/netns` and `ip link set lo up`.
   - CI (`.github/workflows/e2e.yml`): PRs touching `internal/`, `cmd/`, `third_party/`, `tests/e2e/`, `go.mod`/`go.sum`, or labelled `e2e`.
-  - `E2E_RECORDER_RACE=1` fails every test today, on pre-existing SIGINT shutdown races.
+  - `E2E_RECORDER_RACE=1` builds the recorder with `-race`; a race report in its log fails the test. CI runs the e2e suite with and without it.
 - In-process replay corpus: `internal/webrtc/livekit/testdata/corpus/README.md` covers adding a seed. `go run ./internal/corpus/seedgen` regenerates the traces (`TestCorpusMatchesGenerator` guards drift); `go test ./internal/webrtc/livekit/ -run 'TestReplayTraces$' -v -args -corpus.replay=<abs trace>` replays a capture with no expect file. The timed livekit tests run under `testing/synctest`.
 
 ## Linting
