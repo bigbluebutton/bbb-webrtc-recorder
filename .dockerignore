@@ -13,3 +13,17 @@ Dockerfile
 ## vim
 **/.*.sw[po]
 *~
+
+## Lint
+tools/
+.golangci.yml
+
+## Build
+build/
+Makefile
+
+## Agent instructions
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+.claude/

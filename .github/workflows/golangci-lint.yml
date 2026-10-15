@@ -24,6 +24,7 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           only-new-issues: true
-          version: v2.14
+          # Keep equal to the version in tools/go.mod.
+          version: v2.14.0
           # The end-to-end suite builds only with this tag.
           args: --build-tags=e2e

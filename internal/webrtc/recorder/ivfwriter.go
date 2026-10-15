@@ -9,11 +9,11 @@ import (
 )
 
 type IVFWriter struct {
-	file     *os.File
-	mu       sync.Mutex
-	enabled  bool
-	filePath string
-	closed   bool
+	file       *os.File
+	mu         sync.Mutex
+	enabled    bool
+	filePath   string
+	closed     bool
 	frameCount uint64
 }
 
@@ -61,25 +61,25 @@ func (writer *IVFWriter) writeIVFHeader(width, height uint16) error {
 	defer writer.mu.Unlock()
 
 	header := []byte{
-    // Signature: "DKIF"
-    'D', 'K', 'I', 'F',
-    // Version: 0
-    0, 0,
-    // Header size: 32
-    32, 0,
-    // FourCC: "VP80"
-    'V', 'P', '8', '0',
-    // Width & Height (to be filled in later)
-    0, 0, 0, 0,
-    // Timebase denominator (to be filled in later)
-    0, 0, 0, 0,
-    // Timebase numerator (to be filled in later)
-    0, 0, 0, 0,
-    // Frame count (to be filled in later)
-    0, 0, 0, 0,
-    // Reserved
-    0, 0, 0, 0,
-}
+		// Signature: "DKIF"
+		'D', 'K', 'I', 'F',
+		// Version: 0
+		0, 0,
+		// Header size: 32
+		32, 0,
+		// FourCC: "VP80"
+		'V', 'P', '8', '0',
+		// Width & Height (to be filled in later)
+		0, 0, 0, 0,
+		// Timebase denominator (to be filled in later)
+		0, 0, 0, 0,
+		// Timebase numerator (to be filled in later)
+		0, 0, 0, 0,
+		// Frame count (to be filled in later)
+		0, 0, 0, 0,
+		// Reserved
+		0, 0, 0, 0,
+	}
 
 	binary.LittleEndian.PutUint16(header[12:14], width)
 	binary.LittleEndian.PutUint16(header[14:16], height)
@@ -115,7 +115,6 @@ func (writer *IVFWriter) UpdateDimensions(width, height uint16) error {
 	binary.LittleEndian.PutUint16(buf[0:2], width)
 	binary.LittleEndian.PutUint16(buf[2:4], height)
 	_, err = writer.file.Write(buf)
-
 
 	_, err = writer.file.Seek(0, io.SeekEnd)
 	return err
