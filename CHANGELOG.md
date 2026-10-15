@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 * fix(livekit): deliver flow events without holding the adapter lock
 * fix(app): order the shutdown handler's reads after Run's setup
 * ci: run the e2e suite with a race-enabled recorder too
+* fix(webm): write the held audio frames when the recorder closes
 
 ### v0.16.0
 
