@@ -17,3 +17,7 @@ Dockerfile
 ## Lint
 tools/
 .golangci.yml
+
+## Build
+build/
+Makefile

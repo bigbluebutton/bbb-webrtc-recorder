@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 * fix(server): do not close a session's command channel on stop
 * ci: run the unit tests with the race detector
 * build: pin golangci-lint and commit its configuration
+* build: add a Makefile
 
 ### v0.16.0
 
