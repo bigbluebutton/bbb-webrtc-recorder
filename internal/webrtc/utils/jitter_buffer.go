@@ -2,37 +2,38 @@ package utils
 
 import (
 	"context"
-	"github.com/pion/rtp"
 	"time"
+
+	"github.com/pion/rtp"
 	log "github.com/sirupsen/logrus"
 )
 
 type JitterBuffer struct {
-	nextStart            int64
-	end                  int64
-	packets              []*rtp.Packet
-	size                 int64
-	missingPacketTimers  map[int64]time.Time
-	packetTimeout        time.Duration
-	lastSkippedSeq       int64
-	ctx                  context.Context
+	nextStart           int64
+	end                 int64
+	packets             []*rtp.Packet
+	size                int64
+	missingPacketTimers map[int64]time.Time
+	packetTimeout       time.Duration
+	lastSkippedSeq      int64
+	ctx                 context.Context
 }
 
 func NewJitterBuffer(
-	size          uint16,
+	size uint16,
 	packetTimeout uint16,
-	ctx           context.Context,
+	ctx context.Context,
 ) *JitterBuffer {
 	log.WithField("session", ctx.Value("session")).
 		Tracef("Created jitter buffer: size=%d, packet_timeout=%d", size, packetTimeout)
 
 	return &JitterBuffer{
-		packets: make([]*rtp.Packet, size),
-		size:    int64(size),
+		packets:             make([]*rtp.Packet, size),
+		size:                int64(size),
 		missingPacketTimers: make(map[int64]time.Time),
-		packetTimeout: 			time.Duration(packetTimeout) * time.Millisecond,
-		lastSkippedSeq:     0,
-		ctx: ctx,
+		packetTimeout:       time.Duration(packetTimeout) * time.Millisecond,
+		lastSkippedSeq:      0,
+		ctx:                 ctx,
 	}
 }
 
@@ -133,7 +134,7 @@ func (s *JitterBuffer) NextPackets() ([]*rtp.Packet, bool) {
 			end = i - 1 // missing packet found, return until previous packet
 			log.WithField("session", s.ctx.Value("session")).
 				Debugf("Missing packet in jitter buffer: seq=%d, returning packets %d-%d",
-				i, s.nextStart, end)
+					i, s.nextStart, end)
 			break
 		}
 	}
@@ -154,8 +155,8 @@ func (s *JitterBuffer) SkipPacket(seq int64) {
 	if seq == s.nextStart {
 		log.WithField("session", s.ctx.Value("session")).
 			Debugf("Skipping missing packet in jitter buffer: seq=%d", seq)
-				s.lastSkippedSeq = seq
-				s.SetNextPacketsStart(seq + 1)
+		s.lastSkippedSeq = seq
+		s.SetNextPacketsStart(seq + 1)
 	}
 }
 

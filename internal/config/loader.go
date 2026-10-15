@@ -2,10 +2,11 @@ package config
 
 import (
 	"fmt"
+	"path"
+
 	"github.com/crazy-max/gonfig"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"path"
 )
 
 func (cfg *Config) Load(app App, configFile string) {
