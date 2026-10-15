@@ -2,15 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-### UNRELEASED
+### v0.17.0
 
+* build(livekit): build media-sdk's jitter package from a local copy
 * fix(livekit): drop an expired incomplete frame at its deadline
+* refactor(livekit): run a track's read loop from a method
 * fix(livekit): look up the flow state under the lock on a read error
 * fix(livekit): keep the flow check running while a track is read
 * fix(livekit): write one RTP dump file per track
 * feat(corpus): stream traces and record reader events
 * feat(livekit): capture each track's reads as a trace
 * fix(livekit): clear the discont flag of a recycled jitter packet
+* ci: run the LiveKit end-to-end suite nightly and on recorder PRs
 * fix(livekit): do not report flowing on LiveKit's padding
 * fix(mediasoup): guard the keyframe request state with the adapter lock
 * fix(server): do not close a session's command channel on stop
