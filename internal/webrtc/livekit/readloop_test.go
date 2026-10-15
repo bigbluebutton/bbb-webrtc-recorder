@@ -211,7 +211,10 @@ func (h *loopHarness) run(src trackSource, info trackInfo) {
 	h.w.readTrack(src, info, h.newBuffer(info, nil))
 }
 
+// reported waits for the flow events still being delivered. Call it inside
+// the bubble.
 func (h *loopHarness) reported() (states []utils.ConnectionState, flows []bool) {
+	synctest.Wait()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
