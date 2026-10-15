@@ -13,3 +13,7 @@ Dockerfile
 ## vim
 **/.*.sw[po]
 *~
+
+## Lint
+tools/
+.golangci.yml

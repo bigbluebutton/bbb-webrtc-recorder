@@ -1,0 +1,20 @@
+# golangci-lint v2 configuration. The version is pinned in tools/go.mod and
+# in .github/workflows/golangci-lint.yml; keep the two equal.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - forbidigo
+  settings:
+    forbidigo:
+      forbid:
+        - pattern: ^testing.T.(Error|Errorf|Fatal|Fatalf|Fail|FailNow)$
+          pkg: ^testing$
+          msg: use testify's assert or require instead
+      analyze-types: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
