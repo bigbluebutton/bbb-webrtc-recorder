@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -201,8 +202,7 @@ func (w *WebRTC) Init() (webrtc.SessionDescription, error) {
 				track.SSRC(), track.RID())
 
 		if isVideo {
-			w.videoTrackSSRCs = append(w.videoTrackSSRCs, uint32(track.SSRC()))
-			w.pliStats[uint32(track.SSRC())] = PLITracker{count: 0, timestamp: time.Now()}
+			w.addVideoTrack(uint32(track.SSRC()))
 
 			if kfr, ok := w.rec.(interface {
 				SetKeyframeRequester(recorder.KeyframeRequester)
@@ -533,13 +533,28 @@ func (w *WebRTC) Init() (webrtc.SessionDescription, error) {
 	return *peerConnection.LocalDescription(), nil
 }
 
+// The PLI ticker, the recorder and OnTrack reach the SSRCs and pliStats from
+// different goroutines, and a concurrent map write aborts the process. The
+// recorder requests keyframes under its own lock, so call nothing holding m.
+func (w *WebRTC) addVideoTrack(ssrc uint32) {
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	w.videoTrackSSRCs = append(w.videoTrackSSRCs, ssrc)
+	w.pliStats[ssrc] = PLITracker{count: 0, timestamp: time.Now()}
+}
+
 func (w *WebRTC) RequestKeyframe() {
-	for _, ssrc := range w.videoTrackSSRCs {
+	w.m.Lock()
+	ssrcs := slices.Clone(w.videoTrackSSRCs)
+	w.m.Unlock()
+
+	for _, ssrc := range ssrcs {
 		w.RequestKeyframeForSSRC(ssrc)
 	}
 }
 
-func (w WebRTC) RequestKeyframeForSSRC(ssrc uint32) {
+func (w *WebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 	err := w.pc.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: ssrc}})
 
 	if err != nil {
@@ -547,16 +562,18 @@ func (w WebRTC) RequestKeyframeForSSRC(ssrc uint32) {
 			Error(err)
 	}
 
-	if _, exists := w.pliStats[ssrc]; !exists {
-		w.pliStats[ssrc] = PLITracker{count: 0, timestamp: time.Now()}
-	}
-
-	newCount := w.pliStats[ssrc].count + 1
+	w.m.Lock()
 	now := time.Now()
+	last, ok := w.pliStats[ssrc]
+	if !ok {
+		last.timestamp = now
+	}
+	w.pliStats[ssrc] = PLITracker{count: last.count + 1, timestamp: now}
+	w.m.Unlock()
+
 	log.WithField("session", w.ctx.Value("session")).
 		Tracef("Sending PLI #%d for SSRC %d (sinceLast=%s)",
-			newCount, ssrc, now.Sub(w.pliStats[ssrc].timestamp))
-	w.pliStats[ssrc] = PLITracker{count: w.pliStats[ssrc].count + 1, timestamp: time.Now()}
+			last.count+1, ssrc, now.Sub(last.timestamp))
 }
 
 func (w *WebRTC) Close() time.Duration {
