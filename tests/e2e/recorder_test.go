@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -116,9 +117,7 @@ func (r *Recorder) start(t *testing.T, dir string, cfg map[string]any, d *Driver
 		}
 
 		if out, err := os.ReadFile(logPath); err == nil {
-			if n := bytes.Count(out, []byte("WARNING: DATA RACE")); n > 0 {
-				t.Errorf("recorder: %d data race reports in %s", n, logPath)
-			}
+			assert.Zero(t, bytes.Count(out, []byte("WARNING: DATA RACE")), "recorder: data race reports in %s", logPath)
 		}
 	})
 
