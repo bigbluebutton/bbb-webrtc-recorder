@@ -21,6 +21,7 @@ All notable changes to this project will be documented in this file.
 * fix(app): order the shutdown handler's reads after Run's setup
 * ci: run the e2e suite with a race-enabled recorder too
 * fix(webm): write the held audio frames when the recorder closes
+* fix(livekit): close the recorder after the track readers end
 
 ### v0.16.0
 

@@ -36,9 +36,9 @@ func TestBaselineRecording(t *testing.T) {
 		// LiveKit's PLI and the publisher's next frame. 1 s leaves room for a
 		// slow runner.
 		startupAllowance = time.Second
-		// Frames read but not written at stop: the one whose packets the read
-		// loop holds when the room closes, plus one partly read.
-		stopTailFrames = 2
+		// Frames read but not written at stop: at most the one that was only
+		// partly received when the room closed.
+		stopTailFrames = 1
 	)
 
 	s := NewStack(t, StackOptions{})

@@ -63,6 +63,11 @@ const (
 	// until it forwards a key frame. Must stay below videoJitterLatency: the
 	// key frame the last request brings then follows every loss it suppresses.
 	lossKeyframeInterval = time.Second
+	// Track readers end when lksdk closes the subscriber peer connection,
+	// while the read deadline alone does not end them. This may cause a close
+	// call while, e.g., the peer is reconnecting to take way longer than we
+	// want. This timeout constrains that wait.
+	readersCloseTimeout = 2 * time.Second
 )
 
 type MimeType string
@@ -122,6 +127,12 @@ type LiveKitWebRTC struct {
 	requestKeyframeCtx    context.Context
 	requestKeyframeCancel context.CancelFunc
 	requestKeyframeWg     sync.WaitGroup
+
+	// The track readers. Close waits for them so the frames they still hold
+	// reach the recorder before it closes. Readers started after Close began
+	// waiting (readersClosed, guarded by m) are not tracked.
+	readers       sync.WaitGroup
+	readersClosed bool
 
 	pendingSubscriptions map[string]time.Time
 
@@ -230,6 +241,7 @@ func (w *LiveKitWebRTC) Close() time.Duration {
 	}
 
 	w.requestKeyframeWg.Wait()
+	w.waitForReaders()
 
 	w.m.Lock()
 	for trackID := range w.rtpWriters {
@@ -914,7 +926,44 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 
 	appstats.OnTrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
 
-	go w.readTrack(track, info, buffer)
+	w.startReader(track, info, buffer)
+}
+
+// waitForReaders waits up to readersCloseTimeout for the track readers to end.
+func (w *LiveKitWebRTC) waitForReaders() {
+	w.m.Lock()
+	w.readersClosed = true
+	w.m.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		w.readers.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(readersCloseTimeout):
+		log.WithField("session", w.ctx.Value("session")).
+			Warnf("Track readers still running %s after the room disconnected", readersCloseTimeout)
+	}
+}
+
+func (w *LiveKitWebRTC) startReader(src trackSource, info trackInfo, buffer *trackBuffer) {
+	w.m.Lock()
+	tracked := !w.readersClosed
+	if tracked {
+		w.readers.Add(1)
+	}
+	w.m.Unlock()
+
+	go func() {
+		if tracked {
+			defer w.readers.Done()
+		}
+
+		w.readTrack(src, info, buffer)
+	}()
 }
 
 // prepareTrack is onTrackSubscribed's setup of a registered track for
