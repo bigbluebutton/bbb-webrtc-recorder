@@ -1093,12 +1093,13 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 // the recording's start when the first flowing event reaches it, and buffer
 // can hold a video frame, and the frames behind it, for its whole latency.
 // Padding, which LiveKit sends a Go subscriber's video until its first key
-// frame, is not media arriving, nor is a duplicate.
+// frame, is not media arriving, nor is a duplicate. LiveKit 1.13.5 to 1.13.9
+// give that padding a 255-byte payload, so only its padding bit tells it apart.
 func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*rtp.Packet) []*rtp.Packet {
 	var arrived seqWindow
 
 	return func(packet *rtp.Packet) []*rtp.Packet {
-		if len(packet.Payload) > 0 && !arrived.duplicate(packet.SequenceNumber) {
+		if !packet.Padding && len(packet.Payload) > 0 && !arrived.duplicate(packet.SequenceNumber) {
 			w.updateFlowState(trackID, packet.SequenceNumber, time.Now())
 		}
 

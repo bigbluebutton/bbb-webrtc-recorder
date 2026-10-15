@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 * feat(corpus): stream traces and record reader events
 * feat(livekit): capture each track's reads as a trace
 * fix(livekit): clear the discont flag of a recycled jitter packet
+* fix(livekit): do not report flowing on LiveKit's padding
 
 ### v0.16.0
 

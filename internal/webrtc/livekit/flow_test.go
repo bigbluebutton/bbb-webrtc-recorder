@@ -47,7 +47,8 @@ func TestFirstFlowingFollowsArrival(t *testing.T) {
 
 				seq := uint16(1000)
 				for range 3 {
-					push(&rtp.Packet{Header: rtp.Header{SequenceNumber: seq, Padding: true}})
+					// LiveKit's padding-on-mute as pion reads it; see packetPusher.
+					push(&rtp.Packet{Header: rtp.Header{SequenceNumber: seq, Padding: true, PaddingSize: 255}, Payload: make([]byte, 255)})
 					seq++
 					time.Sleep(100 * time.Millisecond)
 				}
