@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +38,11 @@ var (
 	sv  *server.Server
 	dp  *diskpressure.Monitor
 )
+
+// lifecycleMu orders Run's assignments of ps, sv and dp, made on the main
+// goroutine, before shutdown's reads of them on the SIGINT handler's goroutine.
+// What their Close and Stop read must be set before the assignment.
+var lifecycleMu sync.Mutex
 
 func init() {
 	app.Name = internal.AppName
@@ -89,7 +95,10 @@ func Run() {
 		appstats.ServePromMetrics(cfg.Prometheus)
 	}
 
-	ps = pubsub.NewPubSub(cfg.PubSub)
+	pubSub := pubsub.NewPubSub(cfg.PubSub)
+	lifecycleMu.Lock()
+	ps = pubSub
+	lifecycleMu.Unlock()
 
 	if err := ps.Check(); err != nil {
 		log.Fatalf("failed to connect to pubsub: %v", err)
@@ -141,7 +150,10 @@ func Run() {
 		hs.Serve()
 	}
 
-	sv = server.NewServer(cfg, ps)
+	srv := server.NewServer(cfg, ps)
+	lifecycleMu.Lock()
+	sv = srv
+	lifecycleMu.Unlock()
 	startDiskPressureGuard()
 
 	if err := ps.Subscribe(cfg.PubSub.Channels.Subscribe, sv.HandlePubSubMsg, sv.OnStart); err != nil {
@@ -191,22 +203,28 @@ func startDiskPressureGuard() {
 		}
 	})
 	monitor.Start()
+	lifecycleMu.Lock()
 	dp = monitor
+	lifecycleMu.Unlock()
 }
 
 func shutdown(code int) {
-	if dp != nil {
-		dp.Stop()
+	lifecycleMu.Lock()
+	monitor, pubSub, srv := dp, ps, sv
+	lifecycleMu.Unlock()
+
+	if monitor != nil {
+		monitor.Stop()
 	}
 
-	if ps != nil {
-		if err := ps.Close(); err != nil {
+	if pubSub != nil {
+		if err := pubSub.Close(); err != nil {
 			log.Errorf("failed to close pubsub: %s", err)
 		}
 	}
 
-	if sv != nil {
-		if err := sv.Close(); err != nil {
+	if srv != nil {
+		if err := srv.Close(); err != nil {
 			log.Errorf("failed to close server: %s", err)
 		}
 	}
