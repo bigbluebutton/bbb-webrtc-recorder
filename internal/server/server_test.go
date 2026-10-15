@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -20,9 +21,11 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	livekitproto "github.com/livekit/protocol/livekit"
 	"github.com/pion/rtp"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Mock PubSub
@@ -71,6 +74,7 @@ var _ recorder.Recorder = (*mockRecorder)(nil)
 type mockLiveKitWebRTC struct {
 	closeOnce sync.Once
 	closed    chan struct{}
+	initErr   error
 
 	// block, when set, stalls ApplyConstraint and LiftConstraint like a
 	// signal socket that stopped draining; entered receives each stalled call.
@@ -91,7 +95,7 @@ func (lk *mockLiveKitWebRTC) SetConnectionStateCallback(callback func(state util
 }
 func (lk *mockLiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
 }
-func (lk *mockLiveKitWebRTC) Init() error { return nil }
+func (lk *mockLiveKitWebRTC) Init() error { return lk.initErr }
 func (lk *mockLiveKitWebRTC) Close() time.Duration {
 	lk.closeOnce.Do(func() {
 		close(lk.closed)
@@ -219,8 +223,8 @@ func TestDoubleStopSession(t *testing.T) {
 
 	assert.NoError(t, err1, "First stop should not produce an error")
 
-	// Wait for the session's Run goroutine to fully terminate
-	<-lk.closed
+	// done, not lk.closed: the adapter closes before the stop finishes.
+	<-sess.done
 
 	// 3. Stop the session for the second time and assert it doesn't panic
 	t.Run("double_stop_no_panic", func(t *testing.T) {
@@ -233,8 +237,16 @@ func TestDoubleStopSession(t *testing.T) {
 			}
 		}()
 
+		panics := appstats.SessionErrors.WithLabelValues("panic in stop command")
+		before := testutil.ToFloat64(panics)
 		err2 = sess.StopRecording(stopEvent2, events.StopReasonNormal, time.Time{})
 		assert.NoError(t, err2, "Second stop should not produce an error")
+		assert.Zero(t, testutil.ToFloat64(panics)-before, "a stop after the end is no session error")
+		assert.Empty(t, sess.commands, "a stop after the end is not queued")
+	})
+
+	t.Run("start_after_stop_fails", func(t *testing.T) {
+		assert.Error(t, sess.StartRecording(startEvent, time.Time{}))
 	})
 
 	server.shutdownWg.Wait()
@@ -320,6 +332,69 @@ func TestStartRecordingFailureDoesNotPublishStopEvent(t *testing.T) {
 		t.Fatalf("Received an unexpected second message on pubsub channel: %s", string(unexpectedBytes))
 	case <-time.After(100 * time.Millisecond):
 		// This is the expected outcome: the channel is empty.
+	}
+}
+
+func TestInitFailureEndsRun(t *testing.T) {
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+	lk := &mockLiveKitWebRTC{closed: make(chan struct{}), initErr: errors.New("init failed")}
+	sess := NewSession("test-init-fail", server, (*webrtc.WebRTC)(nil), lk, &mockRecorder{})
+	server.runSession(sess)
+
+	start := &events.StartRecording{SessionId: "test-init-fail"}
+	assert.NoError(t, sess.StartRecording(start, time.Time{}))
+	assert.True(t, within(time.Second, server.shutdownWg.Wait), "Run returns after a failed init")
+
+	assert.NoError(t, sess.StopRecording(nil, events.StopReasonNormal, time.Time{}))
+	assert.Empty(t, sess.commands, "a stop after the end is not queued")
+	assert.Error(t, sess.StartRecording(start, time.Time{}))
+	assert.True(t, within(time.Second, func() { assert.NoError(t, server.Close()) }))
+	assert.Equal(t, []string{"startRecordingResponse"}, publishedIDs(ps), "a session that never started publishes no stop")
+}
+
+func TestConcurrentStopsPublishOneStopEvent(t *testing.T) {
+	for range 50 {
+		ps := &mockPubSub{publishChan: make(chan []byte, 64)}
+		server := NewServer(&config.Config{}, ps)
+		lk := &mockLiveKitWebRTC{closed: make(chan struct{})}
+		sess := NewSession("test-concurrent-stop", server, (*webrtc.WebRTC)(nil), lk, &mockRecorder{})
+		server.runSession(sess)
+		require.NoError(t, sess.StartRecording(&events.StartRecording{SessionId: "test-concurrent-stop", Adapter: "livekit"}, time.Time{}))
+
+		// As the connection-state and flow callbacks and the server can.
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Go(func() { _ = sess.StopRecording(nil, events.StopReasonNormal, time.Time{}) })
+		}
+		wg.Wait()
+		require.True(t, within(time.Second, server.shutdownWg.Wait), "Run returns after the stop")
+		require.NoError(t, sess.StopRecording(nil, events.StopReasonNormal, time.Time{}))
+
+		stops := 0
+		for _, id := range publishedIDs(ps) {
+			if id == "recordingStopped" {
+				stops++
+			}
+		}
+		require.Equal(t, 1, stops, "recordingStopped events")
+	}
+}
+
+// publishedIDs drains what ps has published so far and returns the event ids.
+func publishedIDs(ps *mockPubSub) []string {
+	var ids []string
+	for {
+		select {
+		case msg := <-ps.publishChan:
+			var e struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal(msg, &e)
+			ids = append(ids, e.ID)
+		default:
+			return ids
+		}
 	}
 }
 

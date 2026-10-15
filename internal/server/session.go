@@ -51,6 +51,7 @@ type Session struct {
 	stopped             bool
 	stoppedOnce         sync.Once
 	commands            chan interface{}
+	done                chan struct{}
 	statsWriter         *appstats.StatsFileWriter
 	startedSuccessfully bool
 
@@ -77,6 +78,7 @@ func NewSession(
 		recorder: recorder,
 		cfg:      s.cfg,
 		commands: make(chan interface{}, 10),
+		done:     make(chan struct{}),
 	}
 
 	if s.cfg.Recorder.WriteStatsFile {
@@ -96,16 +98,10 @@ func NewSession(
 	return sess
 }
 
-func (s *Session) StartRecording(e *events.StartRecording, startTime time.Time) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			// A panic here likely means the channel has been closed, which indicates
-			// the session is already stopped or in the process of stopping. Start
-			// should always fail when facing an error condition (differently from stop).
-			log.WithField("session", s.id).Errorf("recovered from panic in start command: %v", r)
-			err = errors.New("failed to start session, panic")
-		}
-	}()
+func (s *Session) StartRecording(e *events.StartRecording, startTime time.Time) error {
+	if s.isDone() {
+		return errors.New("session already stopped")
+	}
 
 	select {
 	case s.commands <- startRecordingCommand{event: e, startTime: startTime}:
@@ -116,18 +112,11 @@ func (s *Session) StartRecording(e *events.StartRecording, startTime time.Time) 
 	}
 }
 
-func (s *Session) StopRecording(e *events.StopRecording, reason string, startTime time.Time) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			// A panic here likely means the channel has been closed, which indicates
-			// the session is already stopped or in the process of stopping.
-			// Stop should fail silently to API consumers. This is our job to get right.
-			// Log and register metrics as panics should not happen and should be investigated.
-			log.WithField("session", s.id).Errorf("recovered from panic in stop command: %v", r)
-			appstats.OnSessionError("panic in stop command")
-			err = nil
-		}
-	}()
+func (s *Session) StopRecording(e *events.StopRecording, reason string, startTime time.Time) error {
+	// A session that stopped has nothing left to stop.
+	if s.isDone() {
+		return nil
+	}
 
 	select {
 	case s.commands <- stopRecordingCommand{event: e, reason: reason, startTime: startTime}:
@@ -135,6 +124,15 @@ func (s *Session) StopRecording(e *events.StopRecording, reason string, startTim
 
 	default:
 		return errors.New("session command queue is full")
+	}
+}
+
+func (s *Session) isDone() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -169,7 +167,21 @@ func (s *Session) Run(wg *sync.WaitGroup) {
 	appstats.Sessions.Inc()
 	defer appstats.Sessions.Dec()
 
-	for cmd := range s.commands {
+	// A failed start stops the session from inside handleStartRecording, so
+	// done, not the stop command, is what ends the loop. select picks at random
+	// when both are ready, hence the second check.
+	for {
+		var cmd interface{}
+		select {
+		case <-s.done:
+			return
+		case cmd = <-s.commands:
+		}
+
+		if s.isDone() {
+			return
+		}
+
 		switch c := cmd.(type) {
 		case startRecordingCommand:
 			s.handleStartRecording(c)
@@ -332,7 +344,8 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 		}
 
 		s.server.CloseSession(s.id)
-		close(s.commands)
+		// commands stays open: callbacks and the server may still send on it.
+		close(s.done)
 	})
 }
 
