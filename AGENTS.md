@@ -129,6 +129,8 @@ for humans as well.
 Be succinct; a body too long usually means the commit should be split or that
 the log should be reworded or summarized further.
 
+Write commit bodies and comments as described in "Writing style" below.
+
 Leave out anything transient that a reader of the final tree cannot identify:
 - how the defect was discovered ("found while auditing X", "reported from a deployment");
 - What the code looked like mid-session
@@ -144,3 +146,22 @@ wrong until you know the constraint deserves a comment; the rest does not.
 
 Same exclusions as commit bodies: no incident narrative, no "this used to be", no explanation of a state that no
 longer exists in the tree. Do not state the same fact in two comments.
+
+## Writing style
+
+Commit messages and comments are read once, by someone new to the code. Write for that reader:
+- Plain words. Use the code's own names and common Go/WebRTC terms; do not coin phrases
+  ("unrepaired loss", "the bound", "hands the frames to", "a subscription lands").
+- Short sentences, one idea each. Say what happens, then why it matters.
+- A sentence that needs a second read gets rewritten, even if it is accurate.
+
+Example, a comment on a timeout:
+
+```
+Bad:  Readers end when lksdk closes the subscriber peer connection, which Disconnect starts
+      in the background; a read deadline does not end them. A stop during a signal recovery
+      waits the whole bound, since lksdk holds that close until the recovery ends.
+Good: Track readers end when lksdk closes the subscriber peer connection; the read deadline
+      alone does not end them. Close can take much longer while, e.g., the peer is
+      reconnecting. This timeout limits that wait.
+```
