@@ -34,7 +34,7 @@ func TestCorpusMatchesGenerator(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, want.Header, got.Header, "%s: header", name)
 		if i := firstDiff(want.Records, got.Records); i >= 0 {
-			t.Errorf("%s: records differ from index %d of %d committed, %d generated; regenerate with go run ./internal/corpus/seedgen",
+			assert.Failf(t, "corpus drift", "%s: records differ from index %d of %d committed, %d generated; regenerate with go run ./internal/corpus/seedgen",
 				name, i, len(want.Records), len(got.Records))
 		}
 	}
