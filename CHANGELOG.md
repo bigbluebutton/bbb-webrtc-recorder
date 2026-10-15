@@ -19,6 +19,7 @@ All notable changes to this project will be documented in this file.
 * build: add a Makefile
 * fix(livekit): deliver flow events without holding the adapter lock
 * fix(app): order the shutdown handler's reads after Run's setup
+* ci: run the e2e suite with a race-enabled recorder too
 
 ### v0.16.0
 

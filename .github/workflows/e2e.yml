@@ -62,7 +62,7 @@ jobs:
           fi
 
   e2e:
-    name: Run E2E Tests
+    name: Run E2E Tests${{ matrix.race == '1' && ' (race)' || '' }}
     needs: changes
     # Nightly and on demand, always. On a PR: when it is opened, pushed to or
     # reopened, if it touches the recorder or carries the e2e label; on a
@@ -77,16 +77,23 @@ jobs:
          (needs.changes.outputs.recorder == 'true' ||
           contains(github.event.pull_request.labels.*.name, 'e2e'))))
     runs-on: ubuntu-latest
+    # Every run tests the plain recorder and a race-enabled one, whose log
+    # fails the test on a race report.
+    strategy:
+      fail-fast: false
+      matrix:
+        race: ['0', '1']
     # The suite runs for minutes, plus two builds on a cold cache. This limit
     # and the ones below only stop a hung run; they are not a time budget.
     timeout-minutes: 30
     # Here, not on the workflow: a run whose job the if above skips, such as
     # one for another label, must not cancel the run in progress.
     concurrency:
-      group: e2e-${{ github.event.pull_request.number || github.ref }}
+      group: e2e-${{ github.event.pull_request.number || github.ref }}-${{ matrix.race }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       REDIS_SERVER_BIN: /usr/bin/redis-server
+      E2E_RECORDER_RACE: ${{ matrix.race }}
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -150,7 +157,9 @@ jobs:
           }
           bin="$RUNNER_TEMP/e2e-bin"
           mkdir -p "$bin"
-          go build -o "$bin/bbb-webrtc-recorder" ./cmd/bbb-webrtc-recorder
+          race=
+          if [ "$E2E_RECORDER_RACE" = 1 ]; then race=-race; fi
+          go build $race -o "$bin/bbb-webrtc-recorder" ./cmd/bbb-webrtc-recorder
           go test -c -tags e2e -o "$bin/e2e.test" ./tests/e2e
           cd tests/e2e
           sudo env "PATH=$PATH" "E2E_ARTIFACTS=$E2E_ARTIFACTS" \
@@ -171,7 +180,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          name: e2e-artifacts-${{ matrix.race == '1' && 'race-' || '' }}${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/e2e-artifacts
           if-no-files-found: ignore
           retention-days: 14
