@@ -394,3 +394,102 @@ func TestReadTrackFlowCheckMarksStall(t *testing.T) {
 		assert.Equal(t, []bool{true, false, true}, flows)
 	})
 }
+
+// closeOrderRecorder records the audio sequence numbers pushed before and
+// after Close.
+type closeOrderRecorder struct {
+	*mockRecorder
+
+	mu     sync.Mutex
+	closed bool
+	pushed []uint16 // pushed before Close
+	late   []uint16 // pushed after Close
+}
+
+func (r *closeOrderRecorder) PushAudio(p *rtp.Packet) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed {
+		r.late = append(r.late, p.SequenceNumber)
+	} else {
+		r.pushed = append(r.pushed, p.SequenceNumber)
+	}
+}
+
+func (r *closeOrderRecorder) Close() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.closed = true
+
+	return 0
+}
+
+// endAt returns a read that ends the track (io.EOF) at offset at.
+func endAt(at time.Duration) []trackRead {
+	return []trackRead{{at: at, err: io.EOF}}
+}
+
+// After a packet loss, the jitter buffer releases the frames that follow only
+// when the next packet arrives or the track ends. If the source is quiet, only
+// the track's end delivers them, so Close must wait for the reader before it
+// closes the recorder.
+func TestCloseWaitsForTheTracksLastFrames(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rec := &closeOrderRecorder{mockRecorder: &mockRecorder{}}
+		h := newLoopHarness(rec, audioInfo.id)
+
+		// Seq 105 is lost.
+		src := newFakeTrack(audioReads(0, 100, 5), audioReads(120*time.Millisecond, 106, 10), endAt(700*time.Millisecond))
+
+		h.w.startReader(src, audioInfo, h.newBuffer(audioInfo, nil))
+		time.Sleep(600 * time.Millisecond) // the source is quiet, the gap expired
+		h.w.Close()
+		time.Sleep(200 * time.Millisecond) // past the track's end
+		synctest.Wait()
+
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		assert.Len(t, rec.pushed, 15, "frames the recorder got before it closed")
+		assert.Empty(t, rec.late, "frames that reached the recorder after it closed")
+	})
+}
+
+// Close must not wait forever for a reader that never ends.
+func TestCloseDoesNotWaitForAStuckReader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rec := &closeOrderRecorder{mockRecorder: &mockRecorder{}}
+		h := newLoopHarness(rec, audioInfo.id)
+		src := newFakeTrack(endAt(time.Minute))
+
+		h.w.startReader(src, audioInfo, h.newBuffer(audioInfo, nil))
+		start := time.Now()
+		h.w.Close()
+		assert.Equal(t, readersCloseTimeout, time.Since(start))
+
+		time.Sleep(time.Minute) // let the reader end inside the bubble
+		synctest.Wait()
+	})
+}
+
+// A track subscribed after Close stopped waiting must not be added to the
+// readers WaitGroup: that Add races with the abandoned Wait, which -race
+// reports. The first reader must outlive the timeout for the race to show.
+func TestReaderStartedAfterCloseIsNotWaitedFor(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newLoopHarness(&closeOrderRecorder{mockRecorder: &mockRecorder{}}, audioInfo.id)
+		src := newFakeTrack(endAt(readersCloseTimeout + time.Second))
+		h.w.startReader(src, audioInfo, h.newBuffer(audioInfo, nil))
+
+		lateBuffer := h.newBuffer(audioInfo, nil)
+		go func() {
+			time.Sleep(readersCloseTimeout + 2*time.Second) // the first reader has ended
+			h.w.startReader(newFakeTrack(endAt(10*time.Millisecond)), audioInfo, lateBuffer)
+		}()
+
+		h.w.Close()
+		time.Sleep(time.Minute) // let both readers end inside the bubble
+		synctest.Wait()
+	})
+}

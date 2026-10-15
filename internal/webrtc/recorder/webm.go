@@ -304,6 +304,19 @@ func (r *WebmRecorder) close() time.Duration {
 	}
 	r.closed = true
 
+	// Write the audio frames still held in the samplebuilder, e.g. after a
+	// packet loss: no newer packets will come to release them.
+	if r.hasAudio {
+		for {
+			sample, _ := r.audioBuilder.ForcePopWithTimestamp()
+			if sample == nil {
+				break
+			}
+
+			r.writeAudioFrame(sample.Data, sample.Duration)
+		}
+	}
+
 	if r.audioWriter != nil {
 		if err := r.audioWriter.Close(); err != nil {
 			panic(err)
@@ -542,46 +555,51 @@ func (r *WebmRecorder) pushOpus(op *rtp.Packet) {
 			return
 		}
 
-		// Initialize writer here only if we have audio and no video
-		// Otherwise, we'll initialize it in pushVP8
-		if r.audioWriter == nil && r.hasAudio && !r.hasVideo {
-			r.initWriter(0, 0)
+		r.writeAudioFrame(sample.Data, sample.Duration)
+	}
+}
+
+// Locked. writeAudioFrame writes one Opus frame; duration is the time since
+// the previous one.
+func (r *WebmRecorder) writeAudioFrame(data []byte, duration time.Duration) {
+	// Initialize writer here only if we have audio and no video
+	// Otherwise, we'll initialize it in pushVP8
+	if r.audioWriter == nil && r.hasAudio && !r.hasVideo {
+		r.initWriter(0, 0)
+	}
+
+	if r.audioWriter != nil {
+		r.trackSampleStats(&r.stats.Audio.BaseTrackStats, duration)
+		r.audioTimestamp += duration
+		pts := int64(r.audioTimestamp / time.Millisecond)
+
+		// LiveKit's blank frames at downtrack close can carry the previous
+		// frame's RTP timestamp plus one tick: same ms, overlapping audio.
+		if r.stats.Audio.WrittenSamples > 0 && pts <= r.lastAudioPTS {
+			log.WithField("session", r.ctx.Value("session")).
+				WithField("duration", duration).
+				WithField("timestamp", r.audioTimestamp).
+				Debug("Skipping audio frame that does not advance the timestamp")
+
+			return
 		}
 
-		if r.audioWriter != nil {
-			duration := sample.Duration
-			r.trackSampleStats(&r.stats.Audio.BaseTrackStats, duration)
-			r.audioTimestamp += duration
-			pts := int64(r.audioTimestamp / time.Millisecond)
-
-			// LiveKit's blank frames at downtrack close can carry the previous
-			// frame's RTP timestamp plus one tick: same ms, overlapping audio.
-			if r.stats.Audio.WrittenSamples > 0 && pts <= r.lastAudioPTS {
-				log.WithField("session", r.ctx.Value("session")).
-					WithField("duration", duration).
-					WithField("timestamp", r.audioTimestamp).
-					Debug("Skipping audio frame that does not advance the timestamp")
-
-				continue
-			}
-
-			if _, err := r.audioWriter.Write(true, pts, sample.Data); err != nil {
-				log.WithField("session", r.ctx.Value("session")).
-					WithField("error", err).
-					WithField("duration", duration).
-					WithField("timestamp", r.audioTimestamp).
-					Error("Error writing audio frame")
-				r.hasValidAudio = false
-			} else {
-				r.stats.Audio.WrittenSamples++
-				r.lastAudioPTS = pts
-				r.hasValidAudio = true
-				log.WithField("session", r.ctx.Value("session")).
-					WithField("duration", duration).
-					WithField("timestamp", r.audioTimestamp).
-					WithField("size", len(sample.Data)).
-					Trace("Audio frame written")
-			}
+		if _, err := r.audioWriter.Write(true, pts, data); err != nil {
+			log.WithField("session", r.ctx.Value("session")).
+				WithField("error", err).
+				WithField("duration", duration).
+				WithField("timestamp", r.audioTimestamp).
+				Error("Error writing audio frame")
+			r.hasValidAudio = false
+		} else {
+			r.stats.Audio.WrittenSamples++
+			r.lastAudioPTS = pts
+			r.hasValidAudio = true
+			log.WithField("session", r.ctx.Value("session")).
+				WithField("duration", duration).
+				WithField("timestamp", r.audioTimestamp).
+				WithField("size", len(data)).
+				Trace("Audio frame written")
 		}
 	}
 }

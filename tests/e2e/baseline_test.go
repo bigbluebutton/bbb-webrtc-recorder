@@ -36,9 +36,9 @@ func TestBaselineRecording(t *testing.T) {
 		// LiveKit's PLI and the publisher's next frame. 1 s leaves room for a
 		// slow runner.
 		startupAllowance = time.Second
-		// Frames read but not written at stop: the one whose packets the read
-		// loop holds when the room closes, plus one partly read.
-		stopTailFrames = 2
+		// Frames read but not written at stop: at most the one that was only
+		// partly received when the room closed.
+		stopTailFrames = 1
 	)
 
 	s := NewStack(t, StackOptions{})
@@ -164,10 +164,9 @@ func TestBaselineRecording(t *testing.T) {
 			assert.LessOrEqual(t, webm.Blocks, out.ReadFrames, "frames written but never read")
 			assert.LessOrEqual(t, out.ReadFrames-webm.Blocks, stopTailFrames, "frames read but not written")
 
-			// Metrics: taken from the session's stats just before the recorder
-			// closes its file, so they may miss only the stop tail.
-			assert.LessOrEqual(t, written, webm.Blocks, "%s %v", metricWrittenSamples, labels)
-			assert.LessOrEqual(t, webm.Blocks-written, stopTailFrames, "%s %v", metricWrittenSamples, labels)
+			// Metrics are taken after the recorder closes its file, so they
+			// must match it.
+			assert.Equal(t, webm.Blocks, written, "%s %v", metricWrittenSamples, labels)
 			assert.Equal(t, out.PLIs["packet_drop"]+out.PLIs["direct_request"], plis, metricPLIRequests)
 		})
 	}
