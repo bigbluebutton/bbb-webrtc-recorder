@@ -40,6 +40,7 @@ recorder's trace, the `recordingStopped` events and the `/metrics` deltas.
 | `TestNACKRepairControl`, `TestNetemPlan` | The NACK scenario's stack and checks without the namespaces or the loss, with loopback addresses standing in for the links, and the namespace plan and config edits. Both run unprivileged. The control cannot show that ICE uses the link between the namespaces; only the NACK scenario can. |
 | `TestSignalCutResumesInPlace` | **Signal cut.** A TCP proxy resets the recorder's signalling connections and lets the redial through. Each session resumes in place, in its one file. |
 | `TestSignalRefusedSplitsFile` | **Signal refused.** The proxy also refuses redials for 5 s. The SDK falls back to a full reconnect and every session stops as `closed`. The test retries as the SFU does, so each session ends with two files. This pins today's behaviour; it is not a target. |
+| `TestShutdownSignalClosesRecordings` | **Shutdown signal.** A camera records for 3 s, then the recorder gets SIGINT, and in a second run SIGTERM, the signal systemd sends on stop. Either way it must exit 0 by itself, having closed the WebM (every frame read is written) and ended the trace with its EOF record. |
 | `TestPublisherSendLoop`, `TestVP8PayloadHelpers` | The publisher's send loop (PLI answers, pacing, drops, pauses) and the VP8 payload helpers, with no servers involved. |
 
 ## Adding a scenario
