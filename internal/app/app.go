@@ -40,8 +40,9 @@ var (
 )
 
 // lifecycleMu orders Run's assignments of ps, sv and dp, made on the main
-// goroutine, before shutdown's reads of them on the SIGINT handler's goroutine.
-// What their Close and Stop read must be set before the assignment.
+// goroutine, before shutdown's reads of them on the shutdown signal
+// handler's goroutine. What their Close and Stop read must be set before the
+// assignment.
 var lifecycleMu sync.Mutex
 
 func init() {
@@ -83,7 +84,7 @@ func Init() {
 	log.Infof("Starting %s PID: %d", app.Name, os.Getpid())
 	loadConfig()
 	configureLog()
-	sigintHandler()
+	shutdownSignalHandler()
 	sighupHandler()
 }
 
@@ -247,11 +248,15 @@ func sighupHandler() {
 	}()
 }
 
-func sigintHandler() {
-	sigint := make(chan os.Signal, 1)
-	signal.Notify(sigint, os.Interrupt)
+// shutdownSignalHandler stops the recorder gracefully on SIGINT and on SIGTERM.
+// SIGTERM is what systemd, Docker and Kubernetes send to stop a service; left
+// to its default action it kills the process before the sessions close their
+// recordings.
+func shutdownSignalHandler() {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		<-sigint
+		<-sig
 		shutdown(0)
 	}()
 }
