@@ -87,7 +87,8 @@ with silence, without stretching the audio around it.
   holds the correction, and the LiveKit read loop applies it before the
   jitter buffer. The replay corpus seeds `c18-slow-mic-clock` and
   `c18-delay-step` replay a slow microphone and a healthy one behind a delay
-  step.
+  step. `TestSlowMicClockKeepsWallClock` (`tests/e2e`) covers a slow
+  microphone end to end.
 
 ### Known limits
 
