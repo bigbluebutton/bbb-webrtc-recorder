@@ -70,6 +70,12 @@ with silence, without stretching the audio around it.
   - `senderReports`: the sender reports used. `senderReportsIgnored`: those
     repeated or outside the stream's timestamps. `senderClockSteps`: those
     whose NTP or RTP time stepped; they add no loss.
+- **Metrics:** `recorder_media_clock_rate_ratio` and
+  `recorder_media_clock_end_lag_seconds` (what was left at the end, by the
+  packets' arrival) observe each track of 10 s or more.
+  `recorder_media_clock_inserted_gaps_total` and
+  `recorder_media_clock_inserted_gap_seconds_total` count the gaps of every
+  track.
 - **Trace capture** (`livekit.traceCapture`): the sender reports appear as
   `sr` records next to the packets. The packets keep the sender's own
   timestamps, without the inserted gaps.
