@@ -6,6 +6,7 @@ Read traces for the in-process replay of the LiveKit path (read loop, `trackBuff
   - **Event records** log what the reader did: `pli`, a keyframe request with its `reason` (`packet_drop` or `direct_request`), and `timeout`, a read that hit its deadline. Replay skips them, since the events re-emerge from the replayed packets and read times.
   - **The `eof` reason** is optional. A capture sets it when its trace misses records: `truncated` when it was cut at its byte cap, `dropped` when its writer fell behind and dropped records.
   - **`pad`** marks an RTP padding packet. LiveKit sends padding probes ahead of a track's first key frame, and the jitter buffer drops them before it starts.
+  - **`sr` records** are RTCP sender reports for the track: `ntp` is the 64-bit NTP time and `ts` the RTP time. Replay hands each one to the adapter's RTCP handler at its `atUs`, as lksdk would; a capture writes the ones LiveKit sends.
   - **`epochUnixUs`** in the header is the wall-clock time of `atUs` 0. Each recording session has its own clock, so the traces of one meeting align only through it.
 - **No trace carries media.** Every payload is a header prefix that replay zero-pads to `plen`:
   - a VP8 descriptor and frame header in the `corpus.GenerateVP8` layout;
@@ -21,7 +22,7 @@ Read traces for the in-process replay of the LiveKit path (read loop, `trackBuff
 A seed is one or more traces plus one expect file. `TestCorpusReplay` replays every `*.expect.json` in this directory, and fails on a trace that no expect file lists.
 
 1. **Write the trace.**
-   - **Synthetic:** add a block at the end of `seeds()` in `internal/corpus/seedgen/main.go`, then run `go run ./internal/corpus/seedgen`. Build it from the `internal/corpus` generators (`GenerateVP8`, `GenerateOpus`) and operators (`DropSeqs`, `Retransmit`, `Duplicate`, `Reorder`, `StartAt`, `EOFAt`). Each seed takes the next SSRC, so a block inserted earlier changes every trace after it.
+   - **Synthetic:** add a block at the end of `seeds()` in `internal/corpus/seedgen/main.go`, then run `go run ./internal/corpus/seedgen`. Build it from the `internal/corpus` generators (`GenerateVP8`, `GenerateOpus`) and operators (`DropSeqs`, `Retransmit`, `Duplicate`, `Reorder`, `StartAt`, `EOFAt`, `MediaClock`, `SenderReports`, `Delay`). Each seed takes the next SSRC, so a block inserted earlier changes every trace after it.
    - **Live capture:** run the recorder with `livekit.traceCapture` enabled and record the session. `payload: header` keeps the media out of the trace. Copy the track's `<recording>.<trackID>.trace.ndjson.gz` here under the seed's name. `seedgen` does not write it, so `TestCorpusMatchesGenerator` only checks that its provenance is `capture`. To look at a capture before making it a seed, replay it with no expect file: `go test ./internal/webrtc/livekit/ -run 'TestReplayTraces$' -v -args -corpus.replay=<trace>[,<trace>...]`, with absolute paths, logs the same `measured:` line.
 2. **Write `<name>.expect.json`** with `v`, `class`, `intent` and `traces`, and no checks yet.
 3. **Measure:** run `go test ./internal/webrtc/livekit/ -run 'TestCorpusReplay/<name>$' -v`. It logs a `measured:` line with:
@@ -60,6 +61,8 @@ The class groups the seeds that guard one defect, named in the Guards column. A 
 | `wrap-seq-ts-pic` | wrap | synthetic | generators | Wraps of seq, timestamp and picture ID, with a repair at seq 0 |
 | `wrap-unrepaired-loss` | wrap | synthetic | `c03-d11-30fps` moved onto the seq wrap | An unrepaired mid-frame loss at seq 65535, revealed by seq 0: a gap tracker that takes the wrap for a jump back loses the gap |
 | `wrap-dup-probe` | wrap | synthetic | `c12-lkprobe-rtxdup` moved onto the seq wrap | RTX probe copies of pre-wrap packets read after the wrap: a duplicate window that takes the wrap for a jump back lets them through |
+| `c18-slow-mic-clock` | 18 | synthetic | generators, at two rates a production sender measured | A microphone whose media clock runs slow: contiguous timestamps read over more time than they cover, with sender reports that show it. RTP timestamps alone time the last frame 1.28 s early |
+| `c18-delay-step` | 18 | synthetic | generators | A healthy microphone behind a 400 ms delay step: correcting by arrivals without the sender reports leaves the rest of the track 480 ms late |
 | `baseline-av` (`.video` + `.audio`) | baseline | synthetic | generators | The ordinary path |
 
 ## Expect v1
@@ -81,6 +84,8 @@ The class groups the seeds that guard one defect, named in the Guards column. A 
 - **`packetsWritten`** counts the packets the track buffers released to the writer. Where set, it is pinned exactly.
 - **`packetsLostMax`** bounds the jitter buffers' `PacketsLost`, summed over the tracks.
 - **`webm`** checks the file read back with `oracle.SummarizeWebM`. Key frames are counted by the VP8 payload bit. A missing file fails every `webm` check: nothing written leaves none.
+- **`audioClockSync`**, optional, replays with `livekit.audioClockSync` on; it is off by default.
+- **`webm.maxAudioLagMs`** and **`webm.maxFinalAudioLagMs`** bound, by magnitude, how far each Opus frame plays from where it was read, and the last frame (`oracle.TimelineLag`). A frame read late in a burst after a stall is placed by the frames after it. They need exactly one Opus trace and one block per frame read.
 - **Every seed:** the file must hold as many blocks per track as the writer counted frames, so a frame the writer counts but loses fails without a check of its own.
 - **`residuals`** is a list of notes, one per check pinned away from its ideal value: what the ideal is, and why the pin differs.
 

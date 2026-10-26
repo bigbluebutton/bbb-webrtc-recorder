@@ -42,7 +42,8 @@ const (
 	// events re-emerge from the replayed packets and read times.
 	RecordPLI     RecordType = "pli"
 	RecordTimeout RecordType = "timeout"
-	// RecordSR is an RTCP sender report for the track, read at atUs.
+	// RecordSR is an RTCP sender report for the track, read at atUs. Replay
+	// hands it to the adapter, as lksdk's RTCP callback would.
 	RecordSR RecordType = "sr"
 
 	vp8ClockRate  = 90000

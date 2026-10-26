@@ -505,6 +505,36 @@ func seeds() []seed {
 		out = append(out, seed{name: "wrap-dup-probe", class: "wrap", tracks: []*corpus.Trace{t}})
 	}
 
+	// Class 18: a microphone whose media clock runs slow in two spans. The
+	// later span is applied first, so that both spans are given in media time.
+	{
+		t := must(corpus.GenerateOpus(corpus.OpusOptions{Duration: 60e9, StartSeq: 31000, StartTS: 3058569947, SSRC: next()}))
+		t.Records = must(corpus.Apply(t.Records,
+			corpus.MediaClock(40e6, 50e6, 0.967),
+			corpus.MediaClock(10e6, 30e6, 0.955),
+			corpus.SenderReports(5e6, 48000),
+		))
+		t.Records = must(corpus.Apply(t.Records, corpus.EOFAt(endAt(t.Records)+20000)))
+		synth(t, "corpus.GenerateOpus{Duration:60s}+MediaClock(40s,50s,0.967)+MediaClock(10s,30s,0.955)+SenderReports(5s,48kHz)+EOFAt", nil,
+			"c18-slow-mic-clock/microphone", "60 s of media read over 61.28 s: the media clock runs at 0.955 from 10 to 30 s of media and at 0.967 from 40 to 50 s, "+
+				"two rates a production sender measured over 8-minute spans. A sender report every 5 s, about Chrome's audio interval.")
+		out = append(out, seed{name: "c18-slow-mic-clock", class: "18", tracks: []*corpus.Trace{t}})
+	}
+	// A healthy microphone behind a network delay step: by arrivals alone it
+	// looks like a slow media clock, but its sender reports show none.
+	{
+		t := must(corpus.GenerateOpus(corpus.OpusOptions{Duration: 60e9, StartSeq: 52000, StartTS: 1100000000, SSRC: next()}))
+		t.Records = must(corpus.Apply(t.Records,
+			corpus.SenderReports(5e6, 48000),
+			corpus.Delay(20e6, 35e6, 400e3),
+		))
+		t.Records = must(corpus.Apply(t.Records, corpus.EOFAt(endAt(t.Records)+20000)))
+		synth(t, "corpus.GenerateOpus{Duration:60s}+SenderReports(5s,48kHz)+Delay(20s,35s,400ms)+EOFAt", nil,
+			"c18-delay-step/microphone", "A clean microphone whose packets, and reports, sent from 20 to 35 s are read 400 ms late; "+
+				"the queue drains at 35 s. A sender report every 5 s.")
+		out = append(out, seed{name: "c18-delay-step", class: "18", tracks: []*corpus.Trace{t}})
+	}
+
 	return out
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/pion/interceptor"
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 	log "github.com/sirupsen/logrus"
@@ -31,10 +32,10 @@ const (
 )
 
 // trackCapture writes one track's reads as an internal/corpus read trace:
-// its packets, read timeouts and keyframe requests. observe and
-// keyframeRequest only queue records for its writer goroutine, so they never
-// wait on the file. Once the trace ends, by close, the byte cap or a write
-// error, every later record is ignored.
+// its packets, read timeouts, keyframe requests and sender reports. observe,
+// keyframeRequest and senderReport only queue records for its writer
+// goroutine, so they never wait on the file. Once the trace ends, by close,
+// the byte cap or a write error, every later record is ignored.
 type trackCapture struct {
 	ssrc     uint32
 	full     bool
@@ -116,6 +117,10 @@ func (c *trackCapture) observe(p *rtp.Packet, attrs interceptor.Attributes, err 
 
 func (c *trackCapture) keyframeRequest(reason string) {
 	c.send(corpus.Record{T: corpus.RecordPLI, AtUs: c.now(), Reason: reason})
+}
+
+func (c *trackCapture) senderReport(sr *rtcp.SenderReport) {
+	c.send(corpus.Record{T: corpus.RecordSR, AtUs: c.now(), NTP: sr.NTPTime, TS: sr.RTPTime})
 }
 
 // send queues r for the writer, or counts it dropped if the queue is full.
@@ -417,6 +422,26 @@ func (w *LiveKitWebRTC) captureKeyframeRequest(ssrc uint32, reason string) {
 
 	if target != nil {
 		target.keyframeRequest(reason)
+	}
+}
+
+// captureSenderReport records sr in the trace of the track with its SSRC,
+// if it is captured.
+func (w *LiveKitWebRTC) captureSenderReport(sr *rtcp.SenderReport) {
+	var target *trackCapture
+
+	w.capturesMu.Lock()
+	for _, c := range w.traceCaptures {
+		if c.ssrc == sr.SSRC {
+			target = c
+
+			break
+		}
+	}
+	w.capturesMu.Unlock()
+
+	if target != nil {
+		target.senderReport(sr)
 	}
 }
 

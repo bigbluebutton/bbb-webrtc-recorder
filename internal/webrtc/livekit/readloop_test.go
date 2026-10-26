@@ -16,6 +16,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/interceptor"
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -29,6 +30,8 @@ type trackRead struct {
 	at  time.Duration
 	pkt *rtp.Packet
 	err error
+	// sr, if set, goes to onRTCP at offset at instead of being read.
+	sr *rtcp.SenderReport
 }
 
 // readsAt is pkts, all read at offset at.
@@ -61,6 +64,8 @@ type fakeTrack struct {
 	// A read with no deadline ahead ends the track instead of timing out at
 	// once forever, which would spin without advancing the bubble's clock.
 	staleDeadline bool
+	// onRTCP gets the sender reports, as lksdk's RTCP callback would.
+	onRTCP func(rtcp.Packet)
 }
 
 func newFakeTrack(reads ...[]trackRead) *fakeTrack {
@@ -79,29 +84,44 @@ func (t *fakeTrack) SetReadDeadline(deadline time.Time) error {
 }
 
 func (t *fakeTrack) ReadRTP() (*rtp.Packet, interceptor.Attributes, error) {
-	if len(t.reads) == 0 {
-		return nil, nil, io.EOF
+	for first := true; ; first = false {
+		if len(t.reads) == 0 {
+			return nil, nil, io.EOF
+		}
+
+		if !t.deadline.After(time.Now()) {
+			// Handing on a sender report can bring this read to its deadline.
+			if !first {
+				t.timeouts++
+
+				return nil, nil, readTimeout{}
+			}
+
+			t.staleDeadline = true
+
+			return nil, nil, io.EOF
+		}
+
+		next := t.reads[0]
+		due := t.start.Add(next.at)
+		if t.deadline.Before(due) {
+			time.Sleep(time.Until(t.deadline))
+			t.timeouts++
+
+			return nil, nil, readTimeout{}
+		}
+
+		time.Sleep(time.Until(due))
+		t.reads = t.reads[1:]
+
+		if next.sr == nil {
+			return next.pkt, nil, next.err
+		}
+
+		if t.onRTCP != nil {
+			t.onRTCP(next.sr)
+		}
 	}
-
-	if !t.deadline.After(time.Now()) {
-		t.staleDeadline = true
-
-		return nil, nil, io.EOF
-	}
-
-	next := t.reads[0]
-	due := t.start.Add(next.at)
-	if t.deadline.Before(due) {
-		time.Sleep(time.Until(t.deadline))
-		t.timeouts++
-
-		return nil, nil, readTimeout{}
-	}
-
-	time.Sleep(time.Until(due))
-	t.reads = t.reads[1:]
-
-	return next.pkt, nil, next.err
 }
 
 // pushRecorder is a mockRecorder that keeps the sequence numbers pushed to

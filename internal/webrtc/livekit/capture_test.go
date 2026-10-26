@@ -103,6 +103,7 @@ type captureRun struct {
 	captured []*corpus.Trace
 	sizes    []int64
 	timeouts []int // each source's timed-out reads
+	gaps     []int // each track's media clock gaps, 0 without a clock
 	epoch    time.Time
 }
 
@@ -140,7 +141,9 @@ func (c *captureRun) collect(t *testing.T) {
 // replayCaptured is replayTraces with each track set up for readTrack as
 // onTrackSubscribed does, the trace capture configured as cfg, rtx records
 // read with pion's RTX attribute, and every capture closed as Close does
-// once the tracks end. Run it inside a synctest bubble.
+// once the tracks end. livekit.audioClockSync is on, so a capture that
+// recorded the corrected timestamps would not match its seed. Run it
+// inside a synctest bubble.
 func replayCaptured(t *testing.T, cfg config.TraceCapture, traces ...*corpus.Trace) captureRun {
 	infos := make([]trackInfo, 0, len(traces))
 	clockRates := make([]uint32, 0, len(traces))
@@ -152,6 +155,7 @@ func replayCaptured(t *testing.T, cfg config.TraceCapture, traces ...*corpus.Tra
 
 	h := newReplayHarness(t, infos...)
 	h.w.cfg.TraceCapture = cfg
+	h.w.cfg.AudioClockSync = true
 	run := captureRun{dir: filepath.Dir(h.file), epoch: h.w.startTs}
 	for i, info := range infos {
 		h.w.prepareTrack(info, clockRates[i])
@@ -164,12 +168,21 @@ func replayCaptured(t *testing.T, cfg config.TraceCapture, traces ...*corpus.Tra
 	for _, tr := range traces {
 		reads, rtx := traceReads(tr)
 		fake := newFakeTrack(reads)
+		fake.onRTCP = h.w.onRTCP
 		fakes = append(fakes, fake)
 		srcs = append(srcs, settledSource{trackSource: rtxSource{trackSource: fake, rtx: rtx}, turn: turn})
 	}
 
 	run.r = h.run(nil, srcs...)
 	h.w.closeTraceCaptures()
+
+	for _, info := range infos {
+		gaps := 0
+		if clock := h.w.mediaClock(info.id); clock != nil {
+			gaps = clock.Stats().InsertedGaps
+		}
+		run.gaps = append(run.gaps, gaps)
+	}
 
 	for i, fake := range fakes {
 		assert.False(t, fake.staleDeadline, "%s: a read without a deadline ahead", infos[i].id)
@@ -262,6 +275,7 @@ var captureSeeds = []struct {
 	{name: "requests of both origins", traces: []string{"c10-two-losses-1500ms"}},
 	{name: "rtx copies", traces: []string{"c12-lkprobe-rtxdup"}},
 	{name: "two tracks", traces: []string{"baseline-av.video", "baseline-av.audio"}},
+	{name: "sender reports", traces: []string{"c18-slow-mic-clock"}},
 }
 
 func headerCapture() config.TraceCapture {
@@ -313,8 +327,13 @@ func TestTraceCaptureReproducesReplay(t *testing.T) {
 				}, got.Header)
 				assert.Equal(t, filepath.Join(run.dir, "replay."+strings.ReplaceAll(info.id, "/", "_")+".trace.ndjson.gz"), run.paths[i])
 
-				// Read times on the session's clock, which is the replay's.
+				// Read times on the session's clock, which is the replay's. The
+				// timestamps are the sender's, before the media clock moved them.
+				if len(recordsOf(in, corpus.RecordSR)) > 0 {
+					assert.Positive(t, run.gaps[i], "the media clock moved the timestamps")
+				}
 				assert.Equal(t, readViews(in, asCaptured), readViews(got, asCaptured), "rtp records, header payload prefixes included")
+				assert.Equal(t, recordsOf(in, corpus.RecordSR), recordsOf(got, corpus.RecordSR), "sender reports")
 				assert.Len(t, recordsOf(got, corpus.RecordTimeout), run.timeouts[i], "a timeout record per timed-out read")
 
 				eof := got.Records[len(got.Records)-1]

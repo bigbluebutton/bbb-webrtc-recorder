@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "class": "18",
+  "intent": "A healthy microphone behind a 400 ms network delay step that lasts 15 s. By arrival times alone it looks like a media clock losing 400 ms, but its sender reports show no loss, so no gap may be inserted: the last frame plays where it was sent. RED: a correction that follows arrivals without the reports leaves the rest of the track 480 ms late, the 400 ms rounded up to 120 ms gaps.",
+  "audioClockSync": true,
+  "traces": [
+    "c18-delay-step.ndjson.gz"
+  ],
+  "written": {
+    "min": 3000,
+    "max": 3000
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minAudioFrames": 3000,
+    "maxFinalAudioLagMs": 1
+  }
+}

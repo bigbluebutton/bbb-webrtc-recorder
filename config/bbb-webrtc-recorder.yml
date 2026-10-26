@@ -56,9 +56,16 @@ livekit:
   # Write a raw RTP dump (in rtpdump format) for recorded tracks. Used for
   # debugging and test environments.
   writeRTPDump: false
+  # Keep each microphone recording on the wall clock when the publisher's
+  # audio clock falls behind it, as when the publisher loses captured audio.
+  # The timestamps move forward by the time lost, which playback fills with
+  # silence. When off, the drift is still measured and reported.
+  # Environment variable: BBBRECORDER_LIVEKIT_AUDIOCLOCKSYNC.
+  audioClockSync: false
   # Write a read trace (internal/corpus format v1) per recorded track, as
-  # <recording>.<trackID>.trace.ndjson.gz: each packet read, read timeout and
-  # keyframe request, timed from the session start. Used for debugging and
+  # <recording>.<trackID>.trace.ndjson.gz: each packet read, read timeout,
+  # keyframe request and sender report, timed from the session start. The
+  # packets keep the sender's timestamps. Used for debugging and
   # for replay tests. Each captured track holds about 800 KB of gzip state.
   # Skipped when the recording goes to /dev/null. Environment variables:
   # BBBRECORDER_LIVEKIT_TRACECAPTURE_ENABLED, _PAYLOAD, _MAXBYTESPERTRACK.

@@ -93,6 +93,7 @@ func (cfg *Config) SetDefaults() {
 			Payload:          TraceCapturePayloadHeader,
 			MaxBytesPerTrack: DefaultTraceCaptureMaxBytesPerTrack,
 		},
+		AudioClockSync: false,
 	}
 	cfg.Constraints = Constraints{
 		DiskPressure: DiskPressure{
@@ -165,6 +166,9 @@ type LiveKit struct {
 	HealthCheck           HealthCheck          `yaml:"healthCheck,omitempty"`
 	WriteRTPDump          bool                 `yaml:"writeRTPDump"`
 	TraceCapture          TraceCapture         `yaml:"traceCapture,omitempty" mapstructure:"trace_capture"`
+	// AudioClockSync moves a microphone's timestamps forward by the media
+	// time its sender loses, so that the recording keeps the wall clock.
+	AudioClockSync bool `yaml:"audioClockSync"`
 }
 
 const (

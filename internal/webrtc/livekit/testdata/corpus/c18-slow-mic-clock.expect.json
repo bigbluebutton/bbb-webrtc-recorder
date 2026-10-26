@@ -1,0 +1,21 @@
+{
+  "v": 1,
+  "class": "18",
+  "intent": "A microphone whose media clock runs slow in two bursts: 60 s of contiguous RTP timestamps read over 61.28 s, with sender reports every 5 s that show it. Every frame must be written near where it was read, so the audio keeps the wall-clock timeline its video follows. The largest lag is a burst's onset, corrected once a report shows it: one report interval of the worst rate (5 s x 4.5 % = 225 ms) plus a frame. Corrections are 120 ms gaps inserted once the lag reaches 40 ms, so at the end the last frame is within 80 ms of its place. RED: a writer that takes the timeline from RTP timestamps alone plays the last frame 1.28 s early.",
+  "audioClockSync": true,
+  "traces": [
+    "c18-slow-mic-clock.ndjson.gz"
+  ],
+  "written": {
+    "min": 3000,
+    "max": 3000
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minAudioFrames": 3000,
+    "maxAudioLagMs": 245,
+    "maxFinalAudioLagMs": 80
+  }
+}
