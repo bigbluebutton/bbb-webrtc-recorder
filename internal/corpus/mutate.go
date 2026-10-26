@@ -2,9 +2,11 @@ package corpus
 
 import (
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"slices"
 	"sort"
+	"time"
 )
 
 // Op is a mutation of a sent schedule; it returns a new slice and never
@@ -151,6 +153,126 @@ func EOFAt(atUs int64) Op {
 
 		return append(out, Record{T: RecordEOF, AtUs: atUs}), nil
 	}
+}
+
+// MediaClock models a sender whose media clock runs at rate times the wall
+// clock between fromUs and toUs, such as one that loses captured audio before
+// encoding it. Only read times change: the records of that span are read over
+// 1/rate as long, and every record after it later by the time lost.
+func MediaClock(fromUs, toUs int64, rate float64) Op {
+	return func(recs []Record) ([]Record, error) {
+		if fromUs < 0 || toUs <= fromUs || rate <= 0 {
+			return nil, fmt.Errorf("invalid media clock span [%d, %d) us at rate %v", fromUs, toUs, rate)
+		}
+
+		stretch := func(atUs int64) int64 {
+			switch {
+			case atUs <= fromUs:
+				return atUs
+			case atUs < toUs:
+				return fromUs + int64(math.Round(float64(atUs-fromUs)/rate))
+			default:
+				return atUs + int64(math.Round(float64(toUs-fromUs)/rate)) - (toUs - fromUs)
+			}
+		}
+
+		out := slices.Clone(recs)
+		for i := range out {
+			out[i].AtUs = stretch(out[i].AtUs)
+		}
+
+		return out, nil
+	}
+}
+
+// Delay models a network queue that holds what was sent between fromUs and
+// toUs for delayUs longer, then drains: no record is read before one sent
+// ahead of it. Apply it after SenderReports, whose times are the sender's.
+func Delay(fromUs, toUs, delayUs int64) Op {
+	return func(recs []Record) ([]Record, error) {
+		if fromUs < 0 || toUs <= fromUs || delayUs < 0 {
+			return nil, fmt.Errorf("invalid delay of %d us over [%d, %d) us", delayUs, fromUs, toUs)
+		}
+
+		out := slices.Clone(recs)
+		var last int64
+		for i := range out {
+			if out[i].AtUs >= fromUs && out[i].AtUs < toUs {
+				out[i].AtUs += delayUs
+			}
+
+			out[i].AtUs = max(out[i].AtUs, last)
+			last = out[i].AtUs
+		}
+
+		return out, nil
+	}
+}
+
+// SenderReports adds an RTCP sender report every everyUs from the first
+// packet. Its NTP time is the read time on the sender's clock. Its RTP time
+// is the last packet's timestamp plus the time since that packet, at
+// clockRate, as pion and libwebrtc compute it. Apply it after MediaClock, so
+// that the reports show the slow media clock.
+func SenderReports(everyUs int64, clockRate uint32) Op {
+	return func(recs []Record) ([]Record, error) {
+		if everyUs <= 0 || clockRate == 0 {
+			return nil, fmt.Errorf("invalid sender report period %d us at %d Hz", everyUs, clockRate)
+		}
+
+		body, eof := splitEOF(recs)
+		out := make([]Record, 0, len(recs)+len(recs)/10)
+
+		var (
+			last Record
+			sent bool
+			next int64
+		)
+
+		report := func(atUs int64) Record {
+			ticks := math.Round(float64(atUs-last.AtUs) * float64(clockRate) / 1e6)
+
+			return Record{T: RecordSR, AtUs: atUs, NTP: SenderNTP(atUs), TS: last.TS + uint32(ticks)}
+		}
+
+		for _, r := range body {
+			for sent && next <= r.AtUs {
+				out = append(out, report(next))
+				next += everyUs
+			}
+
+			out = append(out, r)
+
+			if !isOriginal(r) {
+				continue
+			}
+
+			if !sent {
+				sent, next, last = true, r.AtUs+everyUs, r
+			} else if int32(r.TS-last.TS) >= 0 {
+				last = r
+			}
+		}
+
+		return append(out, eof...), nil
+	}
+}
+
+// senderEpoch is the sender's wall-clock time at atUs 0 in the sender
+// reports that SenderReports adds.
+var senderEpoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// ntpEpochOffset is the seconds from the NTP epoch (1900) to the Unix epoch.
+const ntpEpochOffset = 2208988800
+
+// SenderNTP is the 64-bit NTP time of atUs on the sender's clock, as
+// SenderReports writes it.
+func SenderNTP(atUs int64) uint64 {
+	t := senderEpoch.Add(time.Duration(atUs) * time.Microsecond)
+	secs := uint64(t.Unix() + ntpEpochOffset)
+	frac := (uint64(t.Nanosecond()) << 32) / uint64(time.Second)
+
+	return secs<<32 | frac
 }
 
 func isOriginal(r Record) bool {
