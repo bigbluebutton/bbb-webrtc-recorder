@@ -235,15 +235,26 @@ func (p *Publisher) Close() {
 // recorder joining before that finds no track to subscribe to; the SFU
 // starts recording on that announcement (track_published).
 func (p *Publisher) WaitPublished(ctx context.Context, tracks ...*PubTrack) error {
-	rs := lksdk.NewRoomServiceClient(p.lk.HTTPURL(), p.lk.APIKey, p.lk.APISecret)
+	sids := make([]string, 0, len(tracks))
+	for _, tr := range tracks {
+		sids = append(sids, tr.SID)
+	}
+
+	return waitTracksListed(ctx, p.lk, p.room, p.Identity, sids...)
+}
+
+// waitTracksListed waits until LiveKit lists every track of sids as
+// published by identity in room.
+func waitTracksListed(ctx context.Context, lk *LiveKit, room, identity string, sids ...string) error {
+	rs := lksdk.NewRoomServiceClient(lk.HTTPURL(), lk.APIKey, lk.APISecret)
 
 	for {
-		resp, err := rs.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: p.room})
+		resp, err := rs.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
 		if err == nil {
 			listed := map[string]bool{}
 
 			for _, pi := range resp.Participants {
-				if pi.Identity == p.Identity {
+				if pi.Identity == identity {
 					for _, ti := range pi.Tracks {
 						listed[ti.Sid] = true
 					}
@@ -251,8 +262,8 @@ func (p *Publisher) WaitPublished(ctx context.Context, tracks ...*PubTrack) erro
 			}
 
 			missing := 0
-			for _, tr := range tracks {
-				if !listed[tr.SID] {
+			for _, sid := range sids {
+				if !listed[sid] {
 					missing++
 				}
 			}

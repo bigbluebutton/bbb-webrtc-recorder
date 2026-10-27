@@ -63,18 +63,28 @@ func childEnv(extra ...string) []string {
 func StartProc(t *testing.T, name, logPath, dir string, env []string, bin string, args ...string) *Proc {
 	t.Helper()
 
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	require.NoError(t, err)
-
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
 	cmd.Env = env
-	cmd.Stdout = logFile
+
+	return startCmd(t, name, logPath, cmd)
+}
+
+// startCmd starts cmd as StartProc does, but keeps a Stdout the caller set.
+func startCmd(t *testing.T, name, logPath string, cmd *exec.Cmd) *Proc {
+	t.Helper()
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	require.NoError(t, err)
+
+	if cmd.Stdout == nil {
+		cmd.Stdout = logFile
+	}
 	cmd.Stderr = logFile
 	// Pdeathsig kills the child if the test binary dies without cleaning up.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 
-	_, _ = fmt.Fprintf(logFile, "### %s: %s %s\n", time.Now().Format(time.RFC3339Nano), bin, strings.Join(args, " "))
+	_, _ = fmt.Fprintf(logFile, "### %s: %s %s\n", time.Now().Format(time.RFC3339Nano), cmd.Args[0], strings.Join(cmd.Args[1:], " "))
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()

@@ -58,6 +58,8 @@ type Stack struct {
 	LiveKit   *LiveKit
 	Driver    *Driver
 	Recorder  *Recorder
+
+	browsers int // started by NewBrowser, which numbers their logs
 }
 
 // NewStack starts a stack whose logs, configs and outputs go to the test's

@@ -1,0 +1,13 @@
+{
+  "name": "bbb-webrtc-recorder-e2e-browser",
+  "private": true,
+  "description": "Drives a browser for the recorder's E2E suite; see tests/e2e/README.md.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.22"
+  },
+  "dependencies": {
+    "livekit-client": "2.22.3",
+    "playwright": "1.64.1"
+  }
+}
