@@ -157,6 +157,72 @@ func TestEOFAt(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestMediaClock(t *testing.T) {
+	// At half speed, the 10 ms from 10000 us take 20 ms, and what follows
+	// comes 10 ms later.
+	out := apply(t, MediaClock(10000, 20000, 0.5))
+	assert.Equal(t, seqs(schedule()), seqs(out))
+	assert.Equal(t, []int64{0, 1000, 10000, 12000, 30000, 31000, 40000}, times(out))
+
+	for i, r := range out {
+		assert.Equal(t, schedule()[i].TS, r.TS, "record %d keeps its RTP timestamp", i)
+	}
+
+	for _, op := range []Op{MediaClock(-1, 10, 0.9), MediaClock(10, 10, 0.9), MediaClock(0, 10, 0)} {
+		_, err := Apply(schedule(), op)
+		assert.Error(t, err)
+	}
+}
+
+func TestDelay(t *testing.T) {
+	// The records sent from 10 to 20 ms wait 15 ms more; the one sent at
+	// 20 ms queues behind them.
+	out := apply(t, Delay(10000, 20000, 15000))
+	assert.Equal(t, seqs(schedule()), seqs(out))
+	assert.Equal(t, []int64{0, 1000, 25000, 26000, 26000, 26000, 30000}, times(out))
+
+	for _, op := range []Op{Delay(-1, 10, 1), Delay(10, 10, 1), Delay(0, 10, -1)} {
+		_, err := Apply(schedule(), op)
+		assert.Error(t, err)
+	}
+}
+
+func TestSenderReports(t *testing.T) {
+	// A sender at half speed: 20 ms frames 40 ms apart, a report every 50 ms.
+	tr, err := GenerateOpus(OpusOptions{Frames: 5, StartTS: 0xFFFFFFFF - 1000})
+	require.NoError(t, err)
+	recs, err := Apply(tr.Records, MediaClock(0, 100000, 0.5), EOFAt(200000), SenderReports(50000, 48000))
+	require.NoError(t, err)
+	require.NoError(t, validateRecords(recs))
+
+	var srs []Record
+	for _, r := range recs {
+		if r.T == RecordSR {
+			srs = append(srs, r)
+		}
+	}
+
+	start := tr.Records[0].TS
+	require.Len(t, srs, 3, "at 50, 100 and 150 ms, up to the last packet at 160 ms")
+	for i, want := range []struct {
+		atUs  int64
+		ticks uint32 // past the first packet's timestamp
+	}{
+		{50000, 960 + 480},     // packet 1, sent at 40 ms, plus 10 ms
+		{100000, 1920 + 960},   // packet 2, at 80 ms, plus 20 ms
+		{150000, 3*960 + 1440}, // packet 3, at 120 ms, plus 30 ms
+	} {
+		assert.Equal(t, want.atUs, srs[i].AtUs, "report %d", i)
+		assert.Equal(t, SenderNTP(want.atUs), srs[i].NTP, "report %d", i)
+		assert.Equal(t, start+want.ticks, srs[i].TS, "report %d", i)
+	}
+
+	assert.Equal(t, SenderNTP(0)+1<<31, SenderNTP(500000), "half a second is half of the fraction")
+
+	_, err = Apply(tr.Records, SenderReports(0, 48000))
+	assert.Error(t, err)
+}
+
 func TestApplyOnGeneratedSchedule(t *testing.T) {
 	tr, err := GenerateVP8(VP8Options{FPS: 30, Frames: 60, KeyInterval: 30, KeyPackets: 6, SSRC: 9})
 	require.NoError(t, err)

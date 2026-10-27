@@ -11,6 +11,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
@@ -27,6 +28,11 @@ type replayResult struct {
 	packetsDropped uint64
 	webm           *oracle.Summary
 	webmErr        error
+	// The Opus track's lag behind its read times and its media clock, set
+	// when exactly one Opus trace is replayed.
+	audioLag    *oracle.Lag
+	audioLagErr error
+	audioClock  *types.MediaClockStats
 }
 
 func (r replayResult) requests() []time.Duration {

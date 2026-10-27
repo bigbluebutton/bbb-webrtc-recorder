@@ -25,6 +25,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/interceptor"
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
@@ -59,6 +60,9 @@ const (
 	// [3] https://webrtc.googlesource.com/src/+/ac9591c580ac697e7bb604debf8a141b18626204/modules/pacing/pacing_controller.h#92
 	videoJitterLatency = 2 * time.Second
 	audioJitterLatency = 200 * time.Millisecond
+	// A microphone that ends this far behind the wall clock is out of lip
+	// sync in the recording.
+	mediaClockLagWarning = 200 * time.Millisecond
 	// Each keyframe request also stops LiveKit's NACK repair on the downtrack
 	// until it forwards a key frame. Must stay below videoJitterLatency: the
 	// key frame the last request brings then follows every loss it suppresses.
@@ -114,6 +118,12 @@ type LiveKitWebRTC struct {
 	capturesMu          sync.Mutex
 	traceCaptures       map[string]*trackCapture
 	traceCapturesClosed bool
+	// trackID -> a microphone's media clock, and SSRC -> the same clock,
+	// made by prepareTrack. Not under m, so that onRTCP, which lksdk calls
+	// for every report, does not wait on the packet intake.
+	clocksMu     sync.Mutex
+	mediaClocks  map[string]*utils.MediaClock
+	clocksBySSRC map[uint32]*utils.MediaClock
 
 	// Flow events wait here, in transition order, for dispatchFlowEvents to
 	// deliver them: the callback publishes to Redis, which must not stall the
@@ -369,6 +379,11 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 			Adapter:   &currentTrackAdapterStats,
 			TrackKind: string(remoteTrackPub.Kind()),
 			MimeType:  mimeType,
+		}
+
+		if clock := w.mediaClock(trackID); clock != nil {
+			st := clock.Stats()
+			finalAdapterStats.Tracks[source].MediaClock = &st
 		}
 
 		if recStats != nil {
@@ -714,6 +729,9 @@ func (w *LiveKitWebRTC) subscribe(track lksdk.TrackPublication) error {
 			w.setSubscribeVideoQuality(pub.SID(), pub.Source(), pub)
 		}
 
+		// Before subscribing, or the first sender reports go unread.
+		pub.OnRTCP(w.onRTCP)
+
 		return pub.SetSubscribed(true)
 	}
 
@@ -967,11 +985,74 @@ func (w *LiveKitWebRTC) startReader(src trackSource, info trackInfo, buffer *tra
 }
 
 // prepareTrack is onTrackSubscribed's setup of a registered track for
-// readTrack, kept apart so that the trace capture tests go through it.
+// readTrack, kept apart so that the trace capture and replay tests go
+// through it.
 func (w *LiveKitWebRTC) prepareTrack(info trackInfo, clockRate uint32) {
 	if w.cfg.TraceCapture.Enabled {
 		w.openTraceCapture(info, clockRate)
 	}
+
+	// Screen-share audio keeps its timestamps: the clock was built and
+	// checked for microphones, whose senders lose captured audio.
+	if info.kind == TrackKindAudio && strings.EqualFold(info.source, livekit.TrackSource_MICROPHONE.String()) {
+		w.addMediaClock(info, clockRate)
+	}
+}
+
+// addMediaClock gives microphone track info a new media clock, found by its
+// track ID and SSRC. The clock measures even with livekit.audioClockSync off,
+// for the stats.
+func (w *LiveKitWebRTC) addMediaClock(info trackInfo, clockRate uint32) {
+	logger := log.WithField("session", w.ctx.Value("session")).WithField("trackID", info.id)
+	clock := utils.NewMediaClock(clockRate, w.cfg.AudioClockSync, logger)
+
+	w.clocksMu.Lock()
+	defer w.clocksMu.Unlock()
+
+	if w.mediaClocks == nil {
+		w.mediaClocks = map[string]*utils.MediaClock{}
+		w.clocksBySSRC = map[uint32]*utils.MediaClock{}
+	}
+
+	// A track subscribed again gets a new clock, which its old SSRC must
+	// not reach.
+	if old := w.mediaClocks[info.id]; old != nil {
+		for ssrc, c := range w.clocksBySSRC {
+			if c == old {
+				delete(w.clocksBySSRC, ssrc)
+			}
+		}
+	}
+
+	w.mediaClocks[info.id] = clock
+	w.clocksBySSRC[info.ssrc] = clock
+}
+
+func (w *LiveKitWebRTC) mediaClock(trackID string) *utils.MediaClock {
+	w.clocksMu.Lock()
+	defer w.clocksMu.Unlock()
+
+	return w.mediaClocks[trackID]
+}
+
+// onRTCP takes the RTCP packets lksdk reads for a subscribed track, on
+// lksdk's goroutine: a sender report goes to the media clock and the trace
+// of the track with its SSRC.
+func (w *LiveKitWebRTC) onRTCP(p rtcp.Packet) {
+	sr, ok := p.(*rtcp.SenderReport)
+	if !ok {
+		return
+	}
+
+	w.clocksMu.Lock()
+	clock := w.clocksBySSRC[sr.SSRC]
+	w.clocksMu.Unlock()
+
+	if clock != nil {
+		clock.SenderReport(sr.NTPTime, sr.RTPTime, time.Now())
+	}
+
+	w.captureSenderReport(sr)
 }
 
 // trackFilePath is <base>.<trackID><suffix> next to the recording at
@@ -1083,6 +1164,46 @@ func (w *LiveKitWebRTC) watchFlow(trackID string, done <-chan struct{}) {
 	}
 }
 
+// logTrackStopped logs the end of info's track, with its media clock if it
+// has one, and a warning when the track ended well behind the wall clock.
+func (w *LiveKitWebRTC) logTrackStopped(info trackInfo) {
+	logger := log.WithField("session", w.ctx.Value("session")).
+		WithField("trackID", info.id).
+		WithField("source", info.source).
+		WithField("kind", info.kind).
+		WithField("mime", info.mime).
+		WithField("ssrc", info.ssrc)
+
+	clock := w.mediaClock(info.id)
+	if clock == nil {
+		logger.Info("Track recording stopped")
+
+		return
+	}
+
+	st := clock.Stats()
+	// The fields carry the stats file's names, so that one search finds both.
+	logger = logger.WithField("rateRatio", fmt.Sprintf("%.4f", st.RateRatio)).
+		WithField("rtpDurationMs", st.RTPDurationMs).
+		WithField("arrivalDurationMs", st.ArrivalDurationMs).
+		WithField("senderReports", st.SenderReports).
+		WithField("reportedDriftMs", st.ReportedDriftMs).
+		WithField("insertedGaps", st.InsertedGaps).
+		WithField("insertedGapMs", st.InsertedGapMs).
+		WithField("realignments", st.Realignments).
+		WithField("realignedMs", st.RealignedMs).
+		WithField("givenBackMs", st.GivenBackMs).
+		WithField("senderReportsIgnored", st.SenderReportsIgnored).
+		WithField("senderClockSteps", st.SenderClockSteps).
+		WithField("lagMs", st.LagMs).
+		WithField("maxLagMs", st.MaxLagMs)
+	logger.Info("Track recording stopped")
+
+	if st.LagMs >= mediaClockLagWarning.Milliseconds() {
+		logger.Warn("Microphone ended behind the wall clock by its packets' arrival (lagMs); reportedDriftMs is the sender's own drift")
+	}
+}
+
 // trackSource is the part of *webrtc.TrackRemote the read loop uses.
 type trackSource interface {
 	ReadRTP() (*rtp.Packet, interceptor.Attributes, error)
@@ -1116,13 +1237,7 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 
 	defer func() {
 		appstats.OnTrackRecordingStopped(string(info.kind), string(info.mime), info.source)
-		log.WithField("session", w.ctx.Value("session")).
-			WithField("trackID", info.id).
-			WithField("source", info.source).
-			WithField("kind", info.kind).
-			WithField("mime", info.mime).
-			WithField("ssrc", info.ssrc).
-			Info("Track recording stopped")
+		w.logTrackStopped(info)
 
 		// If a panic occurs, notify the connection state callback as failed so clients can retry/handle it
 		if err := recover(); err != nil {
@@ -1220,12 +1335,20 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 // Padding, which LiveKit sends a Go subscriber's video until its first key
 // frame, is not media arriving, nor is a duplicate. LiveKit 1.13.5 to 1.13.9
 // give that padding a 255-byte payload, so only its padding bit tells it apart.
+// A microphone's media clock also needs the arrival, so it moves the
+// timestamps here, after the trace and the RTP dump took the sender's.
 func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*rtp.Packet) []*rtp.Packet {
 	var arrived seqWindow
+	clock := w.mediaClock(trackID)
 
 	return func(packet *rtp.Packet) []*rtp.Packet {
+		now := time.Now()
 		if !packet.Padding && len(packet.Payload) > 0 && !arrived.duplicate(packet.SequenceNumber) {
-			w.updateFlowState(trackID, packet.SequenceNumber, time.Now())
+			w.updateFlowState(trackID, packet.SequenceNumber, now)
+		}
+
+		if clock != nil && !packet.Padding {
+			packet.Timestamp = clock.Timestamp(packet.Timestamp, packet.SequenceNumber, now)
 		}
 
 		return buffer.push(packet)

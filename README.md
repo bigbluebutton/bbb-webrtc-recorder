@@ -141,6 +141,11 @@ Viewing SystemD logs:
 journalctl -u bbb-webrtc-recorder -f
 ```
 
+[Trials and tribulations](docs/trials-and-tribulations.md) covers recording
+scenarios that are hard to get right, such as a microphone whose media clock
+runs slow. For each one, it says what goes wrong, what the recorder does,
+where to look and its known limits.
+
 ### PubSub events/calls
 
 `startRecording` (SFU -> Recorder)

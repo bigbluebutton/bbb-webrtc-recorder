@@ -38,3 +38,39 @@ type RecorderStats struct {
 	Audio *RecorderTrackStats `json:"audio,omitempty"`
 	Video *RecorderTrackStats `json:"video,omitempty"`
 }
+
+// MediaClockStats describes a stream's media clock against the wall clock.
+type MediaClockStats struct {
+	// RTPDurationMs is the media time between the first and the newest
+	// timestamp; ArrivalDurationMs the time between their arrivals.
+	// RateRatio is their ratio, less what LiveKit realigned: below 1 when the
+	// sender's media clock runs slow.
+	RTPDurationMs     int64   `json:"rtpDurationMs"`
+	ArrivalDurationMs int64   `json:"arrivalDurationMs"`
+	RateRatio         float64 `json:"rateRatio"`
+	// SenderReports counts the reports used; SenderReportsIgnored those
+	// repeated or outside the stream's timestamps. SenderClockSteps counts
+	// the reports whose NTP or RTP time stepped; they add no loss.
+	SenderReports        int `json:"senderReports"`
+	SenderReportsIgnored int `json:"senderReportsIgnored"`
+	SenderClockSteps     int `json:"senderClockSteps"`
+	// ReportedDriftMs is the sender's media time less its wall time since the
+	// first packet, by its sender reports; LiveKit's realignments do not
+	// reduce it. Negative when the media clock runs slow, as LiveKit's
+	// RTPDrift.driftMs.
+	ReportedDriftMs int64 `json:"reportedDriftMs"`
+	// InsertedGaps counts the timestamp gaps inserted, InsertedGapMs their
+	// total. Realignments counts LiveKit's jumps of the timestamps to the
+	// wall clock that the next reports confirmed, RealignedMs their total.
+	// GivenBackMs is the gap time taken back where the timestamps jumped
+	// ahead of their arrival.
+	InsertedGaps  int   `json:"insertedGaps"`
+	InsertedGapMs int64 `json:"insertedGapMs"`
+	Realignments  int   `json:"realignments"`
+	RealignedMs   int64 `json:"realignedMs"`
+	GivenBackMs   int64 `json:"givenBackMs"`
+	// LagMs is how far the newest packet arrived behind its corrected place;
+	// MaxLagMs the most it was. A network delay that grows adds to both.
+	LagMs    int64 `json:"lagMs"`
+	MaxLagMs int64 `json:"maxLagMs"`
+}

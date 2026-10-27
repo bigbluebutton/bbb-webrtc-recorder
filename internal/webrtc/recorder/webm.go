@@ -25,6 +25,10 @@ const (
 	opusSampleRate      = 48000
 	vp8SampleRate       = 90000
 	secondToNanoseconds = 1000000000
+
+	// The samplebuilder subtracts timestamps unsigned, so an Opus frame
+	// whose timestamp goes back comes out this long or longer.
+	audioStepBack = time.Duration(1<<31) * time.Second / opusSampleRate
 )
 
 type VP8PartitionTracker struct {
@@ -569,6 +573,16 @@ func (r *WebmRecorder) writeAudioFrame(data []byte, duration time.Duration) {
 	}
 
 	if r.audioWriter != nil {
+		// Writing it would move every later frame a day ahead.
+		if duration >= audioStepBack {
+			log.WithField("session", r.ctx.Value("session")).
+				WithField("duration", duration).
+				WithField("timestamp", r.audioTimestamp).
+				Warn("Skipping audio frame whose timestamp goes back")
+
+			return
+		}
+
 		r.trackSampleStats(&r.stats.Audio.BaseTrackStats, duration)
 		r.audioTimestamp += duration
 		pts := int64(r.audioTimestamp / time.Millisecond)

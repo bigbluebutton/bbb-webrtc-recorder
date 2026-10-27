@@ -46,3 +46,14 @@ func TestTraceCaptureFromLoader(t *testing.T) {
 	assert.Equal(t, TraceCapture{Enabled: true, Payload: TraceCapturePayloadFull, MaxBytesPerTrack: 4096},
 		cfg.LiveKit.TraceCapture)
 }
+
+func TestAudioClockSync(t *testing.T) {
+	cfg := (&Config{}).GetDefaults()
+	require.NoError(t, file.Decode("../../config/bbb-webrtc-recorder.yml", cfg))
+	assert.False(t, cfg.LiveKit.AudioClockSync, "off by default, in the sample too")
+
+	t.Setenv("BBBRECORDER_LIVEKIT_AUDIOCLOCKSYNC", "true")
+	cfg = (&Config{}).GetDefaults()
+	cfg.Load(App{Name: "bbb-webrtc-recorder"}, "../../config/bbb-webrtc-recorder.yml")
+	assert.True(t, cfg.LiveKit.AudioClockSync, "the variable the sample config names turns it on")
+}

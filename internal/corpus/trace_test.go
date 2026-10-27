@@ -55,6 +55,10 @@ func TestValidate(t *testing.T) {
 		{"eof before an event", func(t *Trace) { t.Records = append(t.Records, Record{T: RecordTimeout, AtUs: 100}) }, "record 2: eof before the last"},
 		{"payload type", func(t *Trace) { t.Records[0].PT = 200 }, "payload type 200"},
 		{"rtx and dup", func(t *Trace) { t.Records[0].RTX, t.Records[0].Dup = true, true }, "both rtx and dup"},
+		{"sr without ntp", func(t *Trace) { t.Records[1] = Record{T: RecordSR, TS: 5} }, "record 1: sr without an ntp time"},
+		{"packet fields on sr", func(t *Trace) { t.Records[1] = Record{T: RecordSR, NTP: 1, Seq: 2} }, "sr record with packet fields"},
+		{"ntp on rtp", func(t *Trace) { t.Records[0].NTP = 1 }, "rtp record with an ntp time"},
+		{"ntp on eof", func(t *Trace) { t.Records[2].NTP = 1 }, "eof record with an ntp time"},
 	}
 
 	for _, c := range cases {
@@ -72,13 +76,14 @@ func TestValidateEvents(t *testing.T) {
 	tr.Records = slices.Insert(tr.Records, 1,
 		Record{T: RecordPLI, AtUs: 0, Reason: "packet_drop"},
 		Record{T: RecordTimeout, AtUs: 0},
+		Record{T: RecordSR, AtUs: 0, NTP: 1 << 32, TS: 10},
 	)
 	tr.Records[len(tr.Records)-1].Reason = "truncated"
-	require.NoError(t, tr.Validate(), "events share read times with packets; an eof may carry a reason")
+	require.NoError(t, tr.Validate(), "events and sender reports share read times with packets; an eof may carry a reason")
 
 	for _, r := range tr.Records {
 		assert.Equal(t, r.T == RecordPLI || r.T == RecordTimeout, r.IsEvent(), r.T)
-		if r.IsEvent() {
+		if r.T != RecordRTP {
 			assert.Nil(t, r.Packet())
 		}
 	}

@@ -39,6 +39,8 @@ type TrackStats struct {
 	RecorderTrackStats *types.RecorderTrackStats `json:"recorder"`
 	TrackKind          string                    `json:"trackKind"`
 	MimeType           string                    `json:"mimeType"`
+	// MediaClock is a microphone's media clock against the wall clock.
+	MediaClock *types.MediaClockStats `json:"mediaClock,omitempty"`
 }
 
 const (

@@ -3,6 +3,7 @@ package appstats
 import (
 	"math"
 	"net/http"
+	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
@@ -301,7 +302,44 @@ var (
 		Name:      "disk_check_errors_total",
 		Help:      "Total number of failed disk pressure guard checks.",
 	})
+
+	// ----- Media clock (microphones) -----
+
+	MediaClockRateRatio = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Subsystem: "recorder",
+		Name:      "media_clock_rate_ratio",
+		Help: "Media time a track's RTP timestamps covered over the time its packets took to arrive, " +
+			"less LiveKit's realignments, per track of 10 s or more: below 1 when the sender's media clock runs slow.",
+		Buckets: []float64{0.9, 0.95, 0.97, 0.98, 0.99, 0.995, 0.999, 1.001, 1.005, 1.01, 1.03},
+	},
+		[]string{"source", "kind", "mime"})
+
+	MediaClockInsertedGaps = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "media_clock_inserted_gaps_total",
+		Help:      "Total number of timestamp gaps inserted because a sender's media clock fell behind the wall clock.",
+	},
+		[]string{"source", "kind", "mime"})
+
+	MediaClockInsertedGapSeconds = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Subsystem: "recorder",
+		Name:      "media_clock_inserted_gap_seconds_total",
+		Help:      "Total media time inserted as timestamp gaps, in seconds.",
+	},
+		[]string{"source", "kind", "mime"})
+
+	MediaClockEndLag = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Subsystem: "recorder",
+		Name:      "media_clock_end_lag_seconds",
+		Help: "How far behind the wall clock a track's packets arrived at its end, after its gaps, per track of 10 s or more: " +
+			"how early the recording plays its end, unless a network delay grew near the end. A track ahead counts as 0.",
+		Buckets: []float64{0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60},
+	},
+		[]string{"source", "kind", "mime"})
 )
+
+// The rate and lag of tracks shorter than this are mostly start-up noise.
+const mediaClockMinDuration = 10 * time.Second
 
 func RegisterMetrics() {
 	prometheus.MustRegister(Requests)
@@ -336,6 +374,10 @@ func RegisterMetrics() {
 	prometheus.MustRegister(DiskTotalBytes)
 	prometheus.MustRegister(DiskPressureTransitions)
 	prometheus.MustRegister(DiskCheckErrors)
+	prometheus.MustRegister(MediaClockRateRatio)
+	prometheus.MustRegister(MediaClockInsertedGaps)
+	prometheus.MustRegister(MediaClockInsertedGapSeconds)
+	prometheus.MustRegister(MediaClockEndLag)
 
 	reason := types.ConstraintReasonDiskPressure
 	ConstrainedCapturesTotal.WithLabelValues(reason)
@@ -478,6 +520,10 @@ func UpdateCaptureMetrics(stats *CaptureStats) {
 			continue
 		}
 
+		if trackStats.MediaClock != nil {
+			updateMediaClockMetrics(trackStats)
+		}
+
 		if trackStats.Adapter != nil {
 			PLIRequests.With(prometheus.Labels{
 				"source": trackStats.Source,
@@ -556,5 +602,18 @@ func UpdateCaptureMetrics(stats *CaptureStats) {
 				}).Add(float64(trackStats.RecorderTrackStats.WrittenSamples))
 			}
 		}
+	}
+}
+
+func updateMediaClockMetrics(trackStats *TrackStats) {
+	labels := prometheus.Labels{"source": trackStats.Source, "kind": trackStats.TrackKind, "mime": trackStats.MimeType}
+	mc := trackStats.MediaClock
+
+	MediaClockInsertedGaps.With(labels).Add(float64(mc.InsertedGaps))
+	MediaClockInsertedGapSeconds.With(labels).Add(float64(mc.InsertedGapMs) / 1000)
+
+	if time.Duration(mc.ArrivalDurationMs)*time.Millisecond >= mediaClockMinDuration {
+		MediaClockRateRatio.With(labels).Observe(mc.RateRatio)
+		MediaClockEndLag.With(labels).Observe(float64(max(mc.LagMs, 0)) / 1000)
 	}
 }

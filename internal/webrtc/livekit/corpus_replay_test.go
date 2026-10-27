@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,8 +15,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,6 +51,10 @@ type webmExpect struct {
 	MinVideoFrames int  `json:"minVideoFrames,omitempty"`
 	MinAudioFrames int  `json:"minAudioFrames,omitempty"`
 	MinKeyframes   int  `json:"minKeyframes,omitempty"` // by the VP8 payload bit
+	// MaxAudioLagMs bounds the Opus frames' lag behind their read times
+	// (oracle.TimelineLag) by magnitude, MaxFinalAudioLagMs the last frame's.
+	MaxAudioLagMs      *float64 `json:"maxAudioLagMs,omitempty"`
+	MaxFinalAudioLagMs *float64 `json:"maxFinalAudioLagMs,omitempty"`
 }
 
 // window is an inclusive time range, in ms on the trace's atUs timeline.
@@ -74,6 +81,8 @@ type expectation struct {
 	Class  string   `json:"class"`
 	Intent string   `json:"intent"`
 	Traces []string `json:"traces"`
+	// AudioClockSync replays with livekit.audioClockSync on.
+	AudioClockSync bool `json:"audioClockSync,omitempty"`
 	checks
 	// Residuals explain the checks pinned away from their ideal value.
 	Residuals []string `json:"residuals,omitempty"`
@@ -181,6 +190,22 @@ func (e *webmExpect) violations(r replayResult) []string {
 		v = append(v, fmt.Sprintf("webm: %d audio frames, want >= %d", audio, e.MinAudioFrames))
 	}
 
+	if e.MaxAudioLagMs != nil || e.MaxFinalAudioLagMs != nil {
+		switch {
+		case r.audioLagErr != nil:
+			v = append(v, fmt.Sprintf("webm audio lag: %v", r.audioLagErr))
+		case r.audioLag == nil:
+			v = append(v, "webm audio lag: needs exactly one Opus trace")
+		default:
+			if e.MaxAudioLagMs != nil && math.Abs(r.audioLag.MaxMs) > *e.MaxAudioLagMs {
+				v = append(v, fmt.Sprintf("webm audio lag %.1f ms, want within %v ms", r.audioLag.MaxMs, *e.MaxAudioLagMs))
+			}
+			if e.MaxFinalAudioLagMs != nil && math.Abs(r.audioLag.FinalMs) > *e.MaxFinalAudioLagMs {
+				v = append(v, fmt.Sprintf("webm final audio lag %.1f ms, want within %v ms", r.audioLag.FinalMs, *e.MaxFinalAudioLagMs))
+			}
+		}
+	}
+
 	return v
 }
 
@@ -228,9 +253,12 @@ func traceReads(tr *corpus.Trace) (reads []trackRead, rtx map[*rtp.Packet]bool) 
 		}
 
 		read := trackRead{at: time.Duration(rec.AtUs) * time.Microsecond}
-		if rec.T == corpus.RecordEOF {
+		switch rec.T {
+		case corpus.RecordSR:
+			read.sr = &rtcp.SenderReport{SSRC: tr.Header.SSRC, NTPTime: rec.NTP, RTPTime: rec.TS}
+		case corpus.RecordEOF:
 			read.err = io.EOF
-		} else {
+		default:
 			read.pkt = rec.Packet()
 			read.pkt.SSRC = tr.Header.SSRC
 			rtx[read.pkt] = rec.RTX
@@ -244,19 +272,31 @@ func traceReads(tr *corpus.Trace) (reads []trackRead, rtx map[*rtp.Packet]bool) 
 // replayTraces plays traces together through the read loop into one WebM.
 // Run it inside a synctest bubble: the traces' atUs are offsets from now.
 func replayTraces(t *testing.T, traces []*corpus.Trace) replayResult {
+	return replayTracesWith(t, (&config.Config{}).GetDefaults().LiveKit, traces)
+}
+
+// replayTracesWith is replayTraces with the adapter configured as cfg.
+func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) replayResult {
 	infos := make([]trackInfo, 0, len(traces))
+	rates := make([]uint32, 0, len(traces))
 	for i, tr := range traces {
-		info, _ := traceInfo(t, i, tr)
+		info, rate := traceInfo(t, i, tr)
 		infos = append(infos, info)
+		rates = append(rates, rate)
 	}
 
 	h := newReplayHarness(t, infos...)
+	h.w.cfg = cfg
+	for i, info := range infos {
+		h.w.prepareTrack(info, rates[i])
+	}
 	turn := make(chan struct{}, 1)
 	srcs := make([]trackSource, 0, len(traces))
 	fakes := make([]*fakeTrack, 0, len(traces))
 	for _, tr := range traces {
 		reads, _ := traceReads(tr)
 		fake := newFakeTrack(reads)
+		fake.onRTCP = h.w.onRTCP
 		fakes = append(fakes, fake)
 		srcs = append(srcs, settledSource{trackSource: fake, turn: turn})
 	}
@@ -264,6 +304,25 @@ func replayTraces(t *testing.T, traces []*corpus.Trace) replayResult {
 	r := h.run(nil, srcs...)
 	for i, fake := range fakes {
 		assert.False(t, fake.staleDeadline, "%s: a read without a deadline ahead", infos[i].id)
+	}
+
+	var audio []int
+	for i, tr := range traces {
+		if tr.Header.Codec == corpus.CodecOpus {
+			audio = append(audio, i)
+		}
+	}
+	if len(audio) == 1 {
+		if clock := h.w.mediaClock(infos[audio[0]].id); clock != nil {
+			st := clock.Stats()
+			r.audioClock = &st
+		}
+		if r.webm != nil {
+			if tr := r.webm.Track(oracle.CodecOpus); tr != nil {
+				lag, err := oracle.TimelineLag(tr, traces[audio[0]])
+				r.audioLag, r.audioLagErr = &lag, err
+			}
+		}
 	}
 
 	return r
@@ -289,6 +348,10 @@ func (r replayResult) String() string {
 			}
 		}
 		webm = strings.Join(parts, " ")
+	}
+
+	if r.audioLagErr == nil && r.audioLag != nil {
+		webm += fmt.Sprintf(" audioLag{max=%.1fms final=%.1fms}", r.audioLag.MaxMs, r.audioLag.FinalMs)
 	}
 
 	return fmt.Sprintf("buffer=%d%s writer=%d%s frames v=%d a=%d packets=%d lost=%d dropped=%d webm=%s",
@@ -321,9 +384,12 @@ func TestCorpusReplay(t *testing.T) {
 		}
 
 		t.Run(name, func(t *testing.T) {
+			cfg := (&config.Config{}).GetDefaults().LiveKit
+			cfg.AudioClockSync = e.AudioClockSync
+
 			var r replayResult
 			synctest.Test(t, func(t *testing.T) {
-				r = replayTraces(t, traces)
+				r = replayTracesWith(t, cfg, traces)
 			})
 			t.Logf("measured: %s", r)
 

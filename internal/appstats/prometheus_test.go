@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 )
@@ -75,4 +76,42 @@ func TestDiskByteGaugesReadNaNUntilFirstCheck(t *testing.T) {
 	}
 
 	assert.Equal(t, 2, seen)
+}
+
+func TestUpdateCaptureMetricsMediaClock(t *testing.T) {
+	registry := useFreshRegistry(t)
+	RegisterMetrics()
+
+	track := func(arrivalMs int64) *TrackStats {
+		return &TrackStats{Source: "MICROPHONE", TrackKind: "audio", MimeType: "audio/red",
+			MediaClock: &types.MediaClockStats{ArrivalDurationMs: arrivalMs, RateRatio: 0.978, InsertedGaps: 54, InsertedGapMs: 1340, LagMs: 30}}
+	}
+	UpdateCaptureMetrics(&CaptureStats{Tracks: map[string]*TrackStats{"MICROPHONE": track(60000)}})
+	// Too short for the rate and the lag; its corrections still count.
+	UpdateCaptureMetrics(&CaptureStats{Tracks: map[string]*TrackStats{"MICROPHONE": track(5000)}})
+
+	families, err := registry.Gather()
+	assert.NoError(t, err)
+
+	got := map[string]float64{}
+	for _, family := range families {
+		for _, metric := range family.GetMetric() {
+			switch family.GetName() {
+			case "recorder_media_clock_inserted_gaps_total", "recorder_media_clock_inserted_gap_seconds_total":
+				got[family.GetName()] = metric.GetCounter().GetValue()
+			case "recorder_media_clock_rate_ratio", "recorder_media_clock_end_lag_seconds":
+				got[family.GetName()+"_count"] = float64(metric.GetHistogram().GetSampleCount())
+				got[family.GetName()+"_sum"] = metric.GetHistogram().GetSampleSum()
+			}
+		}
+	}
+
+	assert.Equal(t, map[string]float64{
+		"recorder_media_clock_inserted_gaps_total":        108,
+		"recorder_media_clock_inserted_gap_seconds_total": 2.68,
+		"recorder_media_clock_rate_ratio_count":           1,
+		"recorder_media_clock_rate_ratio_sum":             0.978,
+		"recorder_media_clock_end_lag_seconds_count":      1,
+		"recorder_media_clock_end_lag_seconds_sum":        0.03,
+	}, got)
 }

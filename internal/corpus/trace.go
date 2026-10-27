@@ -42,6 +42,9 @@ const (
 	// events re-emerge from the replayed packets and read times.
 	RecordPLI     RecordType = "pli"
 	RecordTimeout RecordType = "timeout"
+	// RecordSR is an RTCP sender report for the track, read at atUs. Replay
+	// hands it to the adapter, as lksdk's RTCP callback would.
+	RecordSR RecordType = "sr"
 
 	vp8ClockRate  = 90000
 	opusClockRate = 48000
@@ -64,8 +67,9 @@ type Header struct {
 	Note        string     `json:"note,omitempty"`
 }
 
-// Record is one packet read from the track, a reader event, or the end of
-// the stream. Non-RTP records carry only T, AtUs and Reason.
+// Record is one packet read from the track, a sender report, a reader
+// event, or the end of the stream. A sender report carries T, AtUs, NTP and
+// TS, its RTP time; other non-RTP records carry only T, AtUs and Reason.
 type Record struct {
 	T RecordType `json:"t"`
 	// AtUs is the read-time offset from the start of the trace, not socket arrival.
@@ -85,6 +89,8 @@ type Record struct {
 	// Reason is required on a pli, optional on an eof (e.g. why a capture
 	// was truncated) and absent elsewhere.
 	Reason string `json:"reason,omitempty"`
+	// NTP is a sender report's NTP time, in the 64-bit RTCP format.
+	NTP uint64 `json:"ntp,omitempty"`
 }
 
 // Trace is a header plus its records in read order.
@@ -196,6 +202,10 @@ func validateRecords(recs []Record) error {
 func validateRecord(i int, r Record, prev int64) error {
 	switch r.T {
 	case RecordRTP, RecordEOF:
+	case RecordSR:
+		if r.NTP == 0 {
+			return fmt.Errorf("record %d: sr without an ntp time", i)
+		}
 	case RecordPLI:
 		if r.Reason == "" {
 			return fmt.Errorf("record %d: pli without a reason", i)
@@ -209,8 +219,12 @@ func validateRecord(i int, r Record, prev int64) error {
 		return fmt.Errorf("record %d: %s record with a reason", i, r.T)
 	}
 
-	if r.T != RecordRTP && r.hasPacketFields() {
+	if (r.T == RecordSR && r.hasRTPOnlyFields()) || (r.T != RecordRTP && r.T != RecordSR && r.hasPacketFields()) {
 		return fmt.Errorf("record %d: %s record with packet fields", i, r.T)
+	}
+
+	if r.NTP != 0 && r.T != RecordSR {
+		return fmt.Errorf("record %d: %s record with an ntp time", i, r.T)
 	}
 
 	if r.AtUs < 0 {
@@ -237,6 +251,11 @@ func validateRecord(i int, r Record, prev int64) error {
 }
 
 func (r Record) hasPacketFields() bool {
-	return r.Seq != 0 || r.TS != 0 || r.M || r.PT != 0 ||
+	return r.TS != 0 || r.hasRTPOnlyFields()
+}
+
+// hasRTPOnlyFields leaves out TS, which a sender report carries too.
+func (r Record) hasRTPOnlyFields() bool {
+	return r.Seq != 0 || r.M || r.PT != 0 ||
 		r.RTX || r.Dup || r.Pad || r.PLen != 0 || len(r.Pay) != 0
 }
