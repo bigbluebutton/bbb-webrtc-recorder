@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.18.0
+
+* fix(app): shut down gracefully on SIGTERM too
+* feat(corpus): model senders whose media clock runs slow
+* fix(webm): skip an Opus frame whose timestamp goes back
+* fix(livekit): keep microphone recordings on the wall clock
+* feat(appstats): export the microphones' media clock
+
 ### v0.17.0
 
 * build(livekit): build media-sdk's jitter package from a local copy
