@@ -84,3 +84,21 @@ func TestTimelineLagFastTimestamps(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, oracle.Lag{Frames: 200, MaxMs: 199, FinalMs: 199}, lag)
 }
+
+func TestTimelineLagBacklogAtStart(t *testing.T) {
+	// The first five 20 ms frames are read together at 100 ms, the rest on
+	// time: the first read found 80 ms of backlog.
+	var recs []corpus.Record
+	for k := range 8 {
+		at := int64(100000)
+		if k > 4 {
+			at += int64(k-4) * 20000
+		}
+		recs = append(recs, opusRead(uint16(k), uint32(k)*960, at))
+	}
+
+	tr := &corpus.Trace{Header: corpus.NewSyntheticHeader(corpus.KindAudio, 1, "test"), Records: recs}
+	lag, err := oracle.TimelineLag(&oracle.Track{Blocks: 8, PTS: []int64{0, 20, 40, 60, 80, 100, 120, 140}}, tr)
+	require.NoError(t, err)
+	assert.Equal(t, oracle.Lag{Frames: 8, StartMs: 80}, lag)
+}
