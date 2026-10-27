@@ -279,12 +279,21 @@ two steps:
    installs `linux-modules-extra` for the running kernel if the module is
    missing.
 
-The job runs twice on every trigger, as a matrix: once with the plain
-recorder, and once as `Run E2E Tests (race)` with `E2E_RECORDER_RACE=1`,
+The job runs three times on every trigger, as a matrix. The first two legs
+run the steps above: once with the plain recorder, and once as
+`Run E2E Tests (race)` with `E2E_RECORDER_RACE=1`,
 where the NACK step builds its recorder with `-race` too. A race report in
 the recorder's log fails that leg. The race detector does not catch every
 race on every run, so a race-leg failure that passes on a rerun is still a
 race in the recorder, not a flake.
+
+A third leg, `Run E2E Tests (browser)`, runs only the browser scenarios
+(`-run '^TestBrowser'`), against the race-built recorder, with
+`E2E_BROWSER=1` and `E2E_BROWSER_REQUIRED=1`, so a broken setup fails it
+instead of skipping. It installs Node 26, the runner's packages and
+Playwright's Chromium with its system libraries, and skips the NACK step. It
+runs on `ubuntu-24.04`; the matrix in `e2e.yml` says why. The other two legs
+skip the browser scenarios.
 
 `E2E_ARTIFACTS` points at `$RUNNER_TEMP/e2e-artifacts`, so every test's
 artifacts are kept. When the job fails or is cancelled (as a timeout does),

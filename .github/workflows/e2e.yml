@@ -62,7 +62,7 @@ jobs:
           fi
 
   e2e:
-    name: Run E2E Tests${{ matrix.race == '1' && ' (race)' || '' }}
+    name: Run E2E Tests${{ matrix.browser == '1' && ' (browser)' || matrix.race == '1' && ' (race)' || '' }}
     needs: changes
     # Nightly and on demand, always. On a PR: when it is opened, pushed to or
     # reopened, if it touches the recorder or carries the e2e label; on a
@@ -76,20 +76,29 @@ jobs:
         (github.event.action != 'labeled' &&
          (needs.changes.outputs.recorder == 'true' ||
           contains(github.event.pull_request.labels.*.name, 'e2e'))))
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.image || 'ubuntu-latest' }}
     # Every run tests the plain recorder and a race-enabled one, whose log
-    # fails the test on a race report.
+    # fails the test on a race report. A third leg runs only the browser
+    # scenarios (TestBrowser*), with the race-enabled recorder, so that the
+    # browser's traffic is checked for races too; the other two skip them.
     strategy:
       fail-fast: false
       matrix:
         race: ['0', '1']
+        browser: ['0']
+        include:
+          # Playwright downloads Chromium only for the Ubuntu releases it
+          # knows, so the browser leg's image moves with a Playwright bump.
+          - race: '1'
+            browser: '1'
+            image: ubuntu-24.04
     # The suite runs for minutes, plus two builds on a cold cache. This limit
     # and the ones below only stop a hung run; they are not a time budget.
     timeout-minutes: 30
     # Here, not on the workflow: a run whose job the if above skips, such as
     # one for another label, must not cancel the run in progress.
     concurrency:
-      group: e2e-${{ github.event.pull_request.number || github.ref }}-${{ matrix.race }}
+      group: e2e-${{ github.event.pull_request.number || github.ref }}-${{ matrix.race }}-${{ matrix.browser }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       REDIS_SERVER_BIN: /usr/bin/redis-server
@@ -137,18 +146,52 @@ jobs:
           sudo systemctl disable --now redis-server
           "$REDIS_SERVER_BIN" --version
 
+      - name: Set up Node
+        if: matrix.browser == '1'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: tests/e2e/browser/package-lock.json
+
+      # Playwright's Chromium is pinned by the playwright version in the
+      # lockfile, and built for the runner's image.
+      - name: Cache Playwright's Chromium
+        if: matrix.browser == '1'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ matrix.image }}-${{ hashFiles('tests/e2e/browser/package-lock.json') }}
+
+      # The system libraries Chromium needs are installed every run; the
+      # cache holds only the browser.
+      - name: Install the browser runner and Chromium
+        if: matrix.browser == '1'
+        working-directory: tests/e2e/browser
+        run: |
+          npm ci
+          npx playwright install --with-deps --no-shell chromium
+
       - name: Run E2E tests
+        if: matrix.browser != '1'
         run: go test -tags e2e -v -timeout 15m ./tests/e2e/...
 
+      - name: Run the browser scenarios
+        if: matrix.browser == '1'
+        env:
+          E2E_BROWSER: '1'
+          E2E_BROWSER_REQUIRED: '1'
+        run: go test -tags e2e -v -timeout 15m -run '^TestBrowser' ./tests/e2e/...
+
       # The NACK scenario builds two network namespaces with a netem qdisc, so
-      # it runs as root:
-      # after the suite even if that failed, not after a failed setup (redis
-      # is the last setup step). Both binaries are built as the runner user
-      # first: root has no Go toolchain on PATH, and its build cache would be
-      # root-owned. The variables go on the command line, where sudo's
-      # env_reset cannot drop them.
+      # it runs as root. It runs after the suite even if that failed, but not
+      # after a failed setup (redis is the last setup step on the legs that
+      # run it). Both binaries are built as the runner user first: root has
+      # no Go toolchain on PATH, and its build cache would be root-owned. The
+      # variables go on the command line, where sudo's env_reset cannot drop
+      # them.
       - name: Run the NACK/RTX scenario as root (netem loss)
-        if: ${{ !cancelled() && steps.redis.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.redis.outcome == 'success' && matrix.browser != '1' }}
         timeout-minutes: 10
         run: |
           sudo modprobe sch_netem || {
@@ -180,7 +223,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-artifacts-${{ matrix.race == '1' && 'race-' || '' }}${{ github.run_id }}-${{ github.run_attempt }}
+          name: e2e-artifacts-${{ matrix.browser == '1' && 'browser-' || matrix.race == '1' && 'race-' || '' }}${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/e2e-artifacts
           if-no-files-found: ignore
           retention-days: 14
