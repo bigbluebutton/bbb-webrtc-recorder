@@ -25,6 +25,9 @@ type Lag struct {
 	Frames  int
 	MaxMs   float64 // the largest lag by magnitude, with its sign
 	FinalMs float64 // the last frame's
+	// StartMs is how far a burst of reads at the start moved the first
+	// frame's read time back: the backlog the first read found.
+	StartMs float64
 }
 
 // TimelineLag maps the blocks of t, in file order, to the frames read in
@@ -77,6 +80,7 @@ func TimelineLag(t *Track, tr *corpus.Trace) (Lag, error) {
 		}
 	}
 
+	firstRead := frames[0].at
 	usPerTick := 1e6 / float64(tr.Header.ClockRate)
 	maxStep := int64(float64(tr.Header.ClockRate) * 0.04)
 	for k := len(frames) - 2; k >= 0; k-- {
@@ -85,7 +89,7 @@ func TimelineLag(t *Track, tr *corpus.Trace) (Lag, error) {
 		}
 	}
 
-	lag := Lag{Frames: len(frames)}
+	lag := Lag{Frames: len(frames), StartMs: float64(firstRead-frames[0].at) / 1000}
 	for k, f := range frames {
 		played := float64(t.PTS[k] - t.PTS[0])
 		read := float64(time.Duration(f.at-frames[0].at)*time.Microsecond) / float64(time.Millisecond)

@@ -37,6 +37,24 @@ func TestSlowMicClockKeepsWallClock(t *testing.T) {
 	}
 }
 
+// Copies of mediaClockArrivalWindow, mediaClockTrigger and mediaClockGap
+// (internal/webrtc/utils), for the microphone scenarios' lag bounds.
+const (
+	clockWindow  = time.Second
+	clockTrigger = 40 * time.Millisecond
+	clockGap     = 120 * time.Millisecond
+	// Read times carry the publisher's pacing and loopback jitter.
+	micReadJitter = 60 * time.Millisecond
+)
+
+// endLagBound is how far a corrected microphone can end from where it was
+// read. unseenMs is the loss the arrival window does not show yet. The
+// microphone can end early by up to unseenMs plus the trigger, or late by
+// up to a gap less the trigger.
+func endLagBound(unseenMs float64) float64 {
+	return max(unseenMs+ms(clockTrigger), ms(clockGap-clockTrigger)) + ms(micReadJitter)
+}
+
 func testSlowMicClock(t *testing.T, muteAt, muteFor time.Duration) {
 	t.Helper()
 
@@ -49,14 +67,6 @@ func testSlowMicClock(t *testing.T, muteAt, muteFor time.Duration) {
 		// span 5 s to show the rate, so the lag can grow for 8 s before it
 		// is corrected.
 		onsetLag = 8 * time.Second
-		// Read times carry the publisher's pacing and loopback jitter.
-		readJitter = 60 * time.Millisecond
-		// Once corrected, the lag is the deficit over the 1 s arrival window
-		// plus the 40 ms trigger. A 120 ms gap can instead leave the audio up
-		// to 80 ms late.
-		steadyLag = time.Second
-		trigger   = 40 * time.Millisecond
-		gap       = 120 * time.Millisecond
 	)
 
 	s := NewStack(t, StackOptions{RecorderConfig: func(_ *Stack, cfg map[string]any) {
@@ -109,9 +119,11 @@ func testSlowMicClock(t *testing.T, muteAt, muteFor time.Duration) {
 	deficit := func(d time.Duration) float64 {
 		return float64(d.Milliseconds()) * (1 - clockRate)
 	}
-	maxLag := deficit(onsetLag) + float64(readJitter.Milliseconds())
-	finalLag := max(deficit(steadyLag)+float64(trigger.Milliseconds()), float64((gap-trigger).Milliseconds())) +
-		float64(readJitter.Milliseconds())
+	jitter := ms(micReadJitter)
+	maxLag := deficit(onsetLag) + jitter
+	// The sender loses media at a constant rate, so the arrival window has
+	// yet to show one second of deficit.
+	finalLag := endLagBound(deficit(clockWindow))
 
 	t.Logf("webm: blocks=%d pts=[%d,%d] maxGap=%dms; lag: max=%.1fms final=%.1fms (bounds %.0f, %.0f); uncorrected it would end %.0f ms early",
 		out.WebM.Blocks, out.WebM.FirstPTS, out.WebM.LastPTS, out.WebM.MaxGapMs, lag.MaxMs, lag.FinalMs,
@@ -135,7 +147,7 @@ func testSlowMicClock(t *testing.T, muteAt, muteFor time.Duration) {
 	assert.InDelta(t, mc.ArrivalDurationMs, covered, finalLag, "media time plus gaps against arrival time")
 	// The reports leave LiveKit's realignment out. The newest can be 4 s
 	// old: pion's 1 s interval and LiveKit's 3 s.
-	assert.InDelta(t, -lost, float64(mc.ReportedDriftMs), deficit(4*time.Second)+float64(readJitter.Milliseconds()), "drift by the reports")
+	assert.InDelta(t, -lost, float64(mc.ReportedDriftMs), deficit(4*time.Second)+jitter, "drift by the reports")
 	if muteAt > 0 {
 		assert.Positive(t, mc.Realignments, "LiveKit moved the timestamps to the wall clock")
 		assert.Positive(t, mc.GivenBackMs, "the gaps the jump covers given back")

@@ -3,7 +3,9 @@
 These tests run the recorder binary against a real `livekit-server` and
 `redis-server` on loopback. They drive the recorder over Redis the way
 bbb-webrtc-sfu does, and publish generated media from a Go LiveKit
-participant (lksdk) running inside the test process. Nothing runs in Docker.
+participant (lksdk) running inside the test process. In browser mode,
+Chromium publishes instead (see [Browser mode](#browser-mode)). Nothing runs
+in Docker.
 Every process gets its own free loopback ports, so the suite never touches
 LiveKit, Redis or recorder instances already running on the host. A child
 that loses a port to another process before binding it is started once more
@@ -41,6 +43,7 @@ recorder's trace, the `recordingStopped` events and the `/metrics` deltas.
 | `TestSignalCutResumesInPlace` | **Signal cut.** A TCP proxy resets the recorder's signalling connections and lets the redial through. Each session resumes in place, in its one file. |
 | `TestSignalRefusedSplitsFile` | **Signal refused.** The proxy also refuses redials for 5 s. The SDK falls back to a full reconnect and every session stops as `closed`. The test retries as the SFU does, so each session ends with two files. This pins today's behaviour; it is not a target. |
 | `TestSlowMicClockKeepsWallClock` | **Slow media clock.** A microphone sends contiguous timestamps at 0.955 of real time, with pion's sender reports, as a sender that loses captured audio does. For 30 s of recording, every frame must play within the onset and steady-state bounds of where it was read, instead of 1.35 s early at the end. A second case mutes the publisher for 2 s: LiveKit then moves the downtrack's timestamps to the wall clock itself, and the recorder must give back the gaps that the jump covers instead of playing the rest up to 0.6 s late. The stats file's `mediaClock` and the `recorder_media_clock_*` metrics must report the rate and the gaps inserted. |
+| `TestBrowserMicCaptureFreeze` | **Browser loses captured audio** (browser mode). Chromium publishes its fake microphone while the test stops its audio service process for 90 ms every 2 s. Chromium drops the audio it missed and keeps its timestamps contiguous. With `livekit.audioClockSync` off, the recording must end early by the time lost. The stats file, the recorder's "Microphone ended behind the wall clock" warning and Chromium's sender reports must show it. With it on, every frame must play within the onset and steady-state bounds of where it was read. A healthy microphone with it on must get no gap. |
 | `TestShutdownSignalClosesRecordings` | **Shutdown signal.** A camera records for 3 s, then the recorder gets SIGINT, and in a second run SIGTERM, the signal systemd sends on stop. Either way it must exit 0 by itself, having closed the WebM (every frame read is written) and ended the trace with its EOF record. |
 | `TestPublisherSendLoop`, `TestVP8PayloadHelpers` | The publisher's send loop (PLI answers, pacing, drops, pauses) and the VP8 payload helpers, with no servers involved. |
 
@@ -89,6 +92,48 @@ namespaces, skips unless `E2E_NETEM=1` and fails instead when
 CI runs the whole package unprivileged. A root-only scenario also needs its
 own step in `.github/workflows/e2e.yml`, as the NACK scenario has.
 
+## Browser mode
+
+In browser mode, Chromium publishes into the stack the way a BBB participant
+does: livekit-client in a page, with Chromium's capture, encoder, pacing and
+sender reports. Use it for what the Go publisher cannot model.
+
+Playwright drives Chromium from a Node runner, `browser/runner.mjs`. Its
+`package.json` pins `playwright`, which fixes the Chromium build, and
+`livekit-client`, at the version bigbluebutton-html5's develop branches use.
+`browser_test.go` starts the runner and calls its methods, one JSON line per
+request and per reply over stdin and stdout.
+
+Set it up once, with Node 22.22 or later:
+
+```sh
+cd tests/e2e/browser && npm ci && npx playwright install --no-shell chromium
+```
+
+On a host without Chromium's system libraries, add `--with-deps`, which
+installs them with apt through sudo, as CI does.
+
+Browser scenarios are named `TestBrowser*` and skip unless `E2E_BROWSER=1`:
+
+```sh
+E2E_BROWSER=1 go test -tags e2e -run '^TestBrowser' -v ./tests/e2e/...
+```
+
+To add a browser scenario, follow [Adding a scenario](#adding-a-scenario),
+with these changes:
+1. Start the test with `RequireBrowser(t)`, before the stack.
+2. Publish from the browser: `b := s.NewBrowser()`, then
+   `b.Join(room, identity).PublishMic(MicOptions{})`, which returns once
+   LiveKit lists the track.
+3. Impair the browser through the runner, e.g. `b.FreezeCapture`, which
+   stops Chromium's audio service process in bursts until `b.ThawCapture`.
+
+When a scenario needs something the runner cannot do yet, add a method to
+`methods` in `runner.mjs`, and a Go wrapper on `Browser` or `BrowserPeer`
+that calls it with `call`. Page code runs through Playwright's
+`page.evaluate`, where `window.LivekitClient` is the livekit-client UMD
+build and `window.e2eRoom` the peer's connected `Room`.
+
 ## Running locally
 
 You need Go (the version in `go.mod`), `livekit-server` 1.13.7 and
@@ -116,6 +161,9 @@ Environment:
 | `E2E_RECORDER_LOG_LEVEL`, `E2E_LIVEKIT_LOG_LEVEL` | Log levels. Defaults: `debug` and `info`. |
 | `E2E_NETEM=1` | Allow the NACK scenario's privileged path. The test must also run as root. |
 | `E2E_NETEM_REQUIRED=1` | Fail the NACK scenario instead of skipping it when the privileged path cannot run. |
+| `E2E_BROWSER=1` | Run the browser scenarios. They need Node and the runner set up (see [Browser mode](#browser-mode)). |
+| `E2E_BROWSER_REQUIRED=1` | Fail the browser scenarios instead of skipping them when they cannot run. |
+| `E2E_BROWSER_BIN` | Run this Chrome or Chromium binary instead of Playwright's Chromium. |
 
 The child processes do not inherit `BBBRECORDER_*`, `LIVEKIT_*`, `REDIS_*`,
 `NODE_IP` or `UDP_PORT`, so a shell set up for a dev recorder cannot override
@@ -133,6 +181,7 @@ holds:
 ```
 bbb-webrtc-recorder.{yml,log}  livekit-server.{yaml,log}  redis-server.log  lksdk-test-process.log
 pubsub.ndjson                                    # every Redis message sent and received
+browser-<n>.log  browser-<n>-rpc.ndjson          # browser mode: each runner's log, its requests and replies
 publisher.<identity>.<trackSID>.{sent.ndjson.gz,summary.json}
 recorder/recordings/<room>/<trackSID>-<session>.webm
                           /<trackSID>-<session>.<trackSID>.trace.ndjson.gz
@@ -230,12 +279,21 @@ two steps:
    installs `linux-modules-extra` for the running kernel if the module is
    missing.
 
-The job runs twice on every trigger, as a matrix: once with the plain
-recorder, and once as `Run E2E Tests (race)` with `E2E_RECORDER_RACE=1`,
+The job runs three times on every trigger, as a matrix. The first two legs
+run the steps above: once with the plain recorder, and once as
+`Run E2E Tests (race)` with `E2E_RECORDER_RACE=1`,
 where the NACK step builds its recorder with `-race` too. A race report in
 the recorder's log fails that leg. The race detector does not catch every
 race on every run, so a race-leg failure that passes on a rerun is still a
 race in the recorder, not a flake.
+
+A third leg, `Run E2E Tests (browser)`, runs only the browser scenarios
+(`-run '^TestBrowser'`), against the race-built recorder, with
+`E2E_BROWSER=1` and `E2E_BROWSER_REQUIRED=1`, so a broken setup fails it
+instead of skipping. It installs Node 26, the runner's packages and
+Playwright's Chromium with its system libraries, and skips the NACK step. It
+runs on `ubuntu-24.04`; the matrix in `e2e.yml` says why. The other two legs
+skip the browser scenarios.
 
 `E2E_ARTIFACTS` points at `$RUNNER_TEMP/e2e-artifacts`, so every test's
 artifacts are kept. When the job fails or is cancelled (as a timeout does),
