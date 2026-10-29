@@ -33,6 +33,11 @@ type replayResult struct {
 	audioLag    *oracle.Lag
 	audioLagErr error
 	audioClock  *types.MediaClockStats
+	// The recorder's media span once closed, and the fake clock's time at
+	// the traces' atUs 0.
+	span      types.MediaSpan
+	spanOK    bool
+	readStart time.Time
 }
 
 func (r replayResult) requests() []time.Duration {
@@ -165,6 +170,7 @@ func (h *replayHarness) run(onRequest func(ssrc uint32), srcs ...trackSource) re
 	}
 
 	h.rec.Close()
+	r.span, r.spanOK = h.rec.MediaSpan()
 	r.webm, r.webmErr = oracle.SummarizeWebM(h.file)
 
 	h.mu.Lock()
