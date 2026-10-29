@@ -243,17 +243,43 @@ type BrowserPeer struct {
 	room string
 }
 
-// Join opens a page for identity and connects it to room.
+// Join opens a page for identity and connects it to room, with
+// livekit-client's default room options.
 func (b *Browser) Join(room, identity string) *BrowserPeer {
 	b.t.Helper()
 
-	b.call("join", map[string]any{"peer": identity, "url": b.lk.URL, "token": b.lk.Token(b.t, room, identity, nil)}, nil)
+	return b.join(room, identity, nil)
+}
+
+// bbbRoomOptions are the room options BBB's client connects with
+// (settings.yml, public.media.livekit.roomOptions).
+var bbbRoomOptions = map[string]any{
+	"adaptiveStream":            true,
+	"dynacast":                  true,
+	"stopLocalTrackOnUnpublish": false,
+	"singlePeerConnection":      false,
+}
+
+// JoinAsBBB is Join with the room options of BBB's client. With dynacast,
+// the page sends only the camera layers LiveKit asks for.
+func (b *Browser) JoinAsBBB(room, identity string) *BrowserPeer {
+	b.t.Helper()
+
+	return b.join(room, identity, bbbRoomOptions)
+}
+
+func (b *Browser) join(room, identity string, roomOptions map[string]any) *BrowserPeer {
+	b.t.Helper()
+
+	b.call("join", map[string]any{
+		"peer": identity, "url": b.lk.URL, "token": b.lk.Token(b.t, room, identity, nil), "roomOptions": roomOptions,
+	}, nil)
 
 	return &BrowserPeer{Identity: identity, b: b, room: room}
 }
 
 // MicOptions are a microphone's publish options. The zero value publishes as
-// BBB's client does by default: no DTX, RED on.
+// BBB's client does by default: no DTX, RED on, 48 kbps at most.
 type MicOptions struct {
 	Name       string // default "microphone"
 	DTX        bool
@@ -283,6 +309,83 @@ func (p *BrowserPeer) PublishMic(o MicOptions) *BrowserTrack {
 	require.NoError(p.b.t, waitTracksListed(ctx, p.b.lk, p.room, p.Identity, published.TrackSid))
 
 	return &BrowserTrack{SID: published.TrackSid}
+}
+
+// CameraProfile is one of BBB's camera profiles (settings.yml,
+// public.kurento.cameraProfiles).
+type CameraProfile struct {
+	ID          string         `json:"id"`
+	Bitrate     int            `json:"bitrate"` // kbps
+	Hidden      bool           `json:"hidden,omitempty"`
+	Constraints map[string]any `json:"constraints,omitempty"`
+}
+
+// bbbCameraProfiles are profiles of settings.yml. The camera quality
+// thresholds pick a hidden one (low-u30 at 30 cameras).
+var bbbCameraProfiles = []CameraProfile{
+	{ID: "low-u30", Bitrate: 30, Hidden: true},
+	{ID: "low", Bitrate: 100},
+	{ID: "medium", Bitrate: 200},
+	{ID: "high", Bitrate: 500, Constraints: map[string]any{"width": 1280, "height": 720, "frameRate": 15}},
+	{ID: "hd", Bitrate: 800, Constraints: map[string]any{"width": 1280, "height": 720, "frameRate": 30}},
+}
+
+// BBBCamera is a camera published as BBB's client publishes it.
+type BBBCamera struct {
+	BrowserTrack
+	// Capture is the size and frame rate Chromium captures at.
+	Capture struct {
+		Width, Height int
+		FrameRate     float64
+	}
+	// Encodings are the sender's, one per layer.
+	Encodings []struct {
+		RID          string
+		MaxBitrate   int // bps
+		MaxFramerate float64
+	}
+}
+
+// CameraCapture overrides the camera's capture. The zero value keeps the
+// profile's.
+type CameraCapture struct {
+	// FrameRate, if set, is asked of getUserMedia only, as a webcam in low
+	// light captures fewer frames than its profile asks.
+	FrameRate float64
+}
+
+// PublishBBBCameraCapturing publishes the browser's fake camera in VP8 as
+// BBB's client does with profile, one of bbbCameraProfiles, and capture.
+// Profile and up to two visible profiles below it are its simulcast
+// layers, duplicates dropped; a hidden profile is one layer. It waits
+// until LiveKit lists the track.
+func (p *BrowserPeer) PublishBBBCameraCapturing(name, profile string, capture CameraCapture) *BBBCamera {
+	p.b.t.Helper()
+
+	var cam struct {
+		TrackSid string
+		Capture  struct {
+			Width, Height int
+			FrameRate     float64
+		}
+		Encodings []struct {
+			RID          string
+			MaxBitrate   int
+			MaxFramerate float64
+		}
+	}
+	args := map[string]any{"peer": p.Identity, "name": name, "profiles": bbbCameraProfiles, "profileId": profile}
+	if capture.FrameRate > 0 {
+		args["captureFrameRate"] = capture.FrameRate
+	}
+	p.b.call("publishBBBCamera", args, &cam)
+
+	ctx, cancel := context.WithTimeout(p.b.t.Context(), browserCallTimeout)
+	defer cancel()
+
+	require.NoError(p.b.t, waitTracksListed(ctx, p.b.lk, p.room, p.Identity, cam.TrackSid))
+
+	return &BBBCamera{BrowserTrack: BrowserTrack{SID: cam.TrackSid}, Capture: cam.Capture, Encodings: cam.Encodings}
 }
 
 // CaptureFreeze stops the browser's audio service process for Burst, once

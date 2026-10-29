@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -284,6 +285,37 @@ func waitTracksListed(ctx context.Context, lk *LiveKit, room, identity string, s
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// listedVP8Layers waits until LiveKit lists the VP8 layers of the track sid
+// in room, and returns them.
+func listedVP8Layers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid string) []*livekit.VideoLayer {
+	t.Helper()
+
+	rs := lksdk.NewRoomServiceClient(lk.HTTPURL(), lk.APIKey, lk.APISecret)
+
+	var layers []*livekit.VideoLayer
+	require.Eventually(t, func() bool {
+		resp, err := rs.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
+		if err != nil {
+			return false
+		}
+
+		for _, pi := range resp.Participants {
+			for _, ti := range pi.Tracks {
+				for _, c := range ti.Codecs {
+					if ti.Sid == sid && strings.EqualFold(c.MimeType, webrtc.MimeTypeVP8) && len(c.Layers) > 0 {
+						layers = c.Layers
+						return true
+					}
+				}
+			}
+		}
+
+		return false
+	}, 10*time.Second, 50*time.Millisecond, "LiveKit does not list the VP8 layers of %s", sid)
+
+	return layers
 }
 
 // Start is when the track began sending; SentPacket.At and PLIs count from it.
