@@ -60,6 +60,7 @@ type Session struct {
 	recordingStartTimeUTC time.Time
 	recordingStartTimeHR  time.Duration
 	mediaHasFlowed        bool
+	mediaStart            time.Time
 	metadata              map[string]any
 }
 
@@ -157,6 +158,10 @@ func (s *Session) GetRecordingInfo() *events.RecordingInfo {
 		hr := s.recordingStartTimeHR
 		info.StartTimeUTC = &utc
 		info.StartTimeHR = &hr
+	}
+
+	if !s.mediaStart.IsZero() {
+		info.SetMediaStart(s.mediaStart)
 	}
 
 	return info
@@ -262,6 +267,7 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 				s.StopRecording(nil, "closed", time.Time{})
 			}
 		})
+		s.livekit.SetMediaStartCallback(s.handleMediaStart)
 
 		if err := s.livekit.Init(); err != nil {
 			s.server.PublishPubSub(e.Fail(err))
@@ -292,13 +298,17 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 
 		s.stopped = true
 		var duration time.Duration
+		var span types.MediaSpan
+		var hasSpan bool
 
 		if !isInterfaceNil(s.livekit) {
 			// Reset state callbacks to avoid any potential race conditions or duplicated events.
 			s.livekit.SetConnectionStateCallback(func(state utils.ConnectionState) {})
 			s.livekit.SetFlowCallback(func(isFlowing bool, timestamp time.Duration, closed bool) {})
+			s.livekit.SetMediaStartCallback(func(start time.Time) {})
 			s.livekit.StopConstraints()
 			duration = s.livekit.Close()
+			span, hasSpan = s.recorder.MediaSpan()
 
 			// Take the stats after Close, so they include the frames written
 			// while closing.
@@ -326,7 +336,7 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 		}
 
 		ts := duration / time.Millisecond
-		var response interface{}
+		var response *events.RecordingStopped
 
 		e := c.event
 		reason := c.reason
@@ -339,6 +349,10 @@ func (s *Session) handleStopRecording(c stopRecordingCommand) {
 			}
 
 			response = events.NewRecordingStopped(s.id, reason, ts)
+		}
+
+		if hasSpan {
+			response.WithMediaSpan(span)
 		}
 
 		if s.startedSuccessfully {
@@ -371,6 +385,14 @@ func (s *Session) liftConstraint(reason string) bool {
 	}
 
 	return s.livekit.LiftConstraint(reason)
+}
+
+func (s *Session) handleMediaStart(start time.Time) {
+	s.mu.Lock()
+	s.mediaStart = start
+	s.mu.Unlock()
+
+	s.server.PublishPubSub(events.NewRecordingMediaStarted(s.id, start))
 }
 
 func (s *Session) handleFirstMediaFlow(isFlowing bool, timestamp time.Duration) {

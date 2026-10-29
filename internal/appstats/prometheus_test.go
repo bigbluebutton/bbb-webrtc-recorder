@@ -3,10 +3,14 @@ package appstats
 import (
 	"math"
 	"testing"
+	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // useFreshRegistry points the default registry at an empty one for the
@@ -114,4 +118,19 @@ func TestUpdateCaptureMetricsMediaClock(t *testing.T) {
 		"recorder_media_clock_end_lag_seconds_count":      1,
 		"recorder_media_clock_end_lag_seconds_sum":        0.03,
 	}, got)
+}
+
+func TestOnServerResponseCountsTheMediaStart(t *testing.T) {
+	count := func(method string) float64 {
+		var m dto.Metric
+		require.NoError(t, Responses.WithLabelValues(method).Write(&m))
+
+		return m.GetCounter().GetValue()
+	}
+	started, unknown := count(events.RecordingMediaStartedKey), count("unknown")
+
+	OnServerResponse(events.NewRecordingMediaStarted("s1", time.Now()))
+
+	assert.InDelta(t, started+1, count(events.RecordingMediaStartedKey), 0)
+	assert.InDelta(t, unknown, count("unknown"), 0)
 }

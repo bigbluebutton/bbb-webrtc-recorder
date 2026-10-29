@@ -199,6 +199,19 @@ where to look and its known limits.
 }
 ```
 
+`recordingMediaStarted` (Recorder -> SFU), LiveKit sessions only
+
+```json5
+{
+    id: "recordingMediaStarted", // once the media start is settled, or 4.5 s old
+    recordingSessionId: <String>,
+    mediaStartUTC: <Number>, // when the first frame written arrived, less any backlog (at most 1 s), epoch ms
+    mediaStartHR: <Number>, // the same time on the host's CLOCK_MONOTONIC, ms
+}
+```
+
+See [Media timestamps](#media-timestamps).
+
 `stopRecording` (SFU -> Recorder)
 
 ```json5
@@ -216,7 +229,12 @@ where to look and its known limits.
     recordingSessionId: <String>, // file name
     reason: <String>,
     timestampUTC: <Number>, // last written frame timestamp, UTC, wall clock
-    timestampHR:  <Number> // last written frame timestamp, monotonic system time
+    timestampHR:  <Number>, // last written frame timestamp, monotonic system time
+    // LiveKit sessions that wrote a frame
+    mediaStartUTC?: <Number>, // as in recordingMediaStarted, unless the start moved after it was sent
+    mediaStartHR?: <Number>,
+    mediaEndUTC?: <Number>, // mediaStart plus the media written, to the end of the last frame
+    mediaEndHR?: <Number>,
 }
 ```
 
@@ -235,6 +253,7 @@ where to look and its known limits.
 	appVersion: <String>, // version of the recorder
 	instanceId: <String>, // unique instance id
 	timestamp: <Number>, // event generation timestamp
+	capabilities: <String[]>, // "mediaTimestamps": see recordingMediaStarted
 }
 ```
 
@@ -269,8 +288,39 @@ where to look and its known limits.
                 }
             },
             "startTimeUTC": "<Number | undefined>", // Wall clock time (milliseconds since epoch) for the first frame
-            "startTimeHR": "<Number | undefined>" // Monotonic system time (milliseconds) for the first frame
+            "startTimeHR": "<Number | undefined>", // Monotonic system time (milliseconds) for the first frame
+            "mediaStartUTC": "<Number | undefined>", // LiveKit: as in recordingMediaStarted, once sent
+            "mediaStartHR": "<Number | undefined>"
         }
     ]
 }
 ```
+
+#### Media timestamps
+
+record-and-playback places the first frame of each recorded file at the
+`timestamp` of its start event, then follows the file's own timestamps. That
+field is the host's CLOCK_MONOTONIC in milliseconds, the clock akka-apps and
+bbb-webrtc-sfu use for every recording event. For LiveKit sessions, the
+recorder measures that time so the controller does not have to guess it:
+
+- `mediaStart` is when the first frame written reached the recorder: the
+  arrival of its earliest packet, before the jitter buffer.
+
+  The first reads can find frames that waited in the receive buffers, and a
+  camera can send its first frames late and catch up. So a frame that
+  arrived sooner than its timestamp implies moves `mediaStart` back, by at
+  most 1 s. Only frames written within a track's first 2 s of media can do
+  this. A delay on the path that lasts longer stays in `mediaStart`, and the
+  file plays that much late.
+
+  A step over 120 ms between a microphone's frames closes that window
+  early. A video track's steps do not: a camera catching up can send frames
+  700 ms apart.
+- `mediaEnd` is `mediaStart` plus the media written after the first frame, to
+  the end of the last frame. So `mediaEnd - mediaStart` is the file's
+  duration.
+
+Each comes as epoch ms (`*UTC`) and CLOCK_MONOTONIC ms (`*HR`) for the same
+instant. The other timestamp fields are kept as they were for older
+controllers.

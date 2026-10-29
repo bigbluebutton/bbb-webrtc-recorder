@@ -493,6 +493,8 @@ func OnServerResponse(msg interface{}) {
 		Responses.WithLabelValues(events.RecordingRtpStatusChangedKey).Inc()
 	case *events.RecordingStopped:
 		Responses.WithLabelValues(events.RecordingStoppedKey).Inc()
+	case *events.RecordingMediaStarted:
+		Responses.WithLabelValues(events.RecordingMediaStartedKey).Inc()
 	case *events.RecorderStatus:
 		Responses.WithLabelValues(events.RecorderStatusKey).Inc()
 	default:

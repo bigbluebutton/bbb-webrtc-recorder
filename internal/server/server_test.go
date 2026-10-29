@@ -50,6 +50,7 @@ var _ pubsub.PubSub = (*mockPubSub)(nil)
 // Mock Recorder
 type mockRecorder struct {
 	path string
+	span *types.MediaSpan
 }
 
 func (r *mockRecorder) GetFilePath() string             { return r.path }
@@ -70,7 +71,13 @@ func (r *mockRecorder) NotifySkippedPacket(seq uint16) {}
 
 func (r *mockRecorder) PushVideoAt(p *rtp.Packet, at time.Time) {}
 func (r *mockRecorder) PushAudioAt(p *rtp.Packet, at time.Time) {}
-func (r *mockRecorder) MediaSpan() (types.MediaSpan, bool)      { return types.MediaSpan{}, false }
+func (r *mockRecorder) MediaSpan() (types.MediaSpan, bool) {
+	if r.span == nil {
+		return types.MediaSpan{}, false
+	}
+
+	return *r.span, true
+}
 
 var _ recorder.Recorder = (*mockRecorder)(nil)
 
@@ -88,11 +95,13 @@ type mockLiveKitWebRTC struct {
 	// is not listed does.
 	noChange bool
 
-	mu      sync.Mutex
-	applied []types.CaptureConstraint
-	lifted  []string
-	active  map[string]bool
-	calls   []string
+	mu         sync.Mutex
+	applied    []types.CaptureConstraint
+	lifted     []string
+	active     map[string]bool
+	calls      []string
+	mediaStart func(start time.Time)
+	onClose    func()
 }
 
 func (lk *mockLiveKitWebRTC) SetConnectionStateCallback(callback func(state utils.ConnectionState)) {
@@ -100,6 +109,9 @@ func (lk *mockLiveKitWebRTC) SetConnectionStateCallback(callback func(state util
 func (lk *mockLiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
 }
 func (lk *mockLiveKitWebRTC) SetMediaStartCallback(callback func(start time.Time)) {
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+	lk.mediaStart = callback
 }
 func (lk *mockLiveKitWebRTC) Init() error { return lk.initErr }
 func (lk *mockLiveKitWebRTC) Close() time.Duration {
@@ -107,6 +119,9 @@ func (lk *mockLiveKitWebRTC) Close() time.Duration {
 		lk.mu.Lock()
 		lk.calls = append(lk.calls, "Close")
 		lk.mu.Unlock()
+		if lk.onClose != nil {
+			lk.onClose()
+		}
 		close(lk.closed)
 	})
 	return 0
