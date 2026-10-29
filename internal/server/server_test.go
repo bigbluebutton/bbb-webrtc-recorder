@@ -99,6 +99,8 @@ func (lk *mockLiveKitWebRTC) SetConnectionStateCallback(callback func(state util
 }
 func (lk *mockLiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
 }
+func (lk *mockLiveKitWebRTC) SetMediaStartCallback(callback func(start time.Time)) {
+}
 func (lk *mockLiveKitWebRTC) Init() error { return lk.initErr }
 func (lk *mockLiveKitWebRTC) Close() time.Duration {
 	lk.closeOnce.Do(func() {

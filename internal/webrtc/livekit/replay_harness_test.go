@@ -53,8 +53,15 @@ func (r *countingRecorder) count() {
 	r.mu.Unlock()
 }
 
-func (r *countingRecorder) PushVideo(p *rtp.Packet) { r.count(); r.WebmRecorder.PushVideo(p) }
-func (r *countingRecorder) PushAudio(p *rtp.Packet) { r.count(); r.WebmRecorder.PushAudio(p) }
+func (r *countingRecorder) PushVideoAt(p *rtp.Packet, at time.Time) {
+	r.count()
+	r.WebmRecorder.PushVideoAt(p, at)
+}
+
+func (r *countingRecorder) PushAudioAt(p *rtp.Packet, at time.Time) {
+	r.count()
+	r.WebmRecorder.PushAudioAt(p, at)
+}
 
 // replayHarness runs tracks through readTrack, a production trackBuffer and
 // a real WebmRecorder, and records each keyframe request where it is made.

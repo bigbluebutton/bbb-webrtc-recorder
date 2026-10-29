@@ -54,7 +54,7 @@ type trackBuffer struct {
 	pending     bool   // that request has no key frame after it yet
 
 	mu        sync.Mutex
-	ready     []*rtp.Packet
+	ready     []jitter.ExtPacket
 	lastLoss  time.Time
 	lastEarly time.Time
 	ended     bool
@@ -85,11 +85,14 @@ func newTrackBuffer(depacketizer rtp.Depacketizer, latency, lossInterval time.Du
 	return b
 }
 
-// push adds pkt to the jitter buffer and returns, in order, every packet the
-// buffer has released since the previous call.
+// push is pushExt for a packet that arrives now, without the arrivals.
 func (b *trackBuffer) push(pkt *rtp.Packet) []*rtp.Packet {
-	now := time.Now()
+	return packetsOf(b.pushExt(pkt, time.Now()))
+}
 
+// pushExt adds pkt, which arrived at now, to the jitter buffer. It returns,
+// in order and with their arrivals, the packets released since the last call.
+func (b *trackBuffer) pushExt(pkt *rtp.Packet, now time.Time) []jitter.ExtPacket {
 	if b.gaps != nil {
 		b.gaps.read(now)
 	}
@@ -170,6 +173,11 @@ func seqNewer(seq, ref uint16) bool {
 // frames the jitter buffer holds and drops the rest. A frame it drops
 // requests no keyframe, since none would arrive.
 func (b *trackBuffer) flush() []*rtp.Packet {
+	return packetsOf(b.flushExt())
+}
+
+// flushExt is flush, with each packet's arrival.
+func (b *trackBuffer) flushExt() []jitter.ExtPacket {
 	b.mu.Lock()
 	b.ended = true
 	b.mu.Unlock()
@@ -179,7 +187,16 @@ func (b *trackBuffer) flush() []*rtp.Packet {
 	return b.takeReady()
 }
 
-func (b *trackBuffer) takeReady() []*rtp.Packet {
+func packetsOf(ext []jitter.ExtPacket) []*rtp.Packet {
+	packets := make([]*rtp.Packet, 0, len(ext))
+	for _, p := range ext {
+		packets = append(packets, p.Packet)
+	}
+
+	return packets
+}
+
+func (b *trackBuffer) takeReady() []jitter.ExtPacket {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -197,7 +214,7 @@ func (b *trackBuffer) enqueue(sample []jitter.ExtPacket) {
 
 	for _, p := range sample {
 		if len(p.Payload) > 0 {
-			b.ready = append(b.ready, p.Packet)
+			b.ready = append(b.ready, p)
 		}
 	}
 }
