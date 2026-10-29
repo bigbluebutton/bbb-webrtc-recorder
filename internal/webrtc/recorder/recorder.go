@@ -24,6 +24,13 @@ type Recorder interface {
 	GetStats() *types.RecorderStats
 	PushVideo(rtp *rtp.Packet)
 	PushAudio(rtp *rtp.Packet)
+	// PushVideoAt and PushAudioAt push a packet that arrived at at. MediaSpan
+	// is timed by these arrivals, and only LiveKit captures use it.
+	PushVideoAt(rtp *rtp.Packet, at time.Time)
+	PushAudioAt(rtp *rtp.Packet, at time.Time)
+	// MediaSpan returns where the media written so far sits on the wall
+	// clock, and false while no frame is written.
+	MediaSpan() (types.MediaSpan, bool)
 	NotifySkippedPacket(seq uint16)
 	WithContext(ctx context.Context)
 	VideoTimestamp() time.Duration

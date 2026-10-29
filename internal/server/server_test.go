@@ -68,6 +68,10 @@ func (r *mockRecorder) VideoTimestamp() time.Duration  { return 0 }
 func (r *mockRecorder) AudioTimestamp() time.Duration  { return 0 }
 func (r *mockRecorder) NotifySkippedPacket(seq uint16) {}
 
+func (r *mockRecorder) PushVideoAt(p *rtp.Packet, at time.Time) {}
+func (r *mockRecorder) PushAudioAt(p *rtp.Packet, at time.Time) {}
+func (r *mockRecorder) MediaSpan() (types.MediaSpan, bool)      { return types.MediaSpan{}, false }
+
 var _ recorder.Recorder = (*mockRecorder)(nil)
 
 // Mock LiveKitWebRTC
