@@ -157,6 +157,43 @@ const methods = {
     }, { name, profiles, profileId, captureFrameRate });
   },
 
+  async setCameraLayer({ peer, trackSid, rid, active }) {
+    await page(peer).evaluate(async ({ trackSid, rid, active }) => {
+      const pub = window.e2eRoom.localParticipant.trackPublications.get(trackSid);
+      if (!pub?.track?.sender) throw new Error(`no sender for ${trackSid}`);
+      const { sender } = pub.track;
+      const params = sender.getParameters();
+      const encoding = params.encodings.find((e) => e.rid === rid);
+      if (!encoding) throw new Error(`${trackSid} has no layer ${rid}`);
+      encoding.active = active;
+      await sender.setParameters(params);
+    }, { trackSid, rid, active });
+
+    return {};
+  },
+
+  async cameraLayers({ peer, trackSid }) {
+    return page(peer).evaluate(({ trackSid }) => {
+      const pub = window.e2eRoom.localParticipant.trackPublications.get(trackSid);
+      if (!pub?.track?.sender) throw new Error(`no sender for ${trackSid}`);
+
+      return Object.fromEntries(pub.track.sender.getParameters().encodings.map((e) => [e.rid, e.active]));
+    }, { trackSid });
+  },
+
+  async cameraPLIs({ peer, trackSid }) {
+    return page(peer).evaluate(async ({ trackSid }) => {
+      const pub = window.e2eRoom.localParticipant.trackPublications.get(trackSid);
+      if (!pub?.track?.sender) throw new Error(`no sender for ${trackSid}`);
+      const plis = {};
+      (await pub.track.sender.getStats()).forEach((s) => {
+        if (s.type === 'outbound-rtp' && s.rid) plis[s.rid] = s.pliCount ?? 0;
+      });
+
+      return plis;
+    }, { trackSid });
+  },
+
   // See CaptureFreeze in browser_test.go. A signal that fails, as when the
   // process is gone, ends the freeze, and thawCapture reports it.
   async freezeCapture({ burstMs, everyMs }) {

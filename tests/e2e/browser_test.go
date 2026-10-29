@@ -330,6 +330,9 @@ var bbbCameraProfiles = []CameraProfile{
 	{ID: "hd", Bitrate: 800, Constraints: map[string]any{"width": 1280, "height": 720, "frameRate": 30}},
 }
 
+// bbbDefaultCameraProfile is the profile settings.yml marks as the default.
+const bbbDefaultCameraProfile = "medium"
+
 // BBBCamera is a camera published as BBB's client publishes it.
 type BBBCamera struct {
 	BrowserTrack
@@ -352,6 +355,13 @@ type CameraCapture struct {
 	// FrameRate, if set, is asked of getUserMedia only, as a webcam in low
 	// light captures fewer frames than its profile asks.
 	FrameRate float64
+}
+
+// PublishBBBCamera is PublishBBBCameraCapturing with the profile's capture.
+func (p *BrowserPeer) PublishBBBCamera(name, profile string) *BBBCamera {
+	p.b.t.Helper()
+
+	return p.PublishBBBCameraCapturing(name, profile, CameraCapture{})
 }
 
 // PublishBBBCameraCapturing publishes the browser's fake camera in VP8 as
@@ -386,6 +396,37 @@ func (p *BrowserPeer) PublishBBBCameraCapturing(name, profile string, capture Ca
 	require.NoError(p.b.t, waitTracksListed(ctx, p.b.lk, p.room, p.Identity, cam.TrackSid))
 
 	return &BBBCamera{BrowserTrack: BrowserTrack{SID: cam.TrackSid}, Capture: cam.Capture, Encodings: cam.Encodings}
+}
+
+// SetCameraLayer starts or stops sending the simulcast layer rid of the
+// camera sid, through its active flag. To LiveKit, a stopped layer looks
+// the same as one Chromium drops on a low bandwidth estimate.
+func (p *BrowserPeer) SetCameraLayer(sid, rid string, active bool) {
+	p.b.t.Helper()
+
+	p.b.call("setCameraLayer", map[string]any{"peer": p.Identity, "trackSid": sid, "rid": rid, "active": active}, nil)
+}
+
+// CameraLayers returns the active flag of each simulcast layer of the
+// camera sid, by rid.
+func (p *BrowserPeer) CameraLayers(sid string) map[string]bool {
+	p.b.t.Helper()
+
+	var layers map[string]bool
+	p.b.call("cameraLayers", map[string]any{"peer": p.Identity, "trackSid": sid}, &layers)
+
+	return layers
+}
+
+// CameraPLIs returns how many PLIs each simulcast layer of the camera sid
+// has received, by rid, from Chromium's outbound-rtp stats.
+func (p *BrowserPeer) CameraPLIs(sid string) map[string]int {
+	p.b.t.Helper()
+
+	var plis map[string]int
+	p.b.call("cameraPLIs", map[string]any{"peer": p.Identity, "trackSid": sid}, &plis)
+
+	return plis
 }
 
 // CaptureFreeze stops the browser's audio service process for Burst, once
