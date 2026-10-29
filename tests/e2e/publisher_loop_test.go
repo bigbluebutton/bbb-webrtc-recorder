@@ -42,7 +42,7 @@ func TestPublisherSendLoop(t *testing.T) {
 		KeyframeSpread: spread,
 		Drop:           func(s SentPacket) bool { return s.Seq == droppedSeq },
 	})
-	tr.startSending()
+	tr.startSending(time.Now())
 
 	time.Sleep(time.Until(tr.Start().Add(pliAt)))
 	tr.onRTCP(&rtcp.PictureLossIndication{})
