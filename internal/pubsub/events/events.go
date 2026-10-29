@@ -238,8 +238,8 @@ recordingRtpStatusChanged (Recorder -> SFU)
 	id: 'recordingRtpStatusChanged', // media started or stopped flowing
 	status: 'flowing' | 'not_flowing',
 	recordingSessionId: <String>, // file name
-	timestampUTC: <Number>, // latest/trigger frame ts, UTC
-	timestampHR: <Number>, monotonic system time (latest/trigger frame ts),
+	timestampUTC: <String>, // when the event was built, RFC 3339
+	timestampHR: <Number>, // LiveKit: ms since the session began; mediasoup: the WebM's media time
 }
 ```
 */
@@ -324,8 +324,8 @@ recordingStopped (Recorder -> SFU)
 	id: 'recordingStopped',
 	recordingSessionId: <String>, // file name
 	reason: <String>,
-  	timestampUTC: <Number>, // last written frame timestamp, UTC, wall clock
-	timestampHR:  <Number> // last written frame timestamp, monotonic system time
+	timestampUTC: <String>, // when the event was built, RFC 3339
+	timestampHR?: <Number>, // the WebM's video duration, ms; absent without video
 	// LiveKit sessions that wrote a frame; see recordingMediaStarted
 	mediaStartUTC?: <Number>,
 	mediaStartHR?: <Number>,
@@ -445,7 +445,7 @@ type RecordingInfo struct {
 	AdapterOptions *AdapterOptions `json:"adapterOptions,omitempty"`
 	Metadata       map[string]any  `json:"metadata,omitempty"`
 	StartTimeUTC   *int64          `json:"startTimeUTC,omitempty"` // Unix timestamp (milliseconds)
-	StartTimeHR    *time.Duration  `json:"startTimeHR,omitempty"`  // Monotonic system time (nanoseconds)
+	StartTimeHR    *time.Duration  `json:"startTimeHR,omitempty"`  // LiveKit: since the session began; mediasoup: media time (nanoseconds)
 	MediaStartUTC  *int64          `json:"mediaStartUTC,omitempty"`
 	MediaStartHR   *int64          `json:"mediaStartHR,omitempty"`
 }
@@ -470,8 +470,8 @@ getRecordingsResponse (Recorder -> *)
 	            "adapter": "<String>", // "mediasoup" or "livekit"
 	            "metadata": { ... }, // Opaque metadata from the original startRecording request
 	            "adapterOptions": { ... },
-	            "startTimeUTC": "<Number | undefined>", // Wall clock time (milliseconds since epoch) for the first frame
-	            "startTimeHR": "<Number | undefined>", // Monotonic system time (milliseconds) for the first frame
+	            "startTimeUTC": "<Number | undefined>", // epoch ms at the first flowing event
+	            "startTimeHR": "<Number | undefined>", // LiveKit: ns from the session's start to that event; mediasoup: the WebM's media time
 	            "mediaStartUTC": "<Number | undefined>", // LiveKit: as in recordingMediaStarted, once sent
 	            "mediaStartHR": "<Number | undefined>"
 	        }

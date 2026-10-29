@@ -194,8 +194,8 @@ where to look and its known limits.
     id: "recordingRtpStatusChanged", // media started or stopped flowing
     status: "flowing" | "not_flowing",
     recordingSessionId: <String>, // file name
-    timestampUTC: <Number>, // latest/trigger frame ts, UTC
-    timestampHR: <Number>, //monotonic system time (latest/trigger frame ts),
+    timestampUTC: <String>, // when the event was built, RFC 3339
+    timestampHR: <Number>, // LiveKit: ms since the session began; mediasoup: the WebM's media time
 }
 ```
 
@@ -228,8 +228,8 @@ See [Media timestamps](#media-timestamps).
     id: "recordingStopped",
     recordingSessionId: <String>, // file name
     reason: <String>,
-    timestampUTC: <Number>, // last written frame timestamp, UTC, wall clock
-    timestampHR:  <Number>, // last written frame timestamp, monotonic system time
+    timestampUTC: <String>, // when the event was built, RFC 3339
+    timestampHR?: <Number>, // the WebM's video duration, ms; absent without video
     // LiveKit sessions that wrote a frame
     mediaStartUTC?: <Number>, // as in recordingMediaStarted, unless the start moved after it was sent
     mediaStartHR?: <Number>,
@@ -287,8 +287,8 @@ See [Media timestamps](#media-timestamps).
                     "trackIds": ["<String>"]
                 }
             },
-            "startTimeUTC": "<Number | undefined>", // Wall clock time (milliseconds since epoch) for the first frame
-            "startTimeHR": "<Number | undefined>", // Monotonic system time (milliseconds) for the first frame
+            "startTimeUTC": "<Number | undefined>", // epoch ms at the first flowing event
+            "startTimeHR": "<Number | undefined>", // LiveKit: ns from the session's start to that event; mediasoup: the WebM's media time
             "mediaStartUTC": "<Number | undefined>", // LiveKit: as in recordingMediaStarted, once sent
             "mediaStartHR": "<Number | undefined>"
         }
@@ -322,5 +322,6 @@ recorder measures that time so the controller does not have to guess it:
   duration.
 
 Each comes as epoch ms (`*UTC`) and CLOCK_MONOTONIC ms (`*HR`) for the same
-instant. The other timestamp fields are kept as they were for older
-controllers.
+instant. The older `timestampUTC`, `timestampHR`, `startTimeUTC` and
+`startTimeHR` fields keep their form for older controllers. None of them is in
+the recording events' clock.
