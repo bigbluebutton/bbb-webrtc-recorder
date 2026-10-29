@@ -183,14 +183,14 @@ jobs:
           E2E_BROWSER_REQUIRED: '1'
         run: go test -tags e2e -v -timeout 15m -run '^TestBrowser' ./tests/e2e/...
 
-      # The NACK scenario builds two network namespaces with a netem qdisc, so
-      # it runs as root. It runs after the suite even if that failed, but not
+      # The netem scenarios build two network namespaces with netem qdiscs, so
+      # they run as root. They run after the suite even if that failed, but not
       # after a failed setup (redis is the last setup step on the legs that
-      # run it). Both binaries are built as the runner user first: root has
+      # run them). Both binaries are built as the runner user first: root has
       # no Go toolchain on PATH, and its build cache would be root-owned. The
       # variables go on the command line, where sudo's env_reset cannot drop
       # them.
-      - name: Run the NACK/RTX scenario as root (netem loss)
+      - name: Run the netem scenarios as root (NACK repair, start delay)
         if: ${{ !cancelled() && steps.redis.outcome == 'success' && matrix.browser != '1' }}
         timeout-minutes: 10
         run: |
@@ -208,7 +208,8 @@ jobs:
           sudo env "PATH=$PATH" "E2E_ARTIFACTS=$E2E_ARTIFACTS" \
             "LIVEKIT_SERVER_BIN=$LIVEKIT_SERVER_BIN" "REDIS_SERVER_BIN=$REDIS_SERVER_BIN" \
             E2E_NETEM=1 E2E_NETEM_REQUIRED=1 "E2E_RECORDER_BIN=$bin/bbb-webrtc-recorder" \
-            "$bin/e2e.test" -test.run '^TestNACKRepairUnderLoss$' -test.v -test.timeout 5m
+            "$bin/e2e.test" -test.run '^(TestNACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$' \
+            -test.v -test.timeout 5m
 
       # A job that hits timeout-minutes ends cancelled, not failed.
       - name: Make artifacts readable

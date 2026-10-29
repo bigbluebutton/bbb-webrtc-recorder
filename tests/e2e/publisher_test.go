@@ -3,7 +3,9 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -72,6 +74,9 @@ type TrackOptions struct {
 	Drop func(SentPacket) bool
 	// Width and Height are the signalled video dimensions (default 640x480).
 	Width, Height int
+	// TagFrames writes each frame's index into its first packet, after the
+	// codec's header, for TaggedFrame to read from the recording.
+	TagFrames bool
 }
 
 // SentPacket is one packet the publisher wrote, or withheld.
@@ -439,6 +444,10 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 					setVP8PictureID(pkt.Payload, picID)
 				}
 
+				if tr.opts.TagFrames && j == 0 {
+					tagFrame(pkt.Payload, tr.Kind, f.key || pliKey, frame)
+				}
+
 				s := SentPacket{
 					At:     time.Since(start),
 					Due:    sendAt,
@@ -678,6 +687,38 @@ func setVP8PictureID(p []byte, id uint16) {
 	}
 
 	p[2] = byte(id) & 0x7F
+}
+
+// frameTag precedes the frame index tagFrame writes, so TaggedFrame can
+// find it.
+var frameTag = []byte("BBBF")
+
+// tagFrame writes frameTag and frame into payload, the first packet of a
+// frame, past the VP8 descriptor and frame header or the Opus TOC byte.
+func tagFrame(payload []byte, kind corpus.Kind, key bool, frame int) {
+	at := 1
+	if kind == corpus.KindVideo {
+		at = vp8DescriptorLen(payload) + 3
+		if key {
+			at += 7
+		}
+	}
+
+	if len(payload) >= at+len(frameTag)+4 {
+		copy(payload[at:], frameTag)
+		binary.BigEndian.PutUint32(payload[at+len(frameTag):], uint32(frame))
+	}
+}
+
+// TaggedFrame returns the frame index tagFrame wrote into a recorded
+// frame's data, false if it has none.
+func TaggedFrame(data []byte) (int, bool) {
+	i := bytes.Index(data[:min(len(data), 64)], frameTag)
+	if i < 0 || len(data) < i+len(frameTag)+4 {
+		return 0, false
+	}
+
+	return int(binary.BigEndian.Uint32(data[i+len(frameTag):])), true
 }
 
 func sleepUntil(ctx context.Context, at time.Time) bool {

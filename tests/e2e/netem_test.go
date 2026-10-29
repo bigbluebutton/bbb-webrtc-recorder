@@ -262,8 +262,9 @@ func shellQuote(s string) string {
 // namespace under /run/netns.
 func netemSkipReason() string {
 	if os.Geteuid() != 0 || os.Getenv("E2E_NETEM") != "1" {
-		return "The NACK scenario needs root and E2E_NETEM=1: it creates two network namespaces, three veth pairs and a netem qdisc. " +
-			"tests/e2e/README.md shows how to build as the user and run -test.run '^TestNACKRepairUnderLoss$' as root."
+		return "The netem scenarios need root and E2E_NETEM=1: they create two network namespaces, three veth pairs and netem qdiscs. " +
+			"tests/e2e/README.md shows how to build as the user and run -test.run '^TestNACKRepairUnderLoss$' " +
+			"or '^TestMediaTimestampsTakeOffAStartDelay$' as root."
 	}
 
 	return ""
