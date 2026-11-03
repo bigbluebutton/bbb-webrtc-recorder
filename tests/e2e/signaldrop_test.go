@@ -46,7 +46,8 @@ const (
 
 // TestSignalCutResumesInPlace resets the signalling connections and lets the
 // redial through at once: the SDK's single resume attempt succeeds, so each
-// session keeps its peer connection and its one file.
+// session keeps its peer connection and its one file. Every frame must play
+// where it was sent, on both sides of the resume.
 func TestSignalCutResumesInPlace(t *testing.T) {
 	const (
 		// The SDK redials at once, and the server restarts ICE on the
@@ -103,6 +104,8 @@ func TestSignalCutResumesInPlace(t *testing.T) {
 	assert.Equal(t, len(r.tracks), int(delta.Sum(metricReconnected, nil)), metricReconnected)
 	assert.GreaterOrEqual(t, r.proxy.Accepted()-accepted, len(r.tracks), "resume dials through the proxy")
 
+	places := map[string]placement{}
+
 	for _, tr := range r.tracks {
 		t.Run(tr.name, func(t *testing.T) {
 			assert.Equal(t, events.StopReasonNormal, stopped[tr.rec.SessionID].Reason)
@@ -123,8 +126,57 @@ func TestSignalCutResumesInPlace(t *testing.T) {
 			assert.GreaterOrEqual(t, after, int(tr.fps*(sinceCut-resumeAllowance).Seconds()),
 				"frames written after the cut")
 			assert.LessOrEqual(t, webm.MaxGapMs, resumeAllowance.Milliseconds(), "PTS gap at the resume")
+
+			sends := frameSends(tr.track)
+			p, _ := checkPlacement(ctx, t, r.s.Driver, tr.name, tr.rec, sends, stopped[tr.rec.SessionID], maxStepOf(tr.track.Kind))
+			places[tr.name] = p
+			logResume(t, tr.name, p, sends, cutAt, resumeWithin)
+			t.Logf("%s: wakeup lag %v at most; ICE pairs, server side: %v", tr.name, maxWakeLag(tr.track),
+				recorderICEPairs(t, r.s.LiveKit.Proc.LogPath, tr.rec.SessionID))
 		})
 	}
+
+	assertLipSync(t, "lip sync", places["camera"], places["microphone"])
+}
+
+// logResume logs what the resume cost a track. It logs where the frames sent
+// after the cut play, at worst. Of the frames sent within window of the cut,
+// it logs how many are not in the file, and the largest PTS step into one.
+func logResume(t *testing.T, name string, p placement, sends map[int]time.Time, cutAt time.Time,
+	window time.Duration,
+) {
+	t.Helper()
+
+	inWindow := func(at time.Time) bool { return !at.Before(cutAt) && at.Before(cutAt.Add(window)) }
+
+	var worst, step time.Duration
+	written := map[int]bool{}
+
+	for i, b := range p.Blocks {
+		written[b.Frame] = true
+		sent := sends[b.Frame]
+
+		if !sent.Before(cutAt) && i < len(p.Errs) && p.Errs[i].Abs() > worst.Abs() {
+			worst = p.Errs[i]
+		}
+
+		if i > 0 && inWindow(sent) {
+			step = max(step, time.Duration(b.PTS-p.Blocks[i-1].PTS)*time.Millisecond)
+		}
+	}
+
+	sent, missing := 0, 0
+	for frame, at := range sends {
+		if inWindow(at) {
+			sent++
+			if !written[frame] {
+				missing++
+			}
+		}
+	}
+
+	t.Logf("%s: after the cut, frames play %v from where they were sent at worst; in the %v after it, "+
+		"the largest PTS step is %v and %d of %d frames sent are not in the file", name, worst, window, step, missing, sent)
 }
 
 // TestSignalRefusedSplitsFile resets the signalling connections and refuses
@@ -134,6 +186,9 @@ func TestSignalCutResumesInPlace(t *testing.T) {
 // whatever the outage's length. The test then retries as the SFU does, so
 // each session ends with two files, the second written once the signal is
 // back.
+//
+// Each file must play its frames where they were sent, and the second must
+// hold only frames sent after the refusal.
 func TestSignalRefusedSplitsFile(t *testing.T) {
 	const (
 		// Longer than sfuRetryDelay, so the first retry meets the refusal.
@@ -157,6 +212,8 @@ func TestSignalRefusedSplitsFile(t *testing.T) {
 	require.Equal(t, len(r.tracks), n, "one signalling connection per session")
 
 	type retryResult struct {
+		closed    events.RecordingStopped
+		closedAt  int // the closed recordingStopped's message index
 		stoppedIn time.Duration
 		failures  []error
 		restarted time.Time
@@ -176,17 +233,16 @@ func TestSignalRefusedSplitsFile(t *testing.T) {
 
 			res := &results[i]
 
-			m, _, err := r.s.Driver.WaitMessage(ctx, 0, stoppedMatch(tr.rec.SessionID))
+			m, at, err := r.s.Driver.WaitMessage(ctx, 0, stoppedMatch(tr.rec.SessionID))
 			if err != nil {
 				res.err = fmt.Errorf("%s: no recordingStopped: %w", tr.name, err)
 				return
 			}
 
-			res.stoppedIn = m.At.Sub(cutAt)
+			res.stoppedIn, res.closedAt = m.At.Sub(cutAt), at
 
-			var st events.RecordingStopped
-			if err := json.Unmarshal(m.Raw, &st); err != nil || st.Reason != "closed" {
-				res.err = fmt.Errorf("%s: recordingStopped reason %q (%v), want closed", tr.name, st.Reason, err)
+			if err := json.Unmarshal(m.Raw, &res.closed); err != nil || res.closed.Reason != "closed" {
+				res.err = fmt.Errorf("%s: recordingStopped reason %q (%v), want closed", tr.name, res.closed.Reason, err)
 				return
 			}
 
@@ -252,7 +308,9 @@ func TestSignalRefusedSplitsFile(t *testing.T) {
 	assert.Equal(t, len(r.tracks), int(delta.Sum(metricReconnecting, nil)), metricReconnecting)
 	assert.Zero(t, int(delta.Sum(metricReconnected, nil)), metricReconnected)
 
-	for _, tr := range r.tracks {
+	firsts, seconds := map[string]placement{}, map[string]placement{}
+
+	for i, tr := range r.tracks {
 		t.Run(tr.name, func(t *testing.T) {
 			assert.Equal(t, events.StopReasonNormal, stopped[tr.rec.SessionID].Reason)
 			// Pinned: the split. One file up to the cut, one from the retry on.
@@ -276,8 +334,41 @@ func TestSignalRefusedSplitsFile(t *testing.T) {
 			assert.GreaterOrEqual(t, second.WebM.Blocks,
 				int(tr.fps*(stopSent.Sub(tr.restarted)-signalStartupAllowance).Seconds()), "frames after the outage")
 			assert.LessOrEqual(t, second.WebM.MaxGapMs, int64(2*1000/tr.fps), "PTS gap after the outage")
+
+			sends := frameSends(tr.track)
+			p1, ok := checkPlacement(ctx, t, r.s.Driver, tr.name+", first file", tr.rec, sends, &results[i].closed, maxStepOf(tr.track.Kind))
+			// recordingMediaStarted names no file. Without this check, a start
+			// missing for the first file would pass as the second file's.
+			if ok {
+				require.Less(t, p1.StartedAt, results[i].closedAt,
+					"%s: the first file's recordingMediaStarted came after its recordingStopped", tr.name)
+			}
+
+			p2, _ := checkPlacement(ctx, t, r.s.Driver, tr.name+", second file", tr.retry, sends,
+				stopped[tr.rec.SessionID], maxStepOf(tr.track.Kind))
+			firsts[tr.name], seconds[tr.name] = p1, p2
+
+			_, last1 := tagRange(p1.Blocks)
+			first2, _ := tagRange(p2.Blocks)
+			assert.Greater(t, first2, last1, "%s: the second file holds frames of the first", tr.name)
+			assert.GreaterOrEqual(t, sends[p2.Blocks[0].Frame].Sub(cutAt), refuseFor,
+				"%s: the second file's first frame was sent during the refusal", tr.name)
+			t.Logf("%s: the first file's last frame was sent %v before the cut; wakeup lag %v at most",
+				tr.name, cutAt.Sub(sends[last1]), maxWakeLag(tr.track))
 		})
 	}
+
+	assertLipSync(t, "lip sync, first files", firsts["camera"], firsts["microphone"])
+	assertLipSync(t, "lip sync, second files", seconds["camera"], seconds["microphone"])
+}
+
+func tagRange(blocks []taggedBlock) (int, int) {
+	lo, hi := blocks[0].Frame, blocks[0].Frame
+	for _, b := range blocks[1:] {
+		lo, hi = min(lo, b.Frame), max(hi, b.Frame)
+	}
+
+	return lo, hi
 }
 
 // signalRig is a stack whose recorder signals through a proxy, recording one
@@ -308,11 +399,18 @@ func newSignalRig(t *testing.T) *signalRig {
 
 	r := &signalRig{room: "e2e-signal-" + uuid.NewString()[:8]}
 
-	r.s = NewStack(t, StackOptions{RecorderConfig: func(s *Stack, cfg map[string]any) {
-		r.proxy = StartTCPProxy(t, "127.0.0.1", fmt.Sprintf("127.0.0.1:%d", s.LiveKit.HTTPPort),
-			filepath.Join(s.Artifacts, "signal-proxy.log"))
-		lookup[map[string]any](t, cfg, "livekit")["host"] = r.proxy.URL()
-	}})
+	r.s = NewStack(t, StackOptions{
+		// The selected ICE pairs, which TestSignalCutResumesInPlace logs, are
+		// logged at debug.
+		LiveKitConfig: func(cfg map[string]any) {
+			lookup[map[string]any](t, cfg, "logging")["level"] = "debug"
+		},
+		RecorderConfig: func(s *Stack, cfg map[string]any) {
+			r.proxy = StartTCPProxy(t, "127.0.0.1", fmt.Sprintf("127.0.0.1:%d", s.LiveKit.HTTPPort),
+				filepath.Join(s.Artifacts, "signal-proxy.log"))
+			lookup[map[string]any](t, cfg, "livekit")["host"] = r.proxy.URL()
+		},
+	})
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	t.Cleanup(cancel)
@@ -326,8 +424,8 @@ func newSignalRig(t *testing.T) *signalRig {
 	audio, err := corpus.GenerateOpus(corpus.OpusOptions{Duration: time.Minute})
 	require.NoError(t, err)
 
-	cam := pub.PublishVP8(TrackOptions{Name: "camera", Schedule: video})
-	mic := pub.PublishOpus(TrackOptions{Name: "microphone", Schedule: audio})
+	cam := pub.PublishVP8(TrackOptions{Name: "camera", Schedule: video, TagFrames: true})
+	mic := pub.PublishOpus(TrackOptions{Name: "microphone", Schedule: audio, TagFrames: true})
 	require.NoError(t, pub.WaitPublished(ctx, cam, mic))
 
 	r.tracks = []*signalTrack{

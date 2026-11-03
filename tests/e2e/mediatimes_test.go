@@ -119,6 +119,14 @@ const (
 	maxAudioStep = 120 * time.Millisecond
 )
 
+func maxStepOf(kind corpus.Kind) time.Duration {
+	if kind == corpus.KindVideo {
+		return maxVideoStep
+	}
+
+	return maxAudioStep
+}
+
 const (
 	// Loopback adds about a millisecond from the publisher's write to the
 	// recorder's read. LiveKit's forwarding and the read loop add a few
