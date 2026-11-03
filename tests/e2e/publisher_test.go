@@ -699,12 +699,11 @@ func templateKeyFrame(t *testing.T, frames []schedFrame, width, height int) []co
 	return g.Records
 }
 
-// isVP8KeyFrameStart reports whether p starts a VP8 key frame: S set,
-// partition 0, and the frame tag's inverse key frame bit clear.
+// isVP8KeyFrameStart reports whether p starts a VP8 key frame.
 func isVP8KeyFrameStart(p []byte) bool {
-	n := corpus.VP8DescriptorLen(p)
+	_, key := corpus.VP8FrameStart(p)
 
-	return n > 0 && len(p) > n && p[0]&0x10 != 0 && p[0]&0x07 == 0 && p[n]&0x01 == 0
+	return key
 }
 
 func sleepUntil(ctx context.Context, at time.Time) bool {

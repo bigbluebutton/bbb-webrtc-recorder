@@ -100,5 +100,5 @@ func TestTimelineLagBacklogAtStart(t *testing.T) {
 	tr := &corpus.Trace{Header: corpus.NewSyntheticHeader(corpus.KindAudio, 1, "test"), Records: recs}
 	lag, err := oracle.TimelineLag(&oracle.Track{Blocks: 8, PTS: []int64{0, 20, 40, 60, 80, 100, 120, 140}}, tr)
 	require.NoError(t, err)
-	assert.Equal(t, oracle.Lag{Frames: 8, StartMs: 80}, lag)
+	assert.Equal(t, oracle.Lag{Frames: 8, StartMs: 80, StartAtUs: 20000}, lag)
 }

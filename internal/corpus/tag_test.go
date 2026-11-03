@@ -76,6 +76,23 @@ func TestVP8DescriptorLen(t *testing.T) {
 	assert.Equal(t, 0, VP8DescriptorLen(nil))
 }
 
+func TestVP8FrameStart(t *testing.T) {
+	n, key := VP8FrameStart(VP8Payload(1, true, true, 640, 480))
+	assert.Equal(t, 4, n)
+	assert.True(t, key)
+
+	n, key = VP8FrameStart(VP8Payload(1, true, false, 640, 480))
+	assert.Equal(t, 4, n)
+	assert.False(t, key)
+
+	n, _ = VP8FrameStart(VP8Payload(1, false, true, 640, 480))
+	assert.Equal(t, 0, n, "not the frame's first packet")
+	n, _ = VP8FrameStart([]byte{0x11, 0x00})
+	assert.Equal(t, 0, n, "partition 1")
+	n, _ = VP8FrameStart([]byte{0x10})
+	assert.Equal(t, 0, n, "nothing past the descriptor")
+}
+
 func TestVP8PictureID(t *testing.T) {
 	long := VP8Payload(0x1234, true, false, 640, 480)
 	id, bits := VP8PictureID(long)

@@ -54,6 +54,22 @@ func VP8DescriptorLen(p []byte) int {
 	return n
 }
 
+// VP8FrameStart returns the length of p's payload descriptor if p starts a
+// VP8 frame: S set, partition 0, and a byte past the descriptor. Otherwise
+// it returns zero. key is the inverse key frame bit, clear.
+func VP8FrameStart(p []byte) (n int, key bool) {
+	if len(p) == 0 || p[0]&0x10 == 0 || p[0]&0x07 != 0 {
+		return 0, false
+	}
+
+	n = VP8DescriptorLen(p)
+	if n == 0 || len(p) <= n {
+		return 0, false
+	}
+
+	return n, p[n]&0x01 == 0
+}
+
 // VP8PictureID returns the picture ID of the descriptor at p, and its
 // length in bits: 7 or 15, or 0 if p has none.
 func VP8PictureID(p []byte) (id uint16, bits int) {

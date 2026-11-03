@@ -17,5 +17,9 @@
     "noDupPTS": true,
     "monotonic": true,
     "minAudioFrames": 251
-  }
+  },
+  "mediaStartUs": 0,
+  "residuals": [
+    "mediaStartUs: frame 0, read on time at 0. The lag oracle cannot place this track: it needs one block per frame, and the skipped +1-tick frame leaves 252 frames read and 251 blocks. So no check places its frames, only their count and PTS order"
+  ]
 }

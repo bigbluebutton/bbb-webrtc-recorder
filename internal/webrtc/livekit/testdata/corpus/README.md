@@ -14,7 +14,7 @@ Read traces for the in-process replay of the LiveKit path (read loop, `trackBuff
 - **Provenance:**
   - `synthetic`: built with the `corpus` generators and mutations. The header's `generator` field records the exact call chain.
   - `pcap-extract`: per-packet read schedules taken from header-only SRTP captures of live test runs. The header `note` says what was synthesized.
-  - `capture`: a live capture written by the LiveKit adapter with `livekit.traceCapture` enabled. Its `generator` names the payload mode; in `full` mode the trace carries the media. No seed uses it.
+  - `capture`: a live capture written by the LiveKit adapter with `livekit.traceCapture` enabled. Its `generator` names the payload mode; in `full` mode the trace carries the media. No seed uses it. Replay's frame tag overwrites 8 media bytes of each frame's first packet. The recorder reads them only in an audio and video file: until both tracks have a frame written, it takes a delta frame's bytes 6-9 for the video's dimensions.
 - **Regenerating:** `go run ./internal/corpus/seedgen`, from the repository root, rewrites every synthetic and pcap-extract trace. `TestCorpusMatchesGenerator` fails when a committed trace differs from what the generator writes. The expect files are written by hand.
 
 ## Adding a seed
@@ -28,7 +28,8 @@ A seed is one or more traces plus one expect file. `TestCorpusReplay` replays ev
 3. **Measure:** run `go test ./internal/webrtc/livekit/ -run 'TestCorpusReplay/<name>$' -v`. It logs a `measured:` line with:
    - the requests and their times;
    - the frames and packets written;
-   - `PacketsLost`.
+   - `PacketsLost`;
+   - for a VP8 track, `videoPlace`: the frames read, the blocks placed, the frames dropped, and the lowest and highest timeline errors with their blocks. It also gives the ideal start in µs.
 4. **Pin the checks** that guard the defect, from the measured values. See Expect v1 below.
 5. **Prove the RED:**
    - Put the defect back, or the setting the intent names, such as `videoJitterLatency` at 200 ms.
@@ -67,7 +68,7 @@ The class groups the seeds that guard one defect, named in the Guards column. A 
 
 ## Expect v1
 
-`TestCorpusReplay` (`corpus_replay_test.go`) replays every expect file, and fails if a trace is not listed by exactly one. Unknown fields fail the load. Every check is optional: `bufferRequests`, `bufferRequestsMs`, `writerRequests`, `firstRequestMinMs`, `firstRequestMaxMs`, `written`, `packetsWritten`, `packetsLostMax`, `webm` and `mediaStartUs`. The required fields are:
+`TestCorpusReplay` (`corpus_replay_test.go`) replays every expect file, and fails if a trace is not listed by exactly one. Unknown fields fail the load. Every check is optional: `bufferRequests`, `bufferRequestsMs`, `writerRequests`, `firstRequestMinMs`, `firstRequestMaxMs`, `written`, `packetsWritten`, `packetsLostMax`, `packetsLostMin`, `webm` and `mediaStartUs`. The required fields are:
 
 - `v`: 1;
 - `class`;
@@ -82,13 +83,15 @@ The class groups the seeds that guard one defect, named in the Guards column. A 
 - **`bufferRequestsMs`** gives one inclusive window per track-buffer request, in order; the count must match.
 - **`written`** counts the video plus audio frames the writer wrote.
 - **`packetsWritten`** counts the packets the track buffers released to the writer. Where set, it is pinned exactly.
-- **`packetsLostMax`** bounds the jitter buffers' `PacketsLost`, summed over the tracks.
+- **`packetsLostMax`** bounds the jitter buffers' `PacketsLost`, summed over the tracks. **`packetsLostMin`** bounds it from below, for a seed that needs a loss counted.
 - **`webm`** checks the file read back with `oracle.SummarizeWebM`. Key frames are counted by the VP8 payload bit. A missing file fails every `webm` check: nothing written leaves none.
 - **`audioClockSync`**, optional, replays with `livekit.audioClockSync` on; it is off by default.
 - **`webm.maxAudioLagMs`** and **`webm.maxFinalAudioLagMs`** bound, by magnitude, how far each Opus frame plays from where it was read, and the last frame (`oracle.TimelineLag`). A frame read late in a burst after a stall is placed by the frames after it. They need exactly one Opus trace and one block per frame read.
+- **`webm.videoDropped`** bounds the VP8 frames read but not written. A timestamp read only with padding or an empty payload is no frame.
 - **Every seed:** the file must hold as many blocks per track as the writer counted frames, so a frame the writer counts but loses fails without a check of its own.
-- **Every single-track seed:** the media span must cover the file's media and start within 1 ms of the first written frame's read (`mediaspan_replay_test.go`). For VP8 that is the earliest read of the first key frame whose packets are all read. For Opus it is the first frame's read, less the lag oracle's backlog.
-- **`mediaStartUs`**, in µs on the trace's `atUs` timeline, replaces that read for a seed whose start is not there.
+- **Every VP8 seed:** replay tags each frame's first packet, and its copies, with "BBBF" and the frame's RTP timestamp (`corpus.TagFrame`). A first packet needs 11 bytes past the VP8 descriptor for a delta frame's tag, and 18 for a key frame's. A shorter one grows to fit if it holds the 10 bytes the writer reads of a frame. With one VP8 trace, each block must name a frame read, in increasing order (`oracle.VideoPlacement`). A block's timeline error is its PTS since the first block, less its RTP time since that block's. The errors must lie within 1.01 ms of each other, plus 1 ns per block: the writer truncates each frame duration to whole ns before it adds them up. The writer floors each PTS to ms, counting from the first key frame it sees, and it may reject that frame. So the first block's PTS can be off its RTP time too, and the errors fall either side of 0.
+- **Every single-track seed:** the media span must cover the file's media and start within 1 ms of its ideal start (`mediaspan_replay_test.go`). For VP8 that is the latest start that plays no written frame after its read: the least delayed frame's read, less its PTS since the first block. For Opus it is the first frame's read, less the lag oracle's backlog.
+- **`mediaStartUs`**, in µs on the trace's `atUs` timeline, replaces either for a seed whose start is not there, or whose oracle cannot place it.
 - **`residuals`** is a list of notes, one per check pinned away from its ideal value: what the ideal is, and why the pin differs.
 
 ## Determinism
