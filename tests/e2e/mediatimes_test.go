@@ -229,6 +229,23 @@ func assertLipSync(t *testing.T, label string, cam, mic placement) {
 	assert.InDelta(t, mic.Median, cam.Median, ms(frameLipSyncBound), label)
 }
 
+// maxWakeLag is how late tr's send loop woke for a frame, at worst. The
+// placement checks measure from when each frame was due, so one late frame
+// does not count against the recorder. mediaStart comes from the least-late
+// of the file's first frames, so a lag on all of them moves every block. A
+// large lag shows a loaded runner.
+func maxWakeLag(tr *PubTrack) time.Duration {
+	var lag time.Duration
+
+	for _, p := range tr.Sent() {
+		if p.Index == 0 {
+			lag = max(lag, p.At-p.Due)
+		}
+	}
+
+	return lag
+}
+
 // assertMediaEnd checks that recordingStopped repeats mediaStart. Its
 // mediaEnd must add the file's media, first PTS to last, and the last
 // frame's duration: the step before it, up to maxStep. PTS and event times

@@ -106,6 +106,7 @@ type lossRun struct {
 	StartSent time.Time // startRecording sent
 	Started   time.Time // startRecording answered
 	StopSent  time.Time
+	Stopped   *events.RecordingStopped
 }
 
 // runLoss records sc's camera on its own stack, arms the loss, then stops
@@ -125,7 +126,7 @@ func runLoss(t *testing.T, sc lossScenario) *lossRun {
 
 	drop := &midFrameDrop{index: lossDropIndex}
 	cam := pub.PublishVP8(TrackOptions{
-		Name: "camera", Schedule: sched, KeyframeSpread: sc.keySpread, Drop: drop.drop,
+		Name: "camera", Schedule: sched, KeyframeSpread: sc.keySpread, Drop: drop.drop, TagFrames: true,
 	})
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
@@ -157,9 +158,9 @@ func runLoss(t *testing.T, sc lossScenario) *lossRun {
 	time.Sleep(time.Until(stopAt))
 
 	r.StopSent = time.Now()
-	st, err := s.Driver.StopAndWait(ctx, r.Rec.SessionID)
+	r.Stopped, err = s.Driver.StopAndWait(ctx, r.Rec.SessionID)
 	require.NoError(t, err)
-	assert.Equal(t, events.StopReasonNormal, st.Reason)
+	assert.Equal(t, events.StopReasonNormal, r.Stopped.Reason)
 
 	// The recorder creates the file with its first frame, so a keyframe loop
 	// from the start leaves none; its trace and the publisher still tell.
