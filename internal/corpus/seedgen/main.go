@@ -610,6 +610,18 @@ func seeds() []seed {
 		out = append(out, seed{name: "c24-start-stall-2500ms", class: "24", tracks: []*corpus.Trace{t}})
 	}
 
+	// A first key frame of 8x8, the size of LiveKit's blank frames, which
+	// the writer rejects. Its timestamp still starts the writer's clock.
+	{
+		t := must(corpus.GenerateVP8(corpus.VP8Options{FPS: 30, Duration: 4e9, KeyPackets: 8, DeltaPackets: 3, KeyInterval: 20, SpreadUs: 3000,
+			StartSeq: 1000, StartTS: 90000, StartPictureID: 100, SSRC: next()}))
+		t.Records[0].Pay = corpus.VP8Payload(100, true, true, 8, 8)
+		t.Records = must(corpus.Apply(t.Records, corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, "corpus.GenerateVP8{FPS:30,Duration:4s,KeyPackets:8,DeltaPackets:3,KeyInterval:20,SpreadUs:3000}+frame 0 at 8x8+EOFAt", nil,
+			"c15-start-blank-key/camera", "Key frame 0 is 8x8. Key frame 20, the next, is 666.667 ms of RTP time after it.")
+		out = append(out, seed{name: "c15-start-blank-key", class: "15", tracks: []*corpus.Trace{t}})
+	}
+
 	return out
 }
 
