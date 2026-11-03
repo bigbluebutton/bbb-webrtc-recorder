@@ -5,7 +5,10 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
+	"slices"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -240,6 +243,10 @@ type traceGap struct {
 	// Repaired counts the missing packets read later, as RTX or in band:
 	// either way the loss was not the recorder's to recover.
 	Repaired int
+	RepairUs int64 // read time of the first missing packet read later; 0 if none
+	// RepairTS holds the timestamps of the missing media packets read
+	// later, once each.
+	RepairTS []uint32
 	// Index is the first missing packet's position in its frame, for a gap
 	// inside one frame (PrevTS == TS); -1 otherwise.
 	Index int
@@ -292,6 +299,14 @@ func readTraceLoss(tr *corpus.Trace) *traceLoss {
 		if r.RTX || ext <= head {
 			if g, ok := missing[ext]; ok && (!r.RTX || !r.Pad) {
 				out.Gaps[g].Repaired++
+				if out.Gaps[g].RepairUs == 0 {
+					out.Gaps[g].RepairUs = r.AtUs
+				}
+
+				if !r.Pad && !slices.Contains(out.Gaps[g].RepairTS, r.TS) {
+					out.Gaps[g].RepairTS = append(out.Gaps[g].RepairTS, r.TS)
+				}
+
 				delete(missing, ext)
 			}
 
@@ -340,6 +355,116 @@ func (l *traceLoss) Unrepaired() []traceGap {
 	}
 
 	return out
+}
+
+// outages returns, for each unrepaired gap, the read times over which the
+// writer drops frames. Each runs from the gap's reveal to the next key frame
+// read, or to the end of the trace.
+func (l *traceLoss) outages() [][2]int64 {
+	var out [][2]int64
+
+	for _, g := range l.Unrepaired() {
+		end := int64(math.MaxInt64)
+		if k, ok := l.keyAfter(g.RevealUs); ok {
+			end = k.AtUs
+		}
+
+		out = append(out, [2]int64{g.RevealUs, end})
+	}
+
+	return out
+}
+
+// heldGaps returns the fully repaired gaps whose repair came more than
+// minHold after the reveal. The writer writes such a frame only once the
+// repair is read, so it waited at least RepairUs - RevealUs.
+//
+// A gap counts only if blocks hold every frame it repaired. The writer
+// drops a frame the track buffer gave up on, and every frame of an outage.
+// frames, built by traceFrames, gives the frame tag of each repaired
+// packet, and the blocks carry the same tags. The check matches tags, not
+// PTS. The file can start after the trace's first key frame, so a PTS
+// mapped from the trace could point to the wrong frame.
+func (l *traceLoss) heldGaps(frames map[uint32]int, blocks []taggedBlock, minHold time.Duration) []traceGap {
+	written := map[int]bool{}
+	for _, b := range blocks {
+		written[b.Frame] = true
+	}
+
+	var out []traceGap
+
+	for _, g := range l.Gaps {
+		hold := time.Duration(g.RepairUs-g.RevealUs) * time.Microsecond
+		lost := slices.ContainsFunc(g.RepairTS, func(ts uint32) bool {
+			f, ok := frames[ts]
+			return !ok || !written[f]
+		})
+
+		if g.Repaired == g.Missing && hold > minHold && len(g.RepairTS) > 0 && !lost {
+			out = append(out, g)
+		}
+	}
+
+	return out
+}
+
+// traceFrames maps the trace's timestamps to the frames tr sent. LiveKit
+// moves timestamps by a constant (assertResponseKey relies on it). Each
+// frame is read well within a frame interval of its send, so the frame
+// sent last before its first read gives that constant. traceFrames takes
+// the most common one.
+//
+// tr sends few key frames, so a wrong constant would map the trace's key
+// frames to delta frames; traceFrames fails t if it does.
+func traceFrames(t *testing.T, trace *corpus.Trace, tr *PubTrack) map[uint32]int {
+	t.Helper()
+
+	var firsts []SentPacket
+	for _, p := range tr.Sent() {
+		if p.Index == 0 {
+			firsts = append(firsts, p)
+		}
+	}
+
+	epoch := time.UnixMicro(trace.Header.EpochUnixUs).Sub(tr.Start())
+	read := map[uint32]bool{}
+	votes := map[uint32]int{}
+
+	for _, r := range trace.Records {
+		if r.T != corpus.RecordRTP || r.RTX || r.Pad || read[r.TS] {
+			continue
+		}
+
+		read[r.TS] = true
+		at := epoch + time.Duration(r.AtUs)*time.Microsecond
+
+		if i := sort.Search(len(firsts), func(i int) bool { return firsts[i].At > at }); i > 0 {
+			votes[r.TS-firsts[i-1].TS]++
+		}
+	}
+
+	var offset uint32
+	for o, n := range votes {
+		if n > votes[offset] {
+			offset = o
+		}
+	}
+
+	frames, keys := map[uint32]int{}, map[int]bool{}
+	for _, p := range firsts {
+		frames[p.TS+offset] = p.Frame
+		keys[p.Frame] = p.Key
+	}
+
+	for _, r := range trace.Records {
+		if r.T == corpus.RecordRTP && !r.Pad && isVP8KeyFrameStart(r.Pay) {
+			f, ok := frames[r.TS]
+			assert.True(t, ok && keys[f], "the key frame read at %.1f ms maps to frame %d, not a key frame sent",
+				float64(r.AtUs)/1000, f)
+		}
+	}
+
+	return frames
 }
 
 // RepairedPackets counts the missing packets read later.

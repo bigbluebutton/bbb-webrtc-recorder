@@ -273,6 +273,7 @@ func netemSkipReason() string {
 // TestNACKRepairUnderLoss records a camera for 20 s while netem drops 3% of
 // what livekit-server sends the recorder, and checks that LiveKit repaired
 // it: lost packets read later, nearly every frame written, no keyframe loop.
+// A frame held for its retransmission must still play where it was sent.
 func TestNACKRepairUnderLoss(t *testing.T) {
 	if reason := netemSkipReason(); reason != "" {
 		// CI sets it on the privileged step, where a skip would pass unseen.
@@ -297,6 +298,28 @@ func TestNACKRepairUnderLoss(t *testing.T) {
 	// Counted by sequence number, so a retransmission counts whether
 	// LiveKit sends it on the RTX SSRC or on the media one.
 	assert.Positive(t, loss.RepairedPackets(), "no lost packet was read later: nothing repaired")
+
+	// server-sdk-go sends a NACK only while it reads a packet, 20 ms or more
+	// after the gap: at 15 fps, with the next frame. So a frame that loses a
+	// packet waits over 65 ms for its retransmission. Its PTS come from RTP,
+	// so it must still play where it was sent.
+	held := loss.heldGaps(traceFrames(t, res.out.Trace, res.cam), res.place.Blocks, framePlacementBound)
+	var longest time.Duration
+	for _, g := range held {
+		longest = max(longest, time.Duration(g.RepairUs-g.RevealUs)*time.Microsecond)
+	}
+
+	outages := 0
+	for _, o := range loss.outages() {
+		if len(loss.Keys) > 0 && o[0] >= loss.Keys[0].AtUs {
+			outages++
+		}
+	}
+
+	t.Logf("placement: %d repaired gaps held a written frame over %v, %v at most; worst placement %v; "+
+		"%d gaps never repaired, %d key-frame outages after the first key frame read",
+		len(held), framePlacementBound, longest, res.place.Worst, len(loss.Unrepaired()), outages)
+	assert.NotEmpty(t, held, "no frame waited longer than framePlacementBound for its retransmission")
 }
 
 // TestNACKRepairControl runs the NACK scenario's stack and checks without
@@ -441,6 +464,8 @@ func TestNetemPlan(t *testing.T) {
 // nackResult is what runNACKScenario measured, for the privileged checks.
 type nackResult struct {
 	out          *Output
+	place        placement
+	cam          *PubTrack
 	qdisc        string
 	netemDropped int
 }
@@ -479,7 +504,7 @@ func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nack
 	video, err := corpus.GenerateVP8(corpus.VP8Options{FPS: nackCameraFPS, Duration: recordFor + 30*time.Second, SpreadUs: 2000})
 	require.NoError(t, err)
 
-	cam := pub.PublishVP8(TrackOptions{Name: "camera", Schedule: video})
+	cam := pub.PublishVP8(TrackOptions{Name: "camera", Schedule: video, TagFrames: true})
 
 	ctx, cancel := context.WithTimeout(t.Context(), recordFor+time.Minute)
 	defer cancel()
@@ -523,7 +548,9 @@ func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nack
 
 	out := ReadOutput(t, rec, cam.SID)
 	webm := out.WebM
-	res.out = out
+	res.out, res.cam = out, cam
+	res.place, _ = checkPlacement(ctx, t, s.Driver, "camera", rec, frameSends(cam), st, maxVideoStep)
+	t.Logf("publisher: wakeup lag %v at most", maxWakeLag(cam))
 
 	// Compared from the first frame written. When netem drops the first
 	// packet of the downtrack's first key frame, no NACK can name it, and the
