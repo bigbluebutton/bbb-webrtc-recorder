@@ -9,6 +9,7 @@ import (
 
 	"github.com/at-wat/ebml-go"
 	"github.com/at-wat/ebml-go/webm"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 )
 
 const (
@@ -33,6 +34,11 @@ type Track struct {
 	VP8Keyframes int
 	// PTS is cluster timecode plus block timecode, in ms.
 	PTS []int64
+	// Tags holds each VP8 block's corpus.TaggedFrame value, parallel to
+	// PTS, and TagOK whether the block has one. Both stay nil for other
+	// codecs.
+	Tags  []uint32
+	TagOK []bool
 	// DuplicatePTS lists every block whose PTS an earlier block of the track
 	// already used: three blocks at the same PTS add two entries.
 	DuplicatePTS []int64
@@ -122,8 +128,14 @@ func SummarizeWebM(path string) (*Summary, error) {
 			if key {
 				t.KeyBlocks++
 			}
-			if t.Codec == CodecVP8 && len(frame) > 0 && frame[0]&0x01 == 0 {
-				t.VP8Keyframes++
+			if t.Codec == CodecVP8 {
+				if len(frame) > 0 && frame[0]&0x01 == 0 {
+					t.VP8Keyframes++
+				}
+
+				tag, ok := corpus.TaggedFrame(frame)
+				t.Tags = append(t.Tags, tag)
+				t.TagOK = append(t.TagOK, ok)
 			}
 			t.PTS = append(t.PTS, pts)
 		}
