@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"sync/atomic"
@@ -118,6 +119,116 @@ const (
 	maxAudioStep = 120 * time.Millisecond
 )
 
+const (
+	// Loopback adds about a millisecond from the publisher's write to the
+	// recorder's read. LiveKit's forwarding and the read loop add a few
+	// more, most for a key frame's packets. PTS are whole ms.
+	framePlacementBound = 40 * time.Millisecond
+	// Two tracks of one publisher take the same path: their placements may
+	// differ by that path's jitter only.
+	frameLipSyncBound = 15 * time.Millisecond
+)
+
+// mediaStartHR less mediaStartUTC moves only when the wall clock steps. Each
+// is truncated to the ms.
+const hostClockStep = 2 * time.Millisecond
+
+// hostClockOffset returns the host's CLOCK_MONOTONIC less its wall clock, in
+// ms. The test can be preempted between the two reads, so it reads the wall
+// clock before and after the monotonic one and takes the midpoint. Of a few
+// tries, it keeps the one with the reads closest together.
+func hostClockOffset(t *testing.T) float64 {
+	t.Helper()
+
+	var (
+		offset float64
+		width  = time.Duration(math.MaxInt64)
+	)
+
+	for range 5 {
+		var mono unix.Timespec
+
+		before := time.Now()
+		require.NoError(t, unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono))
+		after := time.Now()
+
+		if w := after.Sub(before); w < width {
+			width = w
+			wall := before.Add(w / 2)
+			offset = float64(mono.Nano()-wall.UnixNano()) / float64(time.Millisecond)
+		}
+	}
+
+	return offset
+}
+
+// placement is where record-and-playback plays a file's blocks: its first
+// at mediaStart, the rest by their PTS since the first.
+type placement struct {
+	Blocks    []taggedBlock
+	Started   events.RecordingMediaStarted
+	StartedAt int             // recordingMediaStarted's message index
+	Errs      []time.Duration // per block: when it plays minus its frame's time in sends
+	Worst     time.Duration
+	Median    float64 // ms
+}
+
+// checkPlacement checks that every block of rec's file plays within
+// framePlacementBound of its frame's time in sends, the due time frameSends
+// gives. It also checks that stop carries the file's media span. It returns
+// false, a failure already reported, when the recorder sent no
+// recordingMediaStarted for rec.
+func checkPlacement(ctx context.Context, t *testing.T, d *Driver, name string, rec *Recording,
+	sends map[int]time.Time, stop *events.RecordingStopped, maxStep time.Duration,
+) (placement, bool) {
+	t.Helper()
+
+	p := placement{Blocks: readTaggedBlocks(t, rec.Path)}
+	for _, b := range p.Blocks {
+		_, ok := sends[b.Frame]
+		require.True(t, ok, "%s: frame %d was not sent", name, b.Frame)
+	}
+
+	var err error
+	p.Started, p.StartedAt, err = d.WaitMediaStarted(ctx, rec)
+	if !assert.NoError(t, err, "%s: recordingMediaStarted", name) {
+		return p, false
+	}
+
+	start := time.UnixMilli(p.Started.MediaStartUTC)
+	pts := make([]int64, 0, len(p.Blocks))
+	for _, b := range p.Blocks {
+		placed := start.Add(time.Duration(b.PTS-p.Blocks[0].PTS) * time.Millisecond)
+		p.Errs = append(p.Errs, placed.Sub(sends[b.Frame]))
+		pts = append(pts, b.PTS)
+	}
+
+	p.Worst = slices.MaxFunc(p.Errs, func(a, b time.Duration) int { return int(a.Abs() - b.Abs()) })
+	p.Median = medianMs(p.Errs)
+	t.Logf("%s: %d blocks; mediaStart places frames %.1f ms (median) from where they were sent, %v at worst",
+		name, len(p.Blocks), p.Median, p.Worst)
+	assert.LessOrEqual(t, p.Worst.Abs(), framePlacementBound, "%s: worst placement", name)
+
+	assertMediaEnd(t, name, p.Started, stop, pts, maxStep)
+
+	return p, true
+}
+
+// assertLipSync checks that a camera and a microphone recorded together
+// play their frames equally far from when they were sent. It does nothing
+// when either file has no recordingMediaStarted (checkPlacement returned
+// false).
+func assertLipSync(t *testing.T, label string, cam, mic placement) {
+	t.Helper()
+
+	if len(cam.Errs) == 0 || len(mic.Errs) == 0 {
+		return
+	}
+
+	t.Logf("%s: the camera lands %.1f ms after the microphone", label, cam.Median-mic.Median)
+	assert.InDelta(t, mic.Median, cam.Median, ms(frameLipSyncBound), label)
+}
+
 // assertMediaEnd checks that recordingStopped repeats mediaStart. Its
 // mediaEnd must add the file's media, first PTS to last, and the last
 // frame's duration: the step before it, up to maxStep. PTS and event times
@@ -153,13 +264,6 @@ func TestMediaTimestampsPlaceEachFrame(t *testing.T) {
 		cameraFPS     = 15
 		keyframeDelay = 300 * time.Millisecond
 		recordFor     = 6 * time.Second
-		// Loopback adds about a millisecond from the publisher's write to the
-		// recorder's read. LiveKit's forwarding and the read loop add a few
-		// more, most for a key frame's packets. PTS are whole ms.
-		placementBound = 40 * time.Millisecond
-		// Both tracks take the same path: their placements may differ by
-		// that path's jitter only.
-		lipSyncBound = 15.0 // ms
 	)
 
 	s := NewStack(t, StackOptions{})
@@ -210,68 +314,31 @@ func TestMediaTimestampsPlaceEachFrame(t *testing.T) {
 
 	require.True(t, dropped.Load(), "the first PLI key frame lost no packet")
 
-	medians := map[string]float64{}
+	places := map[string]placement{}
 	for _, c := range []struct {
 		name    string
 		rec     *Recording
 		track   *PubTrack
 		maxStep time.Duration
 	}{{"camera", recCam, cam, maxVideoStep}, {"microphone", recMic, mic, maxAudioStep}} {
-		blocks := readTaggedBlocks(t, c.rec.Path)
 		sends := frameSends(c.track)
-		firstSent, ok := sends[blocks[0].Frame]
-		require.True(t, ok, "%s: first block's frame %d was not sent", c.name, blocks[0].Frame)
+		p, ok := checkPlacement(ctx, t, s.Driver, c.name, c.rec, sends, stops[c.rec.SessionID], c.maxStep)
+		places[c.name] = p
+		if ok {
+			assert.InDelta(t, hostClockOffset(t), p.Started.MediaStartHR-p.Started.MediaStartUTC, float64(hostClockStep.Milliseconds()),
+				"%s: mediaStartHR is the host's CLOCK_MONOTONIC at mediaStartUTC", c.name)
+		}
 
+		firstSent := sends[p.Blocks[0].Frame]
 		flowingAt := firstFlowing(s.Driver, c.rec.From, c.rec.SessionID)
 		require.False(t, flowingAt.IsZero())
-		t.Logf("%s: %d blocks; a start stamped on flowing places the first frame %v from where it was sent",
-			c.name, len(blocks), flowingAt.Sub(firstSent))
+		t.Logf("%s: a start stamped on flowing places the first frame %v from where it was sent",
+			c.name, flowingAt.Sub(firstSent))
 		if c.name == "camera" {
 			require.GreaterOrEqual(t, firstSent.Sub(flowingAt), keyframeDelay,
 				"the camera's file must start after the key frame that follows the loss")
 		}
-
-		// The recorder sends recordingMediaStarted before recordingStopped,
-		// which has already arrived, so a short wait is enough.
-		waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
-		var started events.RecordingMediaStarted
-		_, err := s.Driver.waitDecode(waitCtx, c.rec.From, events.RecordingMediaStartedKey, c.rec.SessionID, &started)
-		waitCancel()
-		if !assert.NoError(t, err, "%s: recordingMediaStarted", c.name) {
-			continue
-		}
-
-		start := time.UnixMilli(started.MediaStartUTC)
-		var mono unix.Timespec
-		require.NoError(t, unix.ClockGettime(unix.CLOCK_MONOTONIC, &mono))
-		hostOffset := time.Duration(mono.Nano()).Milliseconds() - time.Now().UnixMilli()
-		assert.InDelta(t, hostOffset, started.MediaStartHR-started.MediaStartUTC, 2,
-			"%s: mediaStartHR is the host's CLOCK_MONOTONIC at mediaStartUTC", c.name)
-
-		var errs []time.Duration
-		for _, b := range blocks {
-			sent, ok := sends[b.Frame]
-			require.True(t, ok, "%s: frame %d was not sent", c.name, b.Frame)
-
-			placed := start.Add(time.Duration(b.PTS-blocks[0].PTS) * time.Millisecond)
-			errs = append(errs, placed.Sub(sent))
-		}
-
-		worst := slices.MaxFunc(errs, func(a, b time.Duration) int { return int(a.Abs() - b.Abs()) })
-		medians[c.name] = medianMs(errs)
-		t.Logf("%s: mediaStart places frames %.1f ms (median) from where they were sent, %v at worst",
-			c.name, medians[c.name], worst)
-		assert.LessOrEqual(t, worst.Abs(), placementBound, "%s: worst placement", c.name)
-
-		pts := make([]int64, 0, len(blocks))
-		for _, b := range blocks {
-			pts = append(pts, b.PTS)
-		}
-		assertMediaEnd(t, c.name, started, stops[c.rec.SessionID], pts, c.maxStep)
 	}
 
-	if len(medians) == 2 {
-		t.Logf("lip sync: the camera lands %.1f ms after the microphone", medians["camera"]-medians["microphone"])
-		assert.InDelta(t, medians["microphone"], medians["camera"], lipSyncBound, "lip sync")
-	}
+	assertLipSync(t, "lip sync", places["camera"], places["microphone"])
 }

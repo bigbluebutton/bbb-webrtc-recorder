@@ -382,6 +382,19 @@ func (d *Driver) WaitStopped(ctx context.Context, from int, sessionID string) (*
 	return &s, nil
 }
 
+// WaitMediaStarted returns rec's recordingMediaStarted and its message
+// index. The recorder sends it before recordingStopped, so once the stop
+// has arrived a short wait is enough.
+func (d *Driver) WaitMediaStarted(ctx context.Context, rec *Recording) (events.RecordingMediaStarted, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var s events.RecordingMediaStarted
+	at, err := d.waitDecode(ctx, rec.From, events.RecordingMediaStartedKey, rec.SessionID, &s)
+
+	return s, at, err
+}
+
 // StopAndWait stops sessionID and waits for the recordingStopped that follows.
 func (d *Driver) StopAndWait(ctx context.Context, sessionID string) (*events.RecordingStopped, error) {
 	from := len(d.Messages())

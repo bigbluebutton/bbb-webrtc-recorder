@@ -48,9 +48,6 @@ func TestSimulcastMediaTimestampsPlaceEachFrame(t *testing.T) {
 		afterUp      = 2 * time.Second
 		// q's frames are tagged from here, h's from 0.
 		qTagOffset = 1_000_000
-		// As in TestMediaTimestampsPlaceEachFrame.
-		placementBound = 40 * time.Millisecond
-		lipSyncBound   = 15.0 // ms
 	)
 
 	s := NewStack(t, StackOptions{})
@@ -119,73 +116,38 @@ func TestSimulcastMediaTimestampsPlaceEachFrame(t *testing.T) {
 		camSends[qTagOffset+frame] = at
 	}
 
-	medians := map[string]float64{}
+	places := map[string]placement{}
 	for _, c := range []struct {
 		name    string
 		rec     *Recording
 		sends   map[int]time.Time
 		maxStep time.Duration
 	}{{"camera", recCam, camSends, maxVideoStep}, {"microphone", recMic, frameSends(mic), maxAudioStep}} {
-		blocks := readTaggedBlocks(t, c.rec.Path)
-
-		// As in TestMediaTimestampsPlaceEachFrame.
-		waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
-		var started events.RecordingMediaStarted
-		_, err := s.Driver.waitDecode(waitCtx, c.rec.From, events.RecordingMediaStartedKey, c.rec.SessionID, &started)
-		waitCancel()
-		require.NoError(t, err, "%s: recordingMediaStarted", c.name)
-		start := time.UnixMilli(started.MediaStartUTC)
-
-		var errs []time.Duration
-		for _, b := range blocks {
-			sent, ok := c.sends[b.Frame]
-			require.True(t, ok, "%s: frame %d was not sent", c.name, b.Frame)
-
-			placed := start.Add(time.Duration(b.PTS-blocks[0].PTS) * time.Millisecond)
-			errs = append(errs, placed.Sub(sent))
-		}
-
-		worst := slices.MaxFunc(errs, func(a, b time.Duration) int { return int(a.Abs() - b.Abs()) })
-		medians[c.name] = medianMs(errs)
-		t.Logf("%s: %d blocks; mediaStart places frames %.1f ms (median) from where they were sent, %v at worst",
-			c.name, len(blocks), medians[c.name], worst)
-		assert.LessOrEqual(t, worst.Abs(), placementBound, "%s: worst placement", c.name)
-
-		pts := make([]int64, 0, len(blocks))
-		for _, b := range blocks {
-			pts = append(pts, b.PTS)
-		}
-		assertMediaEnd(t, c.name, started, stops[c.rec.SessionID], pts, c.maxStep)
-
-		if c.name != "camera" {
-			continue
-		}
-
-		// The file must hold both switches: from h to q while h was stopped,
-		// and from q back to h after it resumed.
-		var down, up bool
-		prev := ""
-		for _, b := range blocks {
-			layer, sentAt := "h", camSends[b.Frame].Sub(camH.Start())
-			if b.Frame >= qTagOffset {
-				layer = "q"
-			}
-
-			if layer != prev {
-				t.Logf("camera: from %s from frame %d, sent %v after the camera started", layer, b.Frame%qTagOffset, sentAt)
-			}
-
-			down = down || (prev == "h" && layer == "q" && sentAt > paused)
-			up = up || (down && prev == "q" && layer == "h" && sentAt > resumed)
-			prev = layer
-		}
-
-		assert.True(t, down, "camera: no switch from h to q while h was stopped")
-		assert.True(t, up, "camera: no switch from q back to h")
+		p, _ := checkPlacement(ctx, t, s.Driver, c.name, c.rec, c.sends, stops[c.rec.SessionID], c.maxStep)
+		places[c.name] = p
 	}
 
-	if len(medians) == 2 {
-		t.Logf("lip sync: the camera lands %.1f ms after the microphone", medians["camera"]-medians["microphone"])
-		assert.InDelta(t, medians["microphone"], medians["camera"], lipSyncBound, "lip sync")
+	// The file must hold both switches: from h to q while h was stopped,
+	// and from q back to h after it resumed.
+	var down, up bool
+	prev := ""
+	for _, b := range places["camera"].Blocks {
+		layer, sentAt := "h", camSends[b.Frame].Sub(camH.Start())
+		if b.Frame >= qTagOffset {
+			layer = "q"
+		}
+
+		if layer != prev {
+			t.Logf("camera: from %s from frame %d, sent %v after the camera started", layer, b.Frame%qTagOffset, sentAt)
+		}
+
+		down = down || (prev == "h" && layer == "q" && sentAt > paused)
+		up = up || (down && prev == "q" && layer == "h" && sentAt > resumed)
+		prev = layer
 	}
+
+	assert.True(t, down, "camera: no switch from h to q while h was stopped")
+	assert.True(t, up, "camera: no switch from q back to h")
+
+	assertLipSync(t, "lip sync", places["camera"], places["microphone"])
 }

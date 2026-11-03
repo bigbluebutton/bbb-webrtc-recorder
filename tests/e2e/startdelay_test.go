@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,9 +44,6 @@ func TestMediaTimestampsTakeOffAStartDelay(t *testing.T) {
 		hold      = 800 * time.Millisecond
 		drain     = 400 * time.Millisecond
 		recordFor = 6 * time.Second
-		// As in TestMediaTimestampsPlaceEachFrame.
-		placementBound = 40 * time.Millisecond
-		lipSyncBound   = 15.0 // ms
 	)
 
 	plan := newNetemPlan(os.Getpid(), 0)
@@ -141,20 +136,20 @@ func TestMediaTimestampsTakeOffAStartDelay(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	medians := map[string]float64{}
+	places := map[string]placement{}
 	for _, c := range []struct {
 		name    string
 		rec     *Recording
 		track   *PubTrack
 		maxStep time.Duration
 	}{{"camera", recCam, cam, maxVideoStep}, {"microphone", recMic, mic, maxAudioStep}} {
-		blocks := readTaggedBlocks(t, c.rec.Path)
 		sends := frameSends(c.track)
-		firstSent, ok := sends[blocks[0].Frame]
-		require.True(t, ok, "%s: first block's frame %d was not sent", c.name, blocks[0].Frame)
+		p, _ := checkPlacement(ctx, t, s.Driver, c.name, c.rec, sends, stops[c.rec.SessionID], c.maxStep)
+		places[c.name] = p
 
 		// The scenario's premises. Without them the test could pass with no
 		// delay to take off.
+		firstSent := sends[p.Blocks[0].Frame]
 		flowingAt := firstFlowing(s.Driver, c.rec.From, c.rec.SessionID)
 		t.Logf("%s: the flowing event came %v after the first frame written was sent, and the delay began to come off %v after it",
 			c.name, flowingAt.Sub(firstSent), drainFrom.Sub(firstSent))
@@ -166,40 +161,7 @@ func TestMediaTimestampsTakeOffAStartDelay(t *testing.T) {
 			require.Greater(t, drainFrom.Sub(firstSent), time.Second,
 				"the delay did not last past the microphone's first second of media")
 		}
-
-		waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
-		var started events.RecordingMediaStarted
-		_, err := s.Driver.waitDecode(waitCtx, c.rec.From, events.RecordingMediaStartedKey, c.rec.SessionID, &started)
-		waitCancel()
-		if !assert.NoError(t, err, "%s: recordingMediaStarted", c.name) {
-			continue
-		}
-
-		start := time.UnixMilli(started.MediaStartUTC)
-		var errs []time.Duration
-		for _, b := range blocks {
-			sent, ok := sends[b.Frame]
-			require.True(t, ok, "%s: frame %d was not sent", c.name, b.Frame)
-
-			placed := start.Add(time.Duration(b.PTS-blocks[0].PTS) * time.Millisecond)
-			errs = append(errs, placed.Sub(sent))
-		}
-
-		worst := slices.MaxFunc(errs, func(a, b time.Duration) int { return int(a.Abs() - b.Abs()) })
-		medians[c.name] = medianMs(errs)
-		t.Logf("%s: %d blocks; mediaStart places frames %.1f ms (median) from where they were sent, %v at worst",
-			c.name, len(blocks), medians[c.name], worst)
-		assert.LessOrEqual(t, worst.Abs(), placementBound, "%s: worst placement", c.name)
-
-		pts := make([]int64, 0, len(blocks))
-		for _, b := range blocks {
-			pts = append(pts, b.PTS)
-		}
-		assertMediaEnd(t, c.name, started, stops[c.rec.SessionID], pts, c.maxStep)
 	}
 
-	if len(medians) == 2 {
-		t.Logf("lip sync: the camera lands %.1f ms after the microphone", medians["camera"]-medians["microphone"])
-		assert.InDelta(t, medians["microphone"], medians["camera"], lipSyncBound, "lip sync")
-	}
+	assertLipSync(t, "lip sync", places["camera"], places["microphone"])
 }

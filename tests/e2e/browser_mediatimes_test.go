@@ -215,12 +215,7 @@ func placeOnCaptureClock(ctx context.Context, t *testing.T, s *Stack, name strin
 	clock := newSenderClock(out.Trace)
 	require.NotEmpty(t, clock.reports, "%s: no sender report", name)
 
-	// The recorder sends recordingMediaStarted before recordingStopped,
-	// which has already arrived, so a short wait is enough.
-	waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
-	var started events.RecordingMediaStarted
-	_, err := s.Driver.waitDecode(waitCtx, rec.From, events.RecordingMediaStartedKey, rec.SessionID, &started)
-	waitCancel()
+	started, _, err := s.Driver.WaitMediaStarted(ctx, rec)
 	require.NoError(t, err, "%s: recordingMediaStarted", name)
 
 	p := capturePlacement{
