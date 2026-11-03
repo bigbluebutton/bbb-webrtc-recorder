@@ -1,0 +1,32 @@
+{
+  "v": 1,
+  "class": "24",
+  "intent": "The same 9 s blackout, with the same late frames after it, at 360 packets/s: 3240 sequence numbers, past the jitter buffer's 3000. The buffer takes delta 360 for a new stream and releases it with no loss counted. The writer requests a key frame on its picture ID gap, drops deltas 360-377 and resumes at key frame 378, whose PTS must keep the 9.6 s gap. RED: a writer that re-bases its timestamp at a sequence jump of 3000 or more plays key frame 378 600 ms after frame 89 (timeline). seq2160 passes that mutation, so the pair tells the two paths apart. RED: a writer that takes the arrival gap for the step after a sequence jump of 3000 or more plays key frame 378 and every later frame 300 ms late. The timeline and media span checks fail.",
+  "traces": [
+    "c24-blackout-9s-seq3240.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "firstRequestMinMs": 12300,
+  "firstRequestMaxMs": 12310,
+  "written": {
+    "min": 192,
+    "max": 192
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 4,
+    "videoDropped": {
+      "min": 18,
+      "max": 18
+    }
+  }
+}

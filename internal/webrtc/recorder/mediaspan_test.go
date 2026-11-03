@@ -389,6 +389,12 @@ func TestMediaSpanMovesTheStartBackAtMostOneSecond(t *testing.T) {
 
 	span, _ = runSpan(t0, videoSpan, cameraFrames(pts, stalled(800))).span()
 	assert.Equal(t, t0, span.Start)
+
+	// A microphone's start takes the same limit.
+	span, _ = runSpan(t0, audioSpan, audioFrames(150, func(k int) time.Duration {
+		return max(1500*time.Millisecond, time.Duration(k)*20*time.Millisecond)
+	})).span()
+	assert.Equal(t, t0.Add(500*time.Millisecond), span.Start)
 }
 
 // Opus packets can be 120 ms long, so a microphone's step of 120 ms leaves

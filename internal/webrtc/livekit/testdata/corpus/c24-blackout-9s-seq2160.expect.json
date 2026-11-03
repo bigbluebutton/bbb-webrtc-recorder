@@ -1,0 +1,33 @@
+{
+  "v": 1,
+  "class": "24",
+  "intent": "A 9 s mid-file blackout of a 30 fps camera: 2160 sequence numbers, under the jitter buffer's 3000. The frames read in the 700 ms after it come 300 ms late, as a paced key frame or a draining queue would. The buffer holds delta 360 for 2 s and counts the 2160 lost; the early gap request comes 200 ms after it arrives. The writer drops deltas 360-377 on the picture ID gap and resumes at key frame 378, whose PTS must keep the 9.6 s gap. RED: three writers collapse the gap (timeline). One moves its timestamp on dropped deltas, one takes a picture ID gap for one frame step, and one caps a frame step at 1 s. RED: a writer that takes the arrival gap for a step over 3 s plays key frame 378 and every later frame 300 ms late. The timeline and media span checks fail. RED with the jitter buffer's new-stream distance at 2000: no loss counted, and the writer requests a key frame at 12303 ms.",
+  "traces": [
+    "c24-blackout-9s-seq2160.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "firstRequestMinMs": 12500,
+  "firstRequestMaxMs": 12540,
+  "written": {
+    "min": 192,
+    "max": 192
+  },
+  "packetsLostMin": 2160,
+  "packetsLostMax": 2160,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 4,
+    "videoDropped": {
+      "min": 18,
+      "max": 18
+    }
+  }
+}

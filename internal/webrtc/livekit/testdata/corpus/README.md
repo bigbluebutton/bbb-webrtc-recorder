@@ -22,7 +22,7 @@ Read traces for the in-process replay of the LiveKit path (read loop, `trackBuff
 A seed is one or more traces plus one expect file. `TestCorpusReplay` replays every `*.expect.json` in this directory, and fails on a trace that no expect file lists.
 
 1. **Write the trace.**
-   - **Synthetic:** add a block at the end of `seeds()` in `internal/corpus/seedgen/main.go`, then run `go run ./internal/corpus/seedgen`. Build it from the `internal/corpus` generators (`GenerateVP8`, `GenerateOpus`) and operators (`DropSeqs`, `Retransmit`, `Duplicate`, `Reorder`, `StartAt`, `EOFAt`, `MediaClock`, `SenderReports`, `Delay`). Each seed takes the next SSRC, so a block inserted earlier changes every trace after it.
+   - **Synthetic:** add a block at the end of `seeds()` in `internal/corpus/seedgen/main.go`, then run `go run ./internal/corpus/seedgen`. Build it from the `internal/corpus` generators (`GenerateVP8`, `GenerateOpus`) and operators (`DropSeqs`, `Retransmit`, `Duplicate`, `Reorder`, `StartAt`, `EOFAt`, `MediaClock`, `SenderReports`, `Delay`, `Blackout`, `Stall`, `Pause`, `DelayFrames`). Each seed takes the next SSRC, so a block inserted earlier changes every trace after it.
    - **Live capture:** run the recorder with `livekit.traceCapture` enabled and record the session. `payload: header` keeps the media out of the trace. Copy the track's `<recording>.<trackID>.trace.ndjson.gz` here under the seed's name. `seedgen` does not write it, so `TestCorpusMatchesGenerator` only checks that its provenance is `capture`. To look at a capture before making it a seed, replay it with no expect file: `go test ./internal/webrtc/livekit/ -run 'TestReplayTraces$' -v -args -corpus.replay=<trace>[,<trace>...]`, with absolute paths, logs the same `measured:` line.
 2. **Write `<name>.expect.json`** with `v`, `class`, `intent` and `traces`, and no checks yet.
 3. **Measure:** run `go test ./internal/webrtc/livekit/ -run 'TestCorpusReplay/<name>$' -v`. It logs a `measured:` line with:
@@ -38,7 +38,7 @@ A seed is one or more traces plus one expect file. `TestCorpusReplay` replays ev
 
 ## Seeds
 
-The class groups the seeds that guard one defect, named in the Guards column. A RED on a class-9 seed, for example, means the push-lag window defect has come back. Each seed's expect file states its RED in `intent`.
+The class groups the seeds that guard one defect, or a few related ones, named in the Guards column. A RED on a class-9 seed, for example, means the push-lag window defect has come back. Class 24 holds three: a mid-file blackout, a pause and resume, and a start stall. Each seed's expect file states its RED in `intent`.
 
 | Seed | Class | Provenance | Source | Guards |
 |---|---|---|---|---|
@@ -64,6 +64,10 @@ The class groups the seeds that guard one defect, named in the Guards column. A 
 | `wrap-dup-probe` | wrap | synthetic | `c12-lkprobe-rtxdup` moved onto the seq wrap | RTX probe copies of pre-wrap packets read after the wrap: a duplicate window that takes the wrap for a jump back lets them through |
 | `c18-slow-mic-clock` | 18 | synthetic | generators, at two rates a production sender measured | A microphone whose media clock runs slow: contiguous timestamps read over more time than they cover, with sender reports that show it. RTP timestamps alone time the last frame 1.28 s early |
 | `c18-delay-step` | 18 | synthetic | generators | A healthy microphone behind a 400 ms delay step: correcting by arrivals without the sender reports leaves the rest of the track 480 ms late |
+| `c24-blackout-9s-seq2160` | 24 | synthetic | generators | A 9 s mid-file blackout, 2160 seqs (< 3000); the frames read in the 700 ms after it are read 300 ms late. The jitter buffer holds and counts the loss, and the PTS must keep the 9.6 s gap |
+| `c24-blackout-9s-seq3240` | 24 | synthetic | generators | The same blackout and late frames at 360 pkt/s, 3240 seqs (>= 3000): the jitter buffer's new-stream path |
+| `c24-resume-4s` | 24 | synthetic | generators | A LiveKit pause and resume: seqs and picture IDs follow on, and only the timestamp, re-based to the wall clock, carries the 4 s. The frames read in the 700 ms after it are read 300 ms late |
+| `c24-start-stall-2500ms` | 24 | synthetic | generators | Every read of the first 2.5 s held to 2.5 s: pins mediaSpanMaxBacklog (1 s), which leaves the start late by the stall less 1 s |
 | `baseline-av` (`.video` + `.audio`) | baseline | synthetic | generators | The ordinary path |
 
 ## Expect v1
