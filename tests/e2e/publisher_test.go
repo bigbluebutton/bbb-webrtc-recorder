@@ -3,9 +3,7 @@
 package e2e
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -77,7 +75,7 @@ type TrackOptions struct {
 	// Width and Height are the signalled video dimensions (default 640x480).
 	Width, Height int
 	// TagFrames writes each frame's index into its first packet, after the
-	// codec's header, for TaggedFrame to read from the recording.
+	// codec's header, for corpus.TaggedFrame to read from the recording.
 	TagFrames bool
 	// TagOffset is added to each frame index TagFrames writes. Simulcast
 	// layers use different offsets, so a tag read from the recording shows
@@ -491,7 +489,7 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 	seq := first.recs[0].Seq
 	var picID uint16
 	if tr.Kind == corpus.KindVideo {
-		picID, _ = vp8PictureID(first.recs[0].Pay)
+		picID, _ = corpus.VP8PictureID(first.recs[0].Pay)
 	}
 
 	var prevSend time.Duration
@@ -537,11 +535,11 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 				pkt.Marker = r.M && (loop == 0 || tr.Kind == corpus.KindVideo)
 
 				if tr.Kind == corpus.KindVideo {
-					setVP8PictureID(pkt.Payload, picID)
+					corpus.SetVP8PictureID(pkt.Payload, picID)
 				}
 
 				if tr.opts.TagFrames && j == 0 {
-					tagFrame(pkt.Payload, tr.Kind, f.key || pliKey, tr.opts.TagOffset+frame)
+					corpus.TagFrame(pkt.Payload, tr.Kind, f.key || pliKey, uint32(tr.opts.TagOffset+frame))
 				}
 
 				s := SentPacket{
@@ -701,123 +699,12 @@ func templateKeyFrame(t *testing.T, frames []schedFrame, width, height int) []co
 	return g.Records
 }
 
-// vp8DescriptorLen is the length of the RFC 7741 payload descriptor at p, or
-// 0 if p is too short to hold it.
-func vp8DescriptorLen(p []byte) int {
-	if len(p) < 1 {
-		return 0
-	}
-
-	n := 1
-	if p[0]&0x80 == 0 {
-		return n
-	}
-
-	if len(p) < 2 {
-		return 0
-	}
-
-	x := p[1]
-	n++
-
-	if x&0x80 != 0 { // I: picture ID, 7 or 15 bits
-		if len(p) <= n {
-			return 0
-		}
-
-		if p[n]&0x80 != 0 {
-			n += 2
-		} else {
-			n++
-		}
-	}
-
-	if x&0x40 != 0 { // L: TL0PICIDX
-		n++
-	}
-
-	if x&0x30 != 0 { // T or K: TID/Y/KEYIDX
-		n++
-	}
-
-	if len(p) < n {
-		return 0
-	}
-
-	return n
-}
-
 // isVP8KeyFrameStart reports whether p starts a VP8 key frame: S set,
 // partition 0, and the frame tag's inverse key frame bit clear.
 func isVP8KeyFrameStart(p []byte) bool {
-	n := vp8DescriptorLen(p)
+	n := corpus.VP8DescriptorLen(p)
 
 	return n > 0 && len(p) > n && p[0]&0x10 != 0 && p[0]&0x07 == 0 && p[n]&0x01 == 0
-}
-
-func vp8PictureID(p []byte) (uint16, bool) {
-	if len(p) < 3 || p[0]&0x80 == 0 || p[1]&0x80 == 0 {
-		return 0, false
-	}
-
-	if p[2]&0x80 != 0 {
-		if len(p) < 4 {
-			return 0, false
-		}
-
-		return uint16(p[2]&0x7F)<<8 | uint16(p[3]), true
-	}
-
-	return uint16(p[2] & 0x7F), true
-}
-
-func setVP8PictureID(p []byte, id uint16) {
-	if len(p) < 3 || p[0]&0x80 == 0 || p[1]&0x80 == 0 {
-		return
-	}
-
-	if p[2]&0x80 != 0 {
-		if len(p) >= 4 {
-			p[2] = 0x80 | byte(id>>8)&0x7F
-			p[3] = byte(id)
-		}
-
-		return
-	}
-
-	p[2] = byte(id) & 0x7F
-}
-
-// frameTag precedes the frame index tagFrame writes, so TaggedFrame can
-// find it.
-var frameTag = []byte("BBBF")
-
-// tagFrame writes frameTag and frame into payload, the first packet of a
-// frame, past the VP8 descriptor and frame header or the Opus TOC byte.
-func tagFrame(payload []byte, kind corpus.Kind, key bool, frame int) {
-	at := 1
-	if kind == corpus.KindVideo {
-		at = vp8DescriptorLen(payload) + 3
-		if key {
-			at += 7
-		}
-	}
-
-	if len(payload) >= at+len(frameTag)+4 {
-		copy(payload[at:], frameTag)
-		binary.BigEndian.PutUint32(payload[at+len(frameTag):], uint32(frame))
-	}
-}
-
-// TaggedFrame returns the frame index tagFrame wrote into a recorded
-// frame's data, false if it has none.
-func TaggedFrame(data []byte) (int, bool) {
-	i := bytes.Index(data[:min(len(data), 64)], frameTag)
-	if i < 0 || len(data) < i+len(frameTag)+4 {
-		return 0, false
-	}
-
-	return int(binary.BigEndian.Uint32(data[i+len(frameTag):])), true
 }
 
 func sleepUntil(ctx context.Context, at time.Time) bool {

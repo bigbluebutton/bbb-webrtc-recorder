@@ -64,9 +64,9 @@ func readTaggedBlocks(t *testing.T, path string) []taggedBlock {
 
 	var blocks []taggedBlock
 	for _, b := range readBlocks(t, path) {
-		frame, ok := TaggedFrame(b.Data)
+		v, ok := corpus.TaggedFrame(b.Data)
 		require.True(t, ok, "block at %d ms has no frame tag", b.PTS)
-		blocks = append(blocks, taggedBlock{PTS: b.PTS, Frame: frame})
+		blocks = append(blocks, taggedBlock{PTS: b.PTS, Frame: int(v)})
 	}
 
 	return blocks

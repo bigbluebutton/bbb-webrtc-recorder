@@ -105,23 +105,12 @@ func TestPublisherSendLoop(t *testing.T) {
 	assert.Equal(t, 3, keys, "the schedule's key frame on each pass, and the PLI's")
 }
 
-func TestVP8PayloadHelpers(t *testing.T) {
-	g, err := corpus.GenerateVP8(corpus.VP8Options{FPS: 1, Frames: 2, StartPictureID: 0x1234})
+func TestScheduleFramesFindsKeyFrames(t *testing.T) {
+	g, err := corpus.GenerateVP8(corpus.VP8Options{FPS: 1, Frames: 2})
 	require.NoError(t, err)
 
 	frames := scheduleFrames(g.Records, true)
 	require.Len(t, frames, 2)
 	assert.True(t, frames[0].key)
 	assert.False(t, frames[1].key)
-	assert.Equal(t, 4, vp8DescriptorLen(frames[0].recs[0].Pay))
-
-	id, ok := vp8PictureID(frames[1].recs[0].Pay)
-	require.True(t, ok)
-	assert.Equal(t, uint16(0x1235), id)
-
-	p := frames[1].recs[0].Packet().Payload
-	setVP8PictureID(p, 0x7FFF)
-	id, _ = vp8PictureID(p)
-	assert.Equal(t, uint16(0x7FFF), id)
-	assert.False(t, isVP8KeyFrameStart(p))
 }
