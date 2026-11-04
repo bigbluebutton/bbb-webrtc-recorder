@@ -5,16 +5,14 @@ package e2e
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"math"
-	"os"
 	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/at-wat/ebml-go/mkvcore"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -28,31 +26,17 @@ type taggedBlock struct {
 	Frame int
 }
 
-type webmBlock struct {
-	PTS  int64 // ms
-	Data []byte
-}
-
-// readBlocks reads the blocks of the WebM at path, which must hold one track.
-func readBlocks(t *testing.T, path string) []webmBlock {
+// readBlocks reads every block of the WebM at path, which must hold one
+// track.
+func readBlocks(t *testing.T, path string) []oracle.Block {
 	t.Helper()
 
-	f, err := os.Open(path)
+	tracks, blocks, err := oracle.ReadBlocks(path)
 	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
+	require.Len(t, tracks, 1)
 
-	readers, err := mkvcore.NewSimpleBlockReader(f)
-	require.NoError(t, err)
-	require.Len(t, readers, 1)
-
-	var blocks []webmBlock
-	for {
-		data, _, pts, err := readers[0].Read()
-		if err == io.EOF {
-			break
-		}
-		require.NoError(t, err)
-		blocks = append(blocks, webmBlock{PTS: pts, Data: data})
+	for _, b := range blocks {
+		require.False(t, b.Group, "the recorder writes simple blocks only")
 	}
 	require.NotEmpty(t, blocks)
 
