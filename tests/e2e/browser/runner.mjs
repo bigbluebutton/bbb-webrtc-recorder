@@ -83,9 +83,29 @@ const methods = {
     await p.goto('http://localhost/');
     await p.addScriptTag({ path: livekitClient });
     await p.evaluate(async ({ url, token, roomOptions }) => {
-      const room = new window.LivekitClient.Room(roomOptions);
+      const { Room, RoomEvent } = window.LivekitClient;
+      const room = new Room(roomOptions);
+      // Subscribed before connect, so the record starts with the join. The
+      // clock is the host's, which a network namespace does not change.
+      window.e2eRoomEvents = [];
+      const record = (event, fields = {}) => window.e2eRoomEvents.push({ event, atUnixMs: Date.now(), ...fields });
+      for (const event of [RoomEvent.SignalReconnecting, RoomEvent.Reconnecting, RoomEvent.Reconnected]) {
+        room.on(event, () => record(event));
+      }
+      room.on(RoomEvent.Disconnected, (reason) => record(RoomEvent.Disconnected, { reason: String(reason) }));
+      for (const event of [RoomEvent.LocalTrackPublished, RoomEvent.LocalTrackUnpublished]) {
+        room.on(event, (pub) => record(event, { sid: pub.trackSid, source: pub.source }));
+      }
+      room.on(RoomEvent.ConnectionQualityChanged, (quality, participant) => {
+        if (participant === room.localParticipant) record(RoomEvent.ConnectionQualityChanged, { quality });
+      });
       await room.connect(url, token);
       window.e2eRoom = room;
+      window.e2eSender = (trackSid) => {
+        const sender = room.localParticipant.trackPublications.get(trackSid)?.track?.sender;
+        if (!sender) throw new Error(`no sender for ${trackSid}`);
+        return sender;
+      };
     }, { url, token, roomOptions });
     peers.set(peer, { context, page: p });
 
@@ -270,9 +290,7 @@ const methods = {
 
   async setCameraLayer({ peer, trackSid, rid, active }) {
     await page(peer).evaluate(async ({ trackSid, rid, active }) => {
-      const pub = window.e2eRoom.localParticipant.trackPublications.get(trackSid);
-      if (!pub?.track?.sender) throw new Error(`no sender for ${trackSid}`);
-      const { sender } = pub.track;
+      const sender = window.e2eSender(trackSid);
       const params = sender.getParameters();
       const encoding = params.encodings.find((e) => e.rid === rid);
       if (!encoding) throw new Error(`${trackSid} has no layer ${rid}`);
@@ -284,24 +302,38 @@ const methods = {
   },
 
   async cameraLayers({ peer, trackSid }) {
-    return page(peer).evaluate(({ trackSid }) => {
-      const pub = window.e2eRoom.localParticipant.trackPublications.get(trackSid);
-      if (!pub?.track?.sender) throw new Error(`no sender for ${trackSid}`);
-
-      return Object.fromEntries(pub.track.sender.getParameters().encodings.map((e) => [e.rid, e.active]));
-    }, { trackSid });
+    return page(peer).evaluate(({ trackSid }) => Object.fromEntries(
+      window.e2eSender(trackSid).getParameters().encodings.map((e) => [e.rid, e.active]),
+    ), { trackSid });
   },
 
-  async cameraPLIs({ peer, trackSid }) {
+  // See RoomEvents in browser_test.go.
+  async roomEvents({ peer }) {
+    return page(peer).evaluate(() => ({ events: window.e2eRoomEvents ?? [] }));
+  },
+
+  // See LocalTracks in browser_test.go.
+  async localTracks({ peer }) {
+    return page(peer).evaluate(() => Object.fromEntries(
+      [...window.e2eRoom.localParticipant.trackPublications.values()].map((pub) => [pub.source, pub.trackSid]),
+    ));
+  },
+
+  // See SenderStats in browser_test.go. A track of one layer has no rid.
+  async senderStats({ peer, trackSid }) {
     return page(peer).evaluate(async ({ trackSid }) => {
-      const pub = window.e2eRoom.localParticipant.trackPublications.get(trackSid);
-      if (!pub?.track?.sender) throw new Error(`no sender for ${trackSid}`);
-      const plis = {};
-      (await pub.track.sender.getStats()).forEach((s) => {
-        if (s.type === 'outbound-rtp' && s.rid) plis[s.rid] = s.pliCount ?? 0;
+      const stats = {};
+      (await window.e2eSender(trackSid).getStats()).forEach((s) => {
+        if (s.type !== 'outbound-rtp') return;
+        stats[s.rid ?? ''] = {
+          packetsSent: s.packetsSent ?? 0,
+          nackCount: s.nackCount ?? 0,
+          retransmittedPacketsSent: s.retransmittedPacketsSent ?? 0,
+          pliCount: s.pliCount ?? 0,
+        };
       });
 
-      return plis;
+      return stats;
     }, { trackSid });
   },
 

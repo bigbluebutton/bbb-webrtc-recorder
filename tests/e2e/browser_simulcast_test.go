@@ -87,14 +87,14 @@ func testBrowserSimulcast(t *testing.T, paused bool) {
 	peer.SetCameraLayer(cam.SID, "h", false)
 	dropped := time.Now()
 	time.Sleep(dropFor)
-	plis, ok := peer.CameraPLIs(cam.SID)["h"]
+	hBefore, ok := peer.SenderStats(cam.SID)["h"]
 	require.True(t, ok, "camera: no outbound-rtp stats for h")
 	peer.SetCameraLayer(cam.SID, "h", true)
 	restored := time.Now()
 
 	deadline := restored.Add(upSwitchWait)
-	for p := peer.CameraPLIs(cam.SID); p["h"] <= plis; p = peer.CameraPLIs(cam.SID) {
-		require.True(t, time.Now().Before(deadline), "LiveKit did not take h back: PLIs %v, h had %d before", p, plis)
+	for st := peer.SenderStats(cam.SID); st["h"].PLICount <= hBefore.PLICount; st = peer.SenderStats(cam.SID) {
+		require.True(t, time.Now().Before(deadline), "LiveKit did not take h back: stats %v, h had %d PLIs before", st, hBefore.PLICount)
 		time.Sleep(250 * time.Millisecond)
 	}
 	time.Sleep(afterUp)

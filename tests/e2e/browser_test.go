@@ -507,15 +507,67 @@ func (p *BrowserPeer) CameraLayers(sid string) map[string]bool {
 	return layers
 }
 
-// CameraPLIs returns how many PLIs each simulcast layer of the camera sid
-// has received, by rid, from Chromium's outbound-rtp stats.
-func (p *BrowserPeer) CameraPLIs(sid string) map[string]int {
+// RoomEvent is a livekit-client event the page saw on its room.
+type RoomEvent struct {
+	Event   string // livekit-client's RoomEvent value, e.g. "reconnecting"
+	At      time.Time
+	SID     string // the track's, for a local track event
+	Source  string // the track's
+	Quality string // for connectionQualityChanged
+	Reason  string // livekit-client's DisconnectReason, for disconnected
+}
+
+// RoomEvents returns the events the page saw on its room since it joined,
+// oldest first.
+func (p *BrowserPeer) RoomEvents() []RoomEvent {
 	p.b.t.Helper()
 
-	var plis map[string]int
-	p.b.call("cameraPLIs", map[string]any{"peer": p.Identity, "trackSid": sid}, &plis)
+	var got struct {
+		Events []struct {
+			Event, Sid, Source, Quality, Reason string
+			AtUnixMs                            int64
+		}
+	}
+	p.b.call("roomEvents", map[string]any{"peer": p.Identity}, &got)
 
-	return plis
+	out := make([]RoomEvent, 0, len(got.Events))
+	for _, e := range got.Events {
+		out = append(out, RoomEvent{
+			Event: e.Event, At: time.UnixMilli(e.AtUnixMs), SID: e.Sid, Source: e.Source, Quality: e.Quality, Reason: e.Reason,
+		})
+	}
+
+	return out
+}
+
+// LocalTracks returns the SID of each track the page publishes, by source
+// ("camera", "microphone").
+func (p *BrowserPeer) LocalTracks() map[string]string {
+	p.b.t.Helper()
+
+	var tracks map[string]string
+	p.b.call("localTracks", map[string]any{"peer": p.Identity}, &tracks)
+
+	return tracks
+}
+
+// SenderStat is one layer's counters from Chromium's outbound-rtp stats.
+type SenderStat struct {
+	PacketsSent              int
+	NACKCount                int
+	RetransmittedPacketsSent int
+	PLICount                 int
+}
+
+// SenderStats returns the outbound-rtp counters of the track sid, by rid,
+// or "" for a track of one layer.
+func (p *BrowserPeer) SenderStats(sid string) map[string]SenderStat {
+	p.b.t.Helper()
+
+	var stats map[string]SenderStat
+	p.b.call("senderStats", map[string]any{"peer": p.Identity, "trackSid": sid}, &stats)
+
+	return stats
 }
 
 // CaptureFreeze stops the browser's audio service process for Burst, once
