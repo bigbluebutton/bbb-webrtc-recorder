@@ -59,7 +59,7 @@ func testBrowserSimulcast(t *testing.T, paused bool) {
 	room := "e2e-browser-simulcast-" + uuid.NewString()[:8]
 	b := s.NewBrowser()
 	peer := b.JoinAsBBB(room, "e2e-browser")
-	mic := peer.PublishMic(MicOptions{})
+	mic := peer.PublishBBBMic("microphone")
 	cam := peer.PublishBBBCamera("camera", bbbDefaultCameraProfile)
 	t.Logf("camera: Chromium captures %dx%d at %v fps", cam.Capture.Width, cam.Capture.Height, cam.Capture.FrameRate)
 

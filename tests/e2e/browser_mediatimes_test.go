@@ -307,7 +307,7 @@ func TestBrowserMediaTimestampsKeepLipSync(t *testing.T) {
 			room := "e2e-browser-mediatimes-" + uuid.NewString()[:8]
 			b := s.NewBrowser()
 			peer := b.JoinAsBBB(room, "e2e-browser")
-			mic := peer.PublishMic(MicOptions{})
+			mic := peer.PublishBBBMic("microphone")
 			cam := peer.PublishBBBCameraCapturing("camera", c.profile, c.capture)
 
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)

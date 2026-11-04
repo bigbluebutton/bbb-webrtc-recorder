@@ -135,7 +135,7 @@ To add a browser scenario, follow [Adding a scenario](#adding-a-scenario),
 with these changes:
 1. Start the test with `RequireBrowser(t)`, before the stack.
 2. Publish from the browser: `b := s.NewBrowser()`, then
-   `b.Join(room, identity).PublishMic(MicOptions{})`, which returns once
+   `b.Join(room, identity).PublishBBBMic("microphone")`, which returns once
    LiveKit lists the track. `JoinAsBBB` and `PublishBBBCamera` publish as
    BBB's client does.
 3. Impair the browser through the runner, e.g. `b.FreezeCapture`, which

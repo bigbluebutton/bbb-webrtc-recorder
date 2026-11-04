@@ -21,6 +21,25 @@ let freeze = null;
 
 const log = (msg) => process.stderr.write(`${new Date().toISOString()} ${msg}\n`);
 
+// BBB's client unpublishes a microphone muted this long
+// (DEFAULT_UNPUBLISH_AFTER_MUTE_MS in imports/api/audio/client/bridge/livekit.ts;
+// settings.yml turns unpublishOnMute on and leaves the delay unset).
+const UNPUBLISH_AFTER_MUTE_MS = 5000;
+
+// unmuteBBBMic waits this long for LiveKit's unmute to reach the page.
+// On loopback it takes ms.
+const REMOTE_UNMUTE_TIMEOUT_MS = 5000;
+
+// BBB's client publishes its microphone with these options (the bridge's
+// publish, and settings.yml's public.media.livekit.audio.publishOptions).
+const bbbMicPublishOptions = (name) => ({
+  audioPreset: { maxBitrate: 48000, networkPriority: 'high', priority: 'high' },
+  dtx: false,
+  red: true,
+  forceStereo: false,
+  name,
+});
+
 function page(peer) {
   const p = peers.get(peer);
   if (!p) throw new Error(`no peer ${peer}`);
@@ -70,21 +89,92 @@ const methods = {
     return {};
   },
 
-  // BBB's settings.yml sets this preset
-  // (public.media.livekit.audio.publishOptions.audioPreset).
-  async publishMic({ peer, name, dtx, red }) {
-    const trackSid = await page(peer).evaluate(async ({ name, dtx, red }) => {
-      const { Track, createLocalAudioTrack } = window.LivekitClient;
-      const track = await createLocalAudioTrack();
-      const pub = await window.e2eRoom.localParticipant.publishTrack(track, {
-        source: Track.Source.Microphone, name, dtx, red,
-        audioPreset: { maxBitrate: 48000, networkPriority: 'high', priority: 'high' },
+  // See PublishBBBMic in browser_test.go. The page keeps the capture's
+  // stream, for unmuteBBBMic to publish again.
+  async publishBBBMic({ peer, name }) {
+    return page(peer).evaluate(async ({ options, unpublishAfterMuteMs }) => {
+      const { ParticipantEvent, Track } = window.LivekitClient;
+      const room = window.e2eRoom;
+      const lp = room.localParticipant;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: {} });
+      const mic = { stream, options: { ...options, source: Track.Source.Microphone }, timer: null };
+      window.e2eBBBMic = mic;
+
+      const isMic = (pub) => pub.source === Track.Source.Microphone;
+      const micPubs = () => [...lp.audioTrackPublications.values()].filter(isMic);
+      const unpublishIfMuted = async () => {
+        mic.timer = null;
+        const pubs = micPubs();
+        if (pubs.length === 0 || !pubs.every((pub) => pub.isMuted)) return;
+        const stopOnUnpublish = room.options?.stopLocalTrackOnUnpublish ?? false;
+        await Promise.all(pubs.map((pub) => lp.unpublishTrack(pub.track, stopOnUnpublish)));
+      };
+
+      lp.on(ParticipantEvent.TrackMuted, (pub) => {
+        if (!isMic(pub)) return;
+        clearTimeout(mic.timer);
+        mic.timer = setTimeout(() => {
+          unpublishIfMuted().catch((e) => console.error(`unpublish after mute: ${e}`));
+        }, unpublishAfterMuteMs);
+      });
+      lp.on(ParticipantEvent.TrackUnmuted, (pub) => {
+        if (!isMic(pub)) return;
+        clearTimeout(mic.timer);
+        mic.timer = null;
       });
 
-      return pub.trackSid;
-    }, { name, dtx, red });
+      const pub = await lp.publishTrack(stream.getAudioTracks()[0], mic.options);
 
-    return { trackSid };
+      return { trackSid: pub.trackSid };
+    }, { options: bbbMicPublishOptions(name), unpublishAfterMuteMs: UNPUBLISH_AFTER_MUTE_MS });
+  },
+
+  // See MuteMic in browser_test.go.
+  async muteBBBMic({ peer }) {
+    await page(peer).evaluate(async () => {
+      const { Track } = window.LivekitClient;
+      const lp = window.e2eRoom.localParticipant;
+      const pub = lp.getTrackPublication(Track.Source.Microphone);
+      if (pub && !pub.isMuted) await lp.setMicrophoneEnabled(false);
+    });
+
+    return {};
+  },
+
+  // See UnmuteMic in browser_test.go. Waits until LiveKit's unmute of a
+  // track in remoteUnmuted reaches the page, then does what
+  // setSenderTrackEnabled(true) does in BBB's LiveKit audio bridge.
+  async unmuteBBBMic({ peer, remoteUnmuted }) {
+    return page(peer).evaluate(async ({ remoteUnmuted, timeoutMs }) => {
+      const { Track } = window.LivekitClient;
+      const mic = window.e2eBBBMic;
+      if (!mic) throw new Error('no microphone from publishBBBMic');
+
+      const room = window.e2eRoom;
+      const lp = room.localParticipant;
+      const micPub = () => lp.getTrackPublication(Track.Source.Microphone);
+      const deadline = Date.now() + timeoutMs;
+      for (let pub = micPub(); pub?.isMuted && remoteUnmuted.includes(pub.trackSid); pub = micPub()) {
+        if (Date.now() > deadline) throw new Error(`LiveKit's unmute of ${pub.trackSid} did not reach the page`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      const pub = micPub();
+      if (pub && !pub.isMuted) return { trackSid: pub.trackSid, republished: false };
+      if (pub) throw new Error(`microphone ${pub.trackSid} is muted, and LiveKit did not unmute it`);
+
+      if (!mic.stream.active) {
+        // BBB captures again through livekit-client, and keeps that capture.
+        await lp.setMicrophoneEnabled(true, {}, mic.options);
+        const newPub = lp.getTrackPublication(Track.Source.Microphone);
+        mic.stream = new MediaStream([newPub.track.mediaStreamTrack]);
+
+        return { trackSid: newPub.trackSid, republished: true };
+      }
+      const newPub = await lp.publishTrack(mic.stream.getAudioTracks()[0], mic.options);
+
+      return { trackSid: newPub.trackSid, republished: true };
+    }, { remoteUnmuted, timeoutMs: REMOTE_UNMUTE_TIMEOUT_MS });
   },
 
   // Publishes the fake camera as BBB's client does with the camera profile
@@ -93,8 +183,10 @@ const methods = {
   // and services/livekit/presets.ts. The visible profiles up to the selected
   // one, three at most, become simulcast layers; a hidden profile is
   // published alone.
-  async publishBBBCamera({ peer, name, profiles, profileId, captureFrameRate }) {
-    return page(peer).evaluate(async ({ name, profiles, profileId, captureFrameRate }) => {
+  //
+  // previewMs is CameraCapture.Preview.
+  async publishBBBCamera({ peer, name, profiles, profileId, captureFrameRate, previewMs }) {
+    return page(peer).evaluate(async ({ name, profiles, profileId, captureFrameRate, previewMs }) => {
       const { Track, VideoPreset } = window.LivekitClient;
       const profile = profiles.find((p) => p.id === profileId);
       if (!profile) throw new Error(`no camera profile ${profileId}`);
@@ -102,6 +194,7 @@ const methods = {
       // The capture only: the preset's fps still comes from the profile.
       if (captureFrameRate) video.frameRate = captureFrameRate;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
+      if (previewMs) await new Promise((resolve) => { setTimeout(resolve, previewMs); });
       const [track] = stream.getVideoTracks();
       const capture = track.getSettings();
 
@@ -145,6 +238,7 @@ const methods = {
         source: Track.Source.Camera,
         name,
       });
+      (window.e2eCameraStreams ??= {})[pub.trackSid] = stream;
 
       const encodings = pub.track.sender.getParameters().encodings
         .map(({ rid, maxBitrate, maxFramerate }) => ({ rid, maxBitrate, maxFramerate }));
@@ -154,7 +248,21 @@ const methods = {
         capture: { width: capture.width, height: capture.height, frameRate: capture.frameRate },
         encodings,
       };
-    }, { name, profiles, profileId, captureFrameRate });
+    }, { name, profiles, profileId, captureFrameRate, previewMs });
+  },
+
+  // See UnpublishCamera in browser_test.go.
+  async unpublishBBBCamera({ peer, trackSid }) {
+    await page(peer).evaluate(async ({ trackSid }) => {
+      const lp = window.e2eRoom.localParticipant;
+      const pub = lp.trackPublications.get(trackSid);
+      if (!pub?.track) throw new Error(`no camera ${trackSid}`);
+      window.e2eCameraStreams?.[trackSid]?.getTracks().forEach((track) => track.stop());
+      await lp.unpublishTrack(pub.track);
+      delete window.e2eCameraStreams?.[trackSid];
+    }, { trackSid });
+
+    return {};
   },
 
   async setCameraLayer({ peer, trackSid, rid, active }) {

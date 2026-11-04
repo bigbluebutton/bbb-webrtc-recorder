@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/livekit/protocol/livekit"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -278,37 +280,90 @@ func (b *Browser) join(room, identity string, roomOptions map[string]any) *Brows
 	return &BrowserPeer{Identity: identity, b: b, room: room}
 }
 
-// MicOptions are a microphone's publish options. The zero value publishes as
-// BBB's client does by default: no DTX, RED on, 48 kbps at most.
-type MicOptions struct {
-	Name       string // default "microphone"
-	DTX        bool
-	DisableRED bool
-}
-
 // BrowserTrack is a track a BrowserPeer published.
 type BrowserTrack struct {
 	SID string
 }
 
-// PublishMic publishes the browser's fake microphone, a tone, and waits
-// until LiveKit lists the track, as Publisher.WaitPublished does.
-func (p *BrowserPeer) PublishMic(o MicOptions) *BrowserTrack {
+// PublishBBBMic publishes the browser's fake microphone as BBB's client does
+// (imports/api/audio/client/bridge/livekit.ts), and waits until LiveKit
+// lists the track. It has no DTX, RED on and 48 kbps.
+//
+// The page publishes a track of its own capture, which livekit-client
+// treats as user-provided: a mute only disables it. The page also runs
+// BBB's timer, which unpublishes the microphone after 5 s muted.
+func (p *BrowserPeer) PublishBBBMic(name string) *BrowserTrack {
 	p.b.t.Helper()
 
-	if o.Name == "" {
-		o.Name = "microphone"
-	}
-
 	var published struct{ TrackSid string }
-	p.b.call("publishMic", map[string]any{"peer": p.Identity, "name": o.Name, "dtx": o.DTX, "red": !o.DisableRED}, &published)
+	p.b.call("publishBBBMic", map[string]any{"peer": p.Identity, "name": name}, &published)
+	p.waitListed(published.TrackSid, true)
+
+	return &BrowserTrack{SID: published.TrackSid}
+}
+
+// MuteMic mutes the microphone of PublishBBBMic as BBB's client does, with
+// setMicrophoneEnabled(false). It starts BBB's unpublish timer.
+func (p *BrowserPeer) MuteMic() {
+	p.b.t.Helper()
+
+	p.b.call("muteBBBMic", map[string]any{"peer": p.Identity}, nil)
+}
+
+// UnmuteMic unmutes the microphone of PublishBBBMic as BBB does with its
+// default settings (useLiveKitAudioState off). bbb-webrtc-sfu unmutes a
+// published microphone with LiveKit's MutePublishedTrack, and the page
+// unmutes it in place whatever the state of its capture. With none
+// published, BBB's LiveKit audio bridge publishes the capture again, or a
+// new one if it has ended. UnmuteMic then waits until LiveKit lists the
+// new track.
+//
+// MutePublishedTrack can unmute only with LiveKit's remote unmute on
+// (room.enable_remote_unmute).
+func (p *BrowserPeer) UnmuteMic() (tr *BrowserTrack, republished bool) {
+	p.b.t.Helper()
 
 	ctx, cancel := context.WithTimeout(p.b.t.Context(), browserCallTimeout)
 	defer cancel()
 
-	require.NoError(p.b.t, waitTracksListed(ctx, p.b.lk, p.room, p.Identity, published.TrackSid))
+	// As bbb-webrtc-sfu does on MuteUserInVoiceConfSysMsg.
+	rs := lksdk.NewRoomServiceClient(p.b.lk.HTTPURL(), p.b.lk.APIKey, p.b.lk.APISecret)
+	info, err := rs.GetParticipant(ctx, &livekit.RoomParticipantIdentity{Room: p.room, Identity: p.Identity})
+	require.NoError(p.b.t, err)
+	remoteUnmuted := []string{}
+	for _, ti := range info.Tracks {
+		if ti.Source != livekit.TrackSource_MICROPHONE || !ti.Muted {
+			continue
+		}
+		_, err := rs.MutePublishedTrack(ctx, &livekit.MuteRoomTrackRequest{
+			Room: p.room, Identity: p.Identity, TrackSid: ti.Sid, Muted: false,
+		})
+		require.NoError(p.b.t, err)
+		remoteUnmuted = append(remoteUnmuted, ti.Sid)
+	}
 
-	return &BrowserTrack{SID: published.TrackSid}
+	var unmuted struct {
+		TrackSid    string
+		Republished bool
+	}
+	p.b.call("unmuteBBBMic", map[string]any{"peer": p.Identity, "remoteUnmuted": remoteUnmuted}, &unmuted)
+
+	if unmuted.Republished {
+		p.waitListed(unmuted.TrackSid, true)
+	}
+
+	return &BrowserTrack{SID: unmuted.TrackSid}, unmuted.Republished
+}
+
+// waitListed waits until LiveKit lists the track sid as the peer's, or with
+// listed false, until it does not.
+func (p *BrowserPeer) waitListed(sid string, listed bool) {
+	p.b.t.Helper()
+
+	ctx, cancel := context.WithTimeout(p.b.t.Context(), browserCallTimeout)
+	defer cancel()
+
+	require.NoError(p.b.t, waitTracks(ctx, p.b.lk, p.room, p.Identity, listed, []string{sid}))
 }
 
 // CameraProfile is one of BBB's camera profiles (settings.yml,
@@ -355,6 +410,11 @@ type CameraCapture struct {
 	// FrameRate, if set, is asked of getUserMedia only, as a webcam in low
 	// light captures fewer frames than its profile asks.
 	FrameRate float64
+	// Preview, if set, holds the capture this long before publishing, as
+	// BBB's preview modal does. It captures when it opens
+	// (video-preview/service.js), and the camera bridge publishes on 'Start
+	// sharing'.
+	Preview time.Duration
 }
 
 // PublishBBBCamera is PublishBBBCameraCapturing with the profile's capture.
@@ -388,14 +448,25 @@ func (p *BrowserPeer) PublishBBBCameraCapturing(name, profile string, capture Ca
 	if capture.FrameRate > 0 {
 		args["captureFrameRate"] = capture.FrameRate
 	}
+	if capture.Preview > 0 {
+		args["previewMs"] = capture.Preview.Milliseconds()
+	}
 	p.b.call("publishBBBCamera", args, &cam)
-
-	ctx, cancel := context.WithTimeout(p.b.t.Context(), browserCallTimeout)
-	defer cancel()
-
-	require.NoError(p.b.t, waitTracksListed(ctx, p.b.lk, p.room, p.Identity, cam.TrackSid))
+	p.waitListed(cam.TrackSid, true)
 
 	return &BBBCamera{BrowserTrack: BrowserTrack{SID: cam.TrackSid}, Capture: cam.Capture, Encodings: cam.Encodings}
+}
+
+// UnpublishCamera stops the camera sid of PublishBBBCameraCapturing as BBB's
+// client does (destroyStream in
+// video-provider/livekit-camera-bridge/component.tsx). It stops the
+// capture, then unpublishes the track with the room's
+// stopLocalTrackOnUnpublish. It waits until LiveKit no longer lists it.
+func (p *BrowserPeer) UnpublishCamera(sid string) {
+	p.b.t.Helper()
+
+	p.b.call("unpublishBBBCamera", map[string]any{"peer": p.Identity, "trackSid": sid}, nil)
+	p.waitListed(sid, false)
 }
 
 // SetCameraLayer starts or stops sending the simulcast layer rid of the

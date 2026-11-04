@@ -308,39 +308,7 @@ func (p *Publisher) WaitPublished(ctx context.Context, tracks ...*PubTrack) erro
 // waitTracksListed waits until LiveKit lists every track of sids as
 // published by identity in room.
 func waitTracksListed(ctx context.Context, lk *LiveKit, room, identity string, sids ...string) error {
-	rs := lksdk.NewRoomServiceClient(lk.HTTPURL(), lk.APIKey, lk.APISecret)
-
-	for {
-		resp, err := rs.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
-		if err == nil {
-			listed := map[string]bool{}
-
-			for _, pi := range resp.Participants {
-				if pi.Identity == identity {
-					for _, ti := range pi.Tracks {
-						listed[ti.Sid] = true
-					}
-				}
-			}
-
-			missing := 0
-			for _, sid := range sids {
-				if !listed[sid] {
-					missing++
-				}
-			}
-
-			if missing == 0 {
-				return nil
-			}
-		}
-
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("tracks not published: %w (last list error: %v)", ctx.Err(), err)
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
+	return waitTracks(ctx, lk, room, identity, true, sids)
 }
 
 // listedVP8Layers waits until LiveKit lists the VP8 layers of the track sid
@@ -348,23 +316,17 @@ func waitTracksListed(ctx context.Context, lk *LiveKit, room, identity string, s
 func listedVP8Layers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid string) []*livekit.VideoLayer {
 	t.Helper()
 
-	rs := lksdk.NewRoomServiceClient(lk.HTTPURL(), lk.APIKey, lk.APISecret)
-
 	var layers []*livekit.VideoLayer
 	require.Eventually(t, func() bool {
-		resp, err := rs.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
-		if err != nil {
+		listed, err := lk.listedTracks(ctx, room, "")
+		if err != nil || listed[sid] == nil {
 			return false
 		}
 
-		for _, pi := range resp.Participants {
-			for _, ti := range pi.Tracks {
-				for _, c := range ti.Codecs {
-					if ti.Sid == sid && strings.EqualFold(c.MimeType, webrtc.MimeTypeVP8) && len(c.Layers) > 0 {
-						layers = c.Layers
-						return true
-					}
-				}
+		for _, c := range listed[sid].Codecs {
+			if strings.EqualFold(c.MimeType, webrtc.MimeTypeVP8) && len(c.Layers) > 0 {
+				layers = c.Layers
+				return true
 			}
 		}
 
@@ -372,6 +334,47 @@ func listedVP8Layers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid s
 	}, 10*time.Second, 50*time.Millisecond, "LiveKit does not list the VP8 layers of %s", sid)
 
 	return layers
+}
+
+// listedTracks returns the tracks LiveKit lists in room, by SID: those of
+// identity, or of every participant when identity is empty.
+func (lk *LiveKit) listedTracks(ctx context.Context, room, identity string) (map[string]*livekit.TrackInfo, error) {
+	rs := lksdk.NewRoomServiceClient(lk.HTTPURL(), lk.APIKey, lk.APISecret)
+
+	resp, err := rs.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
+	if err != nil {
+		return nil, err
+	}
+
+	tracks := map[string]*livekit.TrackInfo{}
+	for _, pi := range resp.Participants {
+		if identity == "" || pi.Identity == identity {
+			for _, ti := range pi.Tracks {
+				tracks[ti.Sid] = ti
+			}
+		}
+	}
+
+	return tracks, nil
+}
+
+func waitTracks(ctx context.Context, lk *LiveKit, room, identity string, want bool, sids []string) error {
+	for {
+		listed, err := lk.listedTracks(ctx, room, identity)
+		if err == nil && !slices.ContainsFunc(sids, func(sid string) bool { return (listed[sid] != nil) != want }) {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			if want {
+				return fmt.Errorf("tracks not published: %w (last list error: %v)", ctx.Err(), err)
+			}
+
+			return fmt.Errorf("tracks still published: %w (last list error: %v)", ctx.Err(), err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // Start is when the track began sending; SentPacket.At and PLIs count from it.

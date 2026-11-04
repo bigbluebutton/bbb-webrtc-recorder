@@ -59,7 +59,7 @@ func testBrowserMic(t *testing.T, freeze, clockSync bool) {
 	}})
 	b := s.NewBrowser()
 	room := "e2e-browser-mic-" + uuid.NewString()[:8]
-	mic := b.Join(room, "e2e-browser").PublishMic(MicOptions{})
+	mic := b.Join(room, "e2e-browser").PublishBBBMic("microphone")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
