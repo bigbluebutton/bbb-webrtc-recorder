@@ -191,37 +191,26 @@ func TestBrowserMidMeetingFilesKeepLipSync(t *testing.T) {
 		{"cam2", recCam2, cam2.SID, stopCam2},
 	} {
 		p := placeOnCaptureClock(ctx, t, s, f.name, f.rec, f.sid)
-		assert.LessOrEqual(t, p.Worst.Abs(), browserDriftBound, "%s: drift against the capture clock", f.name)
 
 		assertMediaEnd(t, f.name, p.Started, f.stop, p.Out.WebM.PTS, maxStepOf(p.kind()))
 
-		read := traceTime(p.Out.Trace, p.Blocks[0].Frame.Read)
 		t.Logf("%s: the first block was read %v after mediaStart; the sender reports spread %v",
-			f.name, read.Sub(p.Start), srSpread(p.Clock))
+			f.name, p.Read.Sub(p.Start), srSpread(p.Clock))
 
 		files = append(files, p)
 	}
 
 	assertFilesAgree(t, files, browserLipSyncBound)
 
-	captured := func(f capturePlacement, last bool) time.Time {
-		b := f.Blocks[0]
-		if last {
-			b = f.Blocks[len(f.Blocks)-1]
-		}
-
-		return f.Clock.at(b.Frame.TS)
-	}
+	first := func(f capturePlacement) time.Time { return f.captured(0) }
+	last := func(f capturePlacement) time.Time { return f.captured(len(f.Blocks) - 1) }
 	cam1File, mic2File, cam2File := files[0], files[2], files[3]
 	t.Logf("first frames captured: mic2 %v after cam1 (at least %v), cam2 %v after mic2 (at least %v)",
-		captured(mic2File, false).Sub(captured(cam1File, false)), mic2AfterCam1,
-		captured(cam2File, false).Sub(captured(mic2File, false)), cam2AfterMic2)
-	assert.GreaterOrEqual(t, captured(mic2File, false).Sub(captured(cam1File, false)), mic2AfterCam1,
-		"mic2 starts after cam1")
-	assert.GreaterOrEqual(t, captured(cam2File, false).Sub(captured(mic2File, false)), cam2AfterMic2,
-		"cam2 starts after mic2")
-	assert.True(t, captured(mic2File, false).Before(captured(cam1File, true)), "mic2 starts while cam1 runs")
-	assert.True(t, captured(cam2File, false).Before(captured(mic2File, true)), "cam2 starts while mic2 runs")
+		first(mic2File).Sub(first(cam1File)), mic2AfterCam1, first(cam2File).Sub(first(mic2File)), cam2AfterMic2)
+	assert.GreaterOrEqual(t, first(mic2File).Sub(first(cam1File)), mic2AfterCam1, "mic2 starts after cam1")
+	assert.GreaterOrEqual(t, first(cam2File).Sub(first(mic2File)), cam2AfterMic2, "cam2 starts after mic2")
+	assert.True(t, first(mic2File).Before(last(cam1File)), "mic2 starts while cam1 runs")
+	assert.True(t, first(cam2File).Before(last(mic2File)), "cam2 starts while mic2 runs")
 
 	// LiveKit's mute path shows in mic1's reads: it forwards until the mute
 	// reaches it, sends its silence, then nothing until the unmute. The long

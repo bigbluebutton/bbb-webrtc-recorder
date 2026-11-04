@@ -116,7 +116,6 @@ func testBrowserSimulcast(t *testing.T, paused bool) {
 	}{{"camera", recCam, cam.SID, maxVideoStep}, {"microphone", recMic, mic.SID, maxAudioStep}} {
 		p := placeOnCaptureClock(ctx, t, s, c.name, c.rec, c.sid)
 		late[c.name] = p.Late
-		assert.LessOrEqual(t, p.Worst.Abs(), browserDriftBound, "%s: drift against the capture clock", c.name)
 		assertMediaEnd(t, c.name, p.Started, stops[c.rec.SessionID], p.Out.WebM.PTS, c.maxStep)
 		if c.name == "camera" {
 			camFile = p

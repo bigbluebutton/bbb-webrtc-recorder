@@ -15,6 +15,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/google/uuid"
 	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,12 @@ func ntpTime(ntp uint64) time.Time {
 type senderClock struct {
 	rate    uint32
 	reports []corpus.Record
+	// cut, if not 0, splits the trace in two by read time, µs since its
+	// epoch: segment 1 is what was read from cut on. After a blackout
+	// LiveKit can re-base the downtrack's timestamps, and builds its next
+	// reports from the publisher's new ones. A report from one side of the
+	// cut then maps the other side's timestamps wrongly.
+	cut int64
 }
 
 func newSenderClock(tr *corpus.Trace) senderClock {
@@ -47,10 +54,39 @@ func newSenderClock(tr *corpus.Trace) senderClock {
 	return c
 }
 
+func (c senderClock) segment(atUs int64) int {
+	if c.cut > 0 && atUs >= c.cut {
+		return 1
+	}
+
+	return 0
+}
+
 // at returns when the sender captured the media at ts, by the report
 // nearest to it.
 func (c senderClock) at(ts uint32) time.Time {
-	sr := slices.MinFunc(c.reports, func(a, b corpus.Record) int {
+	return c.by(ts, c.reports)
+}
+
+// atIn is at by the reports read in segment seg only. It returns false if
+// that segment has none.
+func (c senderClock) atIn(ts uint32, seg int) (time.Time, bool) {
+	var in []corpus.Record
+	for _, r := range c.reports {
+		if c.segment(r.AtUs) == seg {
+			in = append(in, r)
+		}
+	}
+
+	if len(in) == 0 {
+		return time.Time{}, false
+	}
+
+	return c.by(ts, in), true
+}
+
+func (c senderClock) by(ts uint32, reports []corpus.Record) time.Time {
+	sr := slices.MinFunc(reports, func(a, b corpus.Record) int {
 		return cmp.Compare(abs64(int64(int32(ts-a.TS))), abs64(int64(int32(ts-b.TS))))
 	})
 
@@ -197,6 +233,16 @@ const (
 	// Chromium's microphone sender reports can disagree with each other by
 	// over 10 ms.
 	browserDriftBound = 30 * time.Millisecond
+	// Chromium's sender reports can place a microphone's capture up to about
+	// 15 ms late. So on loopback its frames can seem to be read, and its
+	// file to play, up to 15 ms before their capture. 25 ms leaves a margin.
+	browserReportError = 25 * time.Millisecond
+	// How late a file may play its media after its capture on loopback.
+	// There the least delayed frame is read at most 3 ms after its capture,
+	// through Chromium's encoder and pacer and the read path. 30 ms is a
+	// chosen margin of about 10 times that for a slower runner, not a
+	// derived bound. startByReads checks the recorder's own delay.
+	browserLateMax = 30 * time.Millisecond
 	// The read loop stamps a packet's arrival for the recorder after the
 	// trace takes its read time. Preemption on a loaded runner, under -race
 	// too, can put a few ms between the two.
@@ -204,14 +250,16 @@ const (
 )
 
 type capturePlacement struct {
-	Name    string
-	Late    time.Duration // how late the first block plays after its frame's capture
-	Worst   time.Duration // the blocks' worst drift from Late
-	Start   time.Time     // mediaStart
-	Started events.RecordingMediaStarted
-	Blocks  []pairedBlock
-	Clock   senderClock
-	Out     *Output
+	Name     string
+	Late     time.Duration // how late the first block plays after its frame's capture
+	Worst    time.Duration // the blocks' worst drift from Late
+	Start    time.Time     // mediaStart
+	Read     time.Time     // when the first block's frame was read
+	Started  events.RecordingMediaStarted
+	Blocks   []pairedBlock
+	Segments []int // each block's segment of Clock
+	Clock    senderClock
+	Out      *Output
 }
 
 func (p capturePlacement) kind() corpus.Kind { return p.Out.Trace.Header.Kind }
@@ -220,18 +268,83 @@ func (p capturePlacement) placed(b pairedBlock) time.Time {
 	return p.Start.Add(time.Duration(b.PTS-p.Blocks[0].PTS) * time.Millisecond)
 }
 
+// captured returns when the sender captured the frame of block i, by the
+// reports of its segment.
+func (p capturePlacement) captured(i int) time.Time {
+	at, _ := p.Clock.atIn(p.Blocks[i].Frame.TS, p.Segments[i])
+	return at
+}
+
+// startByReads returns where the reads of the start window place the first
+// block. Each block's read, less its PTS after the first block, gives a
+// start; it takes the earliest, at most 1 s before the first read.
+//
+// It stops at or before the frame where the recorder settles, on purpose.
+// The recorder stamps the same frames' arrivals at most readToArrival
+// after their reads, so its start is at most readToArrival after this one.
+// It can be earlier, so the check against it is one-sided.
+func (p capturePlacement) startByReads() time.Time {
+	// 120 ms and the 1 s floor below are the recorder's unexported
+	// mediaSpanAudioJumpStep and mediaSpanMaxBacklog.
+	window, jumpStep := recorder.MediaSpanWindow, 120*time.Millisecond
+	if p.Out.Trace.Header.Kind == corpus.KindVideo {
+		jumpStep = 0
+	}
+
+	start := p.Read
+	for i := 1; i < len(p.Blocks); i++ {
+		after := time.Duration(p.Blocks[i].PTS-p.Blocks[0].PTS) * time.Millisecond
+		step := time.Duration(p.Blocks[i].PTS-p.Blocks[i-1].PTS) * time.Millisecond
+		if after >= window || jumpStep > 0 && step >= jumpStep {
+			break
+		}
+		if at := traceTime(p.Out.Trace, p.Blocks[i].Frame.Read).Add(-after); at.Before(start) {
+			start = at
+		}
+	}
+
+	if floor := p.Read.Add(-time.Second); start.Before(floor) {
+		return floor
+	}
+
+	return start
+}
+
 // placeOnCaptureClock places each block of rec, and finds the capture time
 // of the frame it holds through the sender reports of the browser track
 // sid. The stack must keep whole payloads in its traces (fullTracePayloads).
-// mediaStart must be at most readToArrival after the first block's frame
-// was read, and at most 1 s and 1 ms before it. The recorder moves it back
-// up to 1 s, and the event drops its sub-ms part.
+//
+// mediaStart may be up to 1 s and 1 ms before the first block's frame was
+// read. The recorder moves it back up to 1 s, and the event drops its sub-ms
+// part. The other bounds are the constants above.
 func placeOnCaptureClock(ctx context.Context, t *testing.T, s *Stack, name string, rec *Recording, sid string) capturePlacement {
+	t.Helper()
+
+	return placeOnCaptureClockCut(ctx, t, s, name, rec, sid, time.Time{})
+}
+
+// placeOnCaptureClockCut is placeOnCaptureClock for a file cut by a
+// blackout. cutAfter is the blackout's end: the first media read at or after
+// it starts a second segment, and a zero cutAfter cuts nothing. Each block's
+// frame gets its capture time from the reports read in its own segment, which
+// must have one.
+func placeOnCaptureClockCut(ctx context.Context, t *testing.T, s *Stack, name string, rec *Recording, sid string,
+	cutAfter time.Time,
+) capturePlacement {
 	t.Helper()
 
 	out := ReadOutput(t, rec, sid)
 	clock := newSenderClock(out.Trace)
 	require.NotEmpty(t, clock.reports, "%s: no sender report", name)
+
+	if !cutAfter.IsZero() {
+		for _, r := range out.Trace.Records {
+			if r.T == corpus.RecordRTP && !r.Pad && !traceTime(out.Trace, r.AtUs).Before(cutAfter) {
+				clock.cut = r.AtUs
+				break
+			}
+		}
+	}
 
 	started, _, err := s.Driver.WaitMediaStarted(ctx, rec)
 	require.NoError(t, err, "%s: recordingMediaStarted", name)
@@ -245,25 +358,38 @@ func placeOnCaptureClock(ctx context.Context, t *testing.T, s *Stack, name strin
 		Out:     out,
 	}
 
-	first := p.Blocks[0].Frame
-	read := time.UnixMicro(out.Trace.Header.EpochUnixUs + first.Read)
-	assert.WithinRange(t, p.Start, read.Add(-time.Second-time.Millisecond), read.Add(readToArrival),
-		"%s: mediaStart against the first frame's read", name)
+	for i, b := range p.Blocks {
+		p.Segments = append(p.Segments, clock.segment(b.Frame.Read))
+		_, ok := clock.atIn(b.Frame.TS, p.Segments[i])
+		require.True(t, ok, "%s: no sender report in segment %d, which holds the block at %d ms", name, p.Segments[i], b.PTS)
+	}
 
-	captured := clock.at(first.TS)
+	p.Read = traceTime(out.Trace, p.Blocks[0].Frame.Read)
+	byReads := p.startByReads()
+	assert.WithinRange(t, p.Start, p.Read.Add(-time.Second-time.Millisecond), byReads.Add(readToArrival),
+		"%s: mediaStart against the reads of its start window", name)
+
+	captured := p.captured(0)
 	p.Late = p.Start.Sub(captured)
-	for _, b := range p.Blocks {
-		drift := p.placed(b).Sub(clock.at(b.Frame.TS)) - p.Late
+	assert.GreaterOrEqual(t, p.Late, -browserReportError, "%s: mediaStart plays the media before its capture", name)
+	assert.LessOrEqual(t, p.Late, browserLateMax, "%s: how late mediaStart plays the media", name)
+	for i, b := range p.Blocks {
+		drift := p.placed(b).Sub(p.captured(i)) - p.Late
 		if drift.Abs() > p.Worst.Abs() {
 			p.Worst = drift
 		}
 	}
+	assert.LessOrEqual(t, p.Worst.Abs(), browserDriftBound, "%s: drift against the capture clock", name)
 
+	segments := 1
+	if clock.cut > 0 {
+		segments = 2
+	}
 	flowingAt := firstFlowing(s.Driver, rec.From, rec.SessionID)
-	t.Logf("%s: %d blocks, %d sender reports; mediaStart plays the media %v after its capture, "+
+	t.Logf("%s: %d blocks, %d sender reports, %d segments; mediaStart plays the media %v after its capture, "+
 		"drifting %v at worst; the first block was read %v after its capture; "+
 		"a start stamped on flowing would play it %v after",
-		name, len(p.Blocks), len(clock.reports), p.Late, p.Worst, read.Sub(captured), flowingAt.Sub(captured))
+		name, len(p.Blocks), len(clock.reports), segments, p.Late, p.Worst, p.Read.Sub(captured), flowingAt.Sub(captured))
 
 	return p
 }
@@ -342,7 +468,6 @@ func TestBrowserMediaTimestampsKeepLipSync(t *testing.T) {
 			}{{"camera", recCam, cam.SID}, {"microphone", recMic, mic.SID}} {
 				p := placeOnCaptureClock(ctx, t, s, c.name, c.rec, c.sid)
 				late[c.name] = p.Late
-				assert.LessOrEqual(t, p.Worst.Abs(), browserDriftBound, "%s: drift against the capture clock", c.name)
 			}
 
 			lipSync := late["camera"] - late["microphone"]
@@ -408,4 +533,59 @@ func traceTime(tr *corpus.Trace, atUs int64) time.Time {
 // silence frame can start with the same three bytes, but is shorter.
 func isOpusSilence(pay []byte) bool {
 	return len(pay) == 80 && bytes.HasPrefix(pay, []byte{0xF8, 0xFF, 0xFE}) && bytes.Count(pay[3:], []byte{0}) == len(pay)-3
+}
+
+// TestSenderClockSegments checks the split of a trace's sender reports at a
+// blackout. After a 3 s read gap, the downtrack's timestamps move 500 ms
+// ahead, as a LiveKit re-base on a resume can move them. The reports after
+// the gap follow the new base. A report from before the gap then maps a
+// frame after it 500 ms off; one from its own segment maps it right.
+//
+// A segment with no report maps nothing.
+func TestSenderClockSegments(t *testing.T) {
+	const (
+		rate   = 48000
+		frame  = 20 * time.Millisecond
+		rebase = 500 * time.Millisecond
+		delay  = 10 * time.Millisecond // capture to read
+	)
+
+	epoch := time.Unix(1_800_000_000, 0)
+	ntp := func(at time.Time) uint64 {
+		return uint64(at.Unix()-ntpEpoch)<<32 | uint64(at.Nanosecond())<<32/uint64(time.Second)
+	}
+	ticks := func(d time.Duration) uint32 { return uint32(d * rate / time.Second) }
+
+	tr := &corpus.Trace{Header: corpus.NewSyntheticHeader(corpus.KindAudio, 1, "TestSenderClockSegments")}
+	tr.Header.EpochUnixUs = epoch.UnixMicro()
+	seq := uint16(0)
+	add := func(from, to time.Duration, shift time.Duration, reportsAt ...time.Duration) {
+		for c := from; c < to; c += frame {
+			ts := ticks(c + shift)
+			if slices.Contains(reportsAt, c) {
+				tr.Records = append(tr.Records, corpus.Record{T: corpus.RecordSR, AtUs: (c + delay).Microseconds(), TS: ts, NTP: ntp(epoch.Add(c))})
+			}
+			tr.Records = append(tr.Records, corpus.Record{T: corpus.RecordRTP, AtUs: (c + delay).Microseconds(), Seq: seq, TS: ts, PLen: 1})
+			seq++
+		}
+	}
+	add(0, 5*time.Second, 0, time.Second, 4*time.Second)
+	add(8*time.Second, 16*time.Second, rebase, 13*time.Second)
+
+	clock := newSenderClock(tr)
+	clock.cut = (8*time.Second + delay).Microseconds()
+	require.Equal(t, 0, clock.segment((4*time.Second + delay).Microseconds()))
+	require.Equal(t, 1, clock.segment((13*time.Second + delay).Microseconds()))
+
+	captured := epoch.Add(8 * time.Second)
+	ts := ticks(8*time.Second + rebase)
+	at, ok := clock.atIn(ts, 1)
+	require.True(t, ok)
+	assert.WithinDuration(t, captured, at, time.Millisecond, "the segment's own report")
+	assert.WithinDuration(t, captured.Add(rebase), clock.at(ts), time.Millisecond,
+		"the nearest report, from before the gap, maps the frame by the old base")
+
+	clock.cut = (14*time.Second + delay).Microseconds()
+	_, ok = clock.atIn(ts, 1)
+	assert.False(t, ok, "a segment with no report")
 }
