@@ -1,0 +1,29 @@
+{
+  "v": 1,
+  "class": "24",
+  "intent": "A microphone that sends nothing for 4 s: the sequence numbers follow on with no gap, and only the timestamp carries the 4.02 s. LiveKit's 1 s of silence at a mute is left out. The frames sent in the 300 ms after the resume are read in one burst at its end, which the lag oracle maps back. No loss is counted and every frame is written. RED: a writer that takes an Opus step over 1 s for one 20 ms frame plays the rest of the file 4 s early (maxAudioLagMs). RED: a writer that takes the arrival gap for an Opus step over 1 s plays the rest of the file 300 ms late (maxAudioLagMs).",
+  "traces": [
+    "c24-mic-resume-4s.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 400,
+    "max": 400
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "maxAudioLagMs": 1
+  },
+  "residuals": [
+    "maxAudioLagMs: ideally no lag. The writer steps 4019 ms, not 4020, so every frame after the resume plays 1 ms early. jech/samplebuilder computes the 4.02 s duration in float64, which truncates it to 4019999999 ns, and the writer floors the PTS to the ms"
+  ]
+}

@@ -322,6 +322,29 @@ func TestPause(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestPauseOpus(t *testing.T) {
+	// Six 20 ms frames across the sequence number wrap; frames 2 and 3 are
+	// not sent.
+	tr, err := GenerateOpus(OpusOptions{Frames: 6, StartSeq: 65534, StartTS: 1000})
+	require.NoError(t, err)
+
+	out, err := Apply(tr.Records, PauseOpus(40000, 80000))
+	require.NoError(t, err)
+	require.NoError(t, validateRecords(out))
+	assert.Equal(t, []uint16{65534, 65535, 0, 1}, seqs(out), "seqs follow on across the wrap")
+	assert.Equal(t, []int64{0, 20000, 80000, 100000}, times(out))
+
+	var ts []uint32
+	for _, r := range out {
+		ts = append(ts, r.TS)
+	}
+	assert.Equal(t, []uint32{1000, 1960, 4840, 5800}, ts, "timestamps keep the sender's clock")
+	assert.Equal(t, tr.Records[0].Pay, out[2].Pay, "payloads are kept")
+
+	_, err = Apply(tr.Records, PauseOpus(10, 10))
+	assert.Error(t, err)
+}
+
 func TestDelayFrames(t *testing.T) {
 	// Frame 0 waits 15 ms, frame 1 3 ms: frame 1's first packet queues
 	// behind frame 0's last.

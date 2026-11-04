@@ -58,9 +58,12 @@ type webmExpect struct {
 	// VideoDropped counts the VP8 frames read but not written
 	// (oracle.VideoPlacement).
 	VideoDropped *bound `json:"videoDropped,omitempty"`
+	// AudioMaxGapMs bounds the Opus track's largest PTS step.
+	AudioMaxGapMs *window `json:"audioMaxGapMs,omitempty"`
 }
 
-// window is an inclusive time range, in ms on the trace's atUs timeline.
+// window is an inclusive range, in ms. In BufferRequestsMs it holds times
+// on the trace's atUs timeline; elsewhere it holds durations.
 type window struct {
 	Min float64 `json:"min"`
 	Max float64 `json:"max"`
@@ -213,6 +216,14 @@ func (e *webmExpect) violations(r replayResult) []string {
 			if e.MaxFinalAudioLagMs != nil && math.Abs(r.audioLag.FinalMs) > *e.MaxFinalAudioLagMs {
 				v = append(v, fmt.Sprintf("webm final audio lag %.1f ms, want within %v ms", r.audioLag.FinalMs, *e.MaxFinalAudioLagMs))
 			}
+		}
+	}
+
+	if w := e.AudioMaxGapMs; w != nil {
+		if tr := r.webm.Track(oracle.CodecOpus); tr == nil {
+			v = append(v, "webm: no audio track for audioMaxGapMs")
+		} else if m := float64(tr.MaxGapMs); m < w.Min || m > w.Max {
+			v = append(v, fmt.Sprintf("webm audio max gap %d ms, want [%v, %v]", tr.MaxGapMs, w.Min, w.Max))
 		}
 	}
 

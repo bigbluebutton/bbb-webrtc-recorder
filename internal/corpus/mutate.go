@@ -260,7 +260,12 @@ func Stall(fromUs, toUs int64) Op {
 // included. Later sequence numbers and VP8 picture IDs follow on with no
 // gap, and the timestamps keep the sender's clock. Every payload except
 // padding must use the VP8Payload layout, with a 15-bit picture ID.
-func Pause(fromUs, toUs int64) Op {
+func Pause(fromUs, toUs int64) Op { return pause(fromUs, toUs, true) }
+
+// PauseOpus is Pause for an Opus track, which has no picture ID.
+func PauseOpus(fromUs, toUs int64) Op { return pause(fromUs, toUs, false) }
+
+func pause(fromUs, toUs int64, vp8 bool) Op {
 	return func(recs []Record) ([]Record, error) {
 		if fromUs < 0 || toUs <= fromUs {
 			return nil, fmt.Errorf("invalid pause [%d, %d) us", fromUs, toUs)
@@ -285,7 +290,7 @@ func Pause(fromUs, toUs int64) Op {
 			}
 
 			seqs[i] = seq.next(int64(r.Seq), 1<<16)
-			if !r.Pad {
+			if vp8 && !r.Pad {
 				id, bits := VP8PictureID(r.Pay)
 				if bits != 15 {
 					return nil, fmt.Errorf("record %d: no 15-bit VP8 picture ID", i)
@@ -328,7 +333,7 @@ func Pause(fromUs, toUs int64) Op {
 			}
 
 			r.Seq -= uint16(before(cutSeqs, seqs[i]))
-			if !r.Pad {
+			if vp8 && !r.Pad {
 				r.Pay = slices.Clone(r.Pay)
 				SetVP8PictureID(r.Pay, uint16(pics[i]-int64(before(cutPics, pics[i]))))
 			}

@@ -549,7 +549,9 @@ func seeds() []seed {
 	}
 
 	// The first frames after a gap often come late: a paced key frame, or
-	// a queue that drains. Both blackouts and the resume read them late.
+	// a queue that drains. The camera seeds delay each one. The microphone
+	// seeds read them in one burst (Stall): the lag oracle maps only a burst
+	// back.
 	const resumeLateUs, resumeLateForUs = 300000, 700000
 	lateGen := func(fromS int) string {
 		return fmt.Sprintf("+DelayFrames{read in [%ds,%.1fs):+%dms}", fromS, float64(fromS)+float64(resumeLateForUs)/1e6, resumeLateUs/1000)
@@ -620,6 +622,30 @@ func seeds() []seed {
 		synth(t, "corpus.GenerateVP8{FPS:30,Duration:4s,KeyPackets:8,DeltaPackets:3,KeyInterval:20,SpreadUs:3000}+frame 0 at 8x8+EOFAt", nil,
 			"c15-start-blank-key/camera", "Key frame 0 is 8x8. Key frame 20, the next, is 666.667 ms of RTP time after it.")
 		out = append(out, seed{name: "c15-start-blank-key", class: "15", tracks: []*corpus.Trace{t}})
+	}
+
+	// Class 24 for a microphone: a 9 s blackout, 450 sequence numbers, and
+	// a 4 s pause that only the timestamp carries. They come last so that
+	// the SSRCs of the seeds above stay.
+	{
+		t := must(corpus.GenerateOpus(corpus.OpusOptions{Duration: 16e9, StartSeq: 1000, StartTS: 90000, SSRC: next()}))
+		end := endAt(t.Records)
+		t.Records = must(corpus.Apply(t.Records, corpus.Blackout(3e6, 12e6), corpus.Stall(12e6, 12e6+resumeLateUs), corpus.EOFAt(end+20000)))
+		synth(t, fmt.Sprintf("corpus.GenerateOpus{Duration:16s}+Blackout(3s,12s)+Stall(12s,%.1fs)+EOFAt", 12+float64(resumeLateUs)/1e6), nil,
+			"c24-mic-blackout-9s/microphone", fmt.Sprintf("Frames 150-599 are never read: seqs %d-%d (450) and 9 s of RTP time. "+
+				"Frames 600-%d, sent in the %d ms after the blackout, are all read at %.0f ms.",
+				seqOf(t.Records, 149, 0)+1, seqOf(t.Records, 150, 0)-1, 600+resumeLateUs/20000-1, resumeLateUs/1000, 12000+float64(resumeLateUs)/1000))
+		out = append(out, seed{name: "c24-mic-blackout-9s", class: "24", tracks: []*corpus.Trace{t}})
+	}
+	{
+		t := must(corpus.GenerateOpus(corpus.OpusOptions{Duration: 12e9, StartSeq: 1000, StartTS: 90000, SSRC: next()}))
+		end := endAt(t.Records)
+		t.Records = must(corpus.Apply(t.Records, corpus.PauseOpus(5e6, 9e6), corpus.Stall(9e6, 9e6+resumeLateUs), corpus.EOFAt(end+20000)))
+		synth(t, fmt.Sprintf("corpus.GenerateOpus{Duration:12s}+PauseOpus(5s,9s)+Stall(9s,%.1fs)+EOFAt", 9+float64(resumeLateUs)/1e6), nil,
+			"c24-mic-resume-4s/microphone", fmt.Sprintf("Frames 250-449 are not sent; the seqs after them follow on. "+
+				"Frame 450's timestamp is 4.02 s after frame 249's. Frames 450-%d, sent in the %d ms after the resume, are all read at %.0f ms.",
+				450+resumeLateUs/20000-1, resumeLateUs/1000, 9000+float64(resumeLateUs)/1000))
+		out = append(out, seed{name: "c24-mic-resume-4s", class: "24", tracks: []*corpus.Trace{t}})
 	}
 
 	return out
