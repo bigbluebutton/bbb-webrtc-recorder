@@ -75,6 +75,7 @@ type Browser struct {
 
 	t     *testing.T
 	lk    *LiveKit
+	url   string // where the page dials LiveKit
 	proc  *Proc
 	stdin io.WriteCloser
 	// rpcLog keeps every request and reply, for a failed test's artifacts.
@@ -117,14 +118,25 @@ func (s *Stack) NewBrowser() *Browser {
 	replies, w, err := os.Pipe()
 	require.NoError(t, err)
 
-	cmd := exec.Command("node", runner)
+	// An absolute path, for a wrapper that runs node in another namespace.
+	node, err := exec.LookPath("node")
+	require.NoError(t, err)
+	node, err = filepath.Abs(node)
+	require.NoError(t, err)
+
+	cmd := exec.Command(s.browserNet.command(s.Artifacts, name, node), runner)
 	cmd.Dir = s.Artifacts
 	cmd.Env = childEnv()
 	cmd.Stdout = w
 	stdin, err := cmd.StdinPipe()
 	require.NoError(t, err)
 
-	b := &Browser{t: t, lk: s.LiveKit, stdin: stdin, rpcLog: rpcLog, pending: map[int]chan browserReply{}}
+	url := s.LiveKit.URL
+	if s.browserNet != nil && s.browserNet.Host != "" {
+		url = fmt.Sprintf("ws://%s:%d", s.browserNet.Host, s.LiveKit.HTTPPort)
+	}
+
+	b := &Browser{t: t, lk: s.LiveKit, url: url, stdin: stdin, rpcLog: rpcLog, pending: map[int]chan browserReply{}}
 	b.proc = startCmd(t, name, filepath.Join(s.Artifacts, name+".log"), cmd)
 	_ = w.Close()
 
@@ -274,7 +286,7 @@ func (b *Browser) join(room, identity string, roomOptions map[string]any) *Brows
 	b.t.Helper()
 
 	b.call("join", map[string]any{
-		"peer": identity, "url": b.lk.URL, "token": b.lk.Token(b.t, room, identity, nil), "roomOptions": roomOptions,
+		"peer": identity, "url": b.url, "token": b.lk.Token(b.t, room, identity, nil), "roomOptions": roomOptions,
 	}, nil)
 
 	return &BrowserPeer{Identity: identity, b: b, room: room}

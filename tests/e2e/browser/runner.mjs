@@ -54,6 +54,9 @@ const methods = {
     browser = await chromium.launch({
       channel: executablePath ? undefined : 'chromium',
       executablePath: executablePath || undefined,
+      // Playwright's default, set explicitly: a browser in a network
+      // namespace runs as root, where Chromium's sandbox refuses to start.
+      chromiumSandbox: false,
       args: [
         '--use-fake-ui-for-media-stream',
         '--use-fake-device-for-media-stream',

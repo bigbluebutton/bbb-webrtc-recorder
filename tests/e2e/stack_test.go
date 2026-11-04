@@ -26,6 +26,9 @@ type StackOptions struct {
 	// Servers places livekit-server and redis-server; nil keeps them on
 	// 127.0.0.1 (or REDIS_ADDR) on the host.
 	Servers *ServerNet
+	// Browser places the browsers NewBrowser starts; nil keeps them on the
+	// host, dialling LiveKit where the test does.
+	Browser *BrowserNet
 }
 
 // ServerNet is where a stack's livekit-server and redis-server listen and run.
@@ -59,6 +62,14 @@ type BrowserNet struct {
 	Wrap func(dir, name, bin string) string
 }
 
+func (n *BrowserNet) command(dir, name, bin string) string {
+	if n == nil || n.Wrap == nil {
+		return bin
+	}
+
+	return n.Wrap(dir, name, bin)
+}
+
 // Stack is one test's redis-server, livekit-server, recorder and driver.
 type Stack struct {
 	T         *testing.T
@@ -68,7 +79,8 @@ type Stack struct {
 	Driver    *Driver
 	Recorder  *Recorder
 
-	browsers int // started by NewBrowser, which numbers their logs
+	browsers   int // started by NewBrowser, which numbers their logs
+	browserNet *BrowserNet
 }
 
 // NewStack starts a stack whose logs, configs and outputs go to the test's
@@ -76,7 +88,7 @@ type Stack struct {
 func NewStack(t *testing.T, o StackOptions) *Stack {
 	t.Helper()
 
-	s := &Stack{T: t, Artifacts: ArtifactDir(t)}
+	s := &Stack{T: t, Artifacts: ArtifactDir(t), browserNet: o.Browser}
 	redirectStdLog(t, filepath.Join(s.Artifacts, "lksdk-test-process.log"))
 
 	s.Redis = StartRedis(t, s.Artifacts, o.Servers)
