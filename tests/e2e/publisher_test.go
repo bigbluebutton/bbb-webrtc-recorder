@@ -358,6 +358,10 @@ func (lk *LiveKit) listedTracks(ctx context.Context, room, identity string) (map
 	return tracks, nil
 }
 
+func waitTracksUnlisted(ctx context.Context, lk *LiveKit, room, identity string, sids ...string) error {
+	return waitTracks(ctx, lk, room, identity, false, sids)
+}
+
 func waitTracks(ctx context.Context, lk *LiveKit, room, identity string, want bool, sids []string) error {
 	for {
 		listed, err := lk.listedTracks(ctx, room, identity)

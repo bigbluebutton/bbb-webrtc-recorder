@@ -80,15 +80,8 @@ func testBrowserSimulcast(t *testing.T, paused bool) {
 		}
 	}
 
-	recCam, err := s.Driver.StartRecording(ctx, room, cam.SID)
-	require.NoError(t, err)
-	recMic, err := s.Driver.StartRecording(ctx, room, mic.SID)
-	require.NoError(t, err)
-
-	for _, rec := range []*Recording{recCam, recMic} {
-		_, err = s.Driver.WaitRtpStatus(ctx, rec.From, rec.SessionID, "flowing")
-		require.NoError(t, err)
-	}
+	recCam := record(ctx, t, s, room, cam.SID)
+	recMic := record(ctx, t, s, room, mic.SID)
 
 	time.Sleep(beforeDrop)
 	peer.SetCameraLayer(cam.SID, "h", false)
@@ -108,6 +101,7 @@ func testBrowserSimulcast(t *testing.T, paused bool) {
 
 	stops := map[string]*events.RecordingStopped{}
 	for _, rec := range []*Recording{recCam, recMic} {
+		var err error
 		stops[rec.SessionID], err = s.Driver.StopAndWait(ctx, rec.SessionID)
 		require.NoError(t, err)
 	}

@@ -3,9 +3,12 @@
 package e2e
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +204,7 @@ const (
 )
 
 type capturePlacement struct {
+	Name    string
 	Late    time.Duration // how late the first block plays after its frame's capture
 	Worst   time.Duration // the blocks' worst drift from Late
 	Start   time.Time     // mediaStart
@@ -209,6 +213,8 @@ type capturePlacement struct {
 	Clock   senderClock
 	Out     *Output
 }
+
+func (p capturePlacement) kind() corpus.Kind { return p.Out.Trace.Header.Kind }
 
 func (p capturePlacement) placed(b pairedBlock) time.Time {
 	return p.Start.Add(time.Duration(b.PTS-p.Blocks[0].PTS) * time.Millisecond)
@@ -231,6 +237,7 @@ func placeOnCaptureClock(ctx context.Context, t *testing.T, s *Stack, name strin
 	require.NoError(t, err, "%s: recordingMediaStarted", name)
 
 	p := capturePlacement{
+		Name:    name,
 		Start:   time.UnixMilli(started.MediaStartUTC),
 		Started: started,
 		Blocks:  pairBlocks(t, out.WebMPath, readFrames(t, out.Trace), out.Trace.Header.ClockRate),
@@ -317,20 +324,13 @@ func TestBrowserMediaTimestampsKeepLipSync(t *testing.T) {
 				c.check(ctx, t, s, room, cam)
 			}
 
-			recCam, err := s.Driver.StartRecording(ctx, room, cam.SID)
-			require.NoError(t, err)
-			recMic, err := s.Driver.StartRecording(ctx, room, mic.SID)
-			require.NoError(t, err)
-
-			for _, rec := range []*Recording{recCam, recMic} {
-				_, err = s.Driver.WaitRtpStatus(ctx, rec.From, rec.SessionID, "flowing")
-				require.NoError(t, err)
-			}
+			recCam := record(ctx, t, s, room, cam.SID)
+			recMic := record(ctx, t, s, room, mic.SID)
 
 			time.Sleep(recordFor)
 
 			for _, rec := range []*Recording{recCam, recMic} {
-				_, err = s.Driver.StopAndWait(ctx, rec.SessionID)
+				_, err := s.Driver.StopAndWait(ctx, rec.SessionID)
 				require.NoError(t, err)
 			}
 
@@ -350,4 +350,62 @@ func TestBrowserMediaTimestampsKeepLipSync(t *testing.T) {
 			assert.LessOrEqual(t, lipSync.Abs(), browserLipSyncBound, "lip sync")
 		})
 	}
+}
+
+const (
+	// Chromium sends a sender report every 2.5 to 7.5 s, and LiveKit
+	// forwards the latest every 3 s.
+	chromiumReportIntervalMax = 7500 * time.Millisecond
+	lkReportInterval          = 3 * time.Second
+	// A report LiveKit forwards can be this old.
+	lkReportAge = chromiumReportIntervalMax + lkReportInterval
+	// A file, or a file's segment, that records this long reads a sender
+	// report.
+	srSegment = lkReportAge + 1500*time.Millisecond
+)
+
+// assertFilesAgree checks that the files play their media equally late,
+// within bound. Every track of one browser shares its capture clock, so
+// this holds whenever each file started.
+func assertFilesAgree(t *testing.T, files []capturePlacement, bound time.Duration) {
+	t.Helper()
+
+	// A wall-clock step between two starts would shift the later files'
+	// lateness by the step.
+	var offsets []int64
+	for _, f := range files {
+		offsets = append(offsets, f.Started.MediaStartHR-f.Started.MediaStartUTC)
+	}
+	require.LessOrEqual(t, slices.Max(offsets)-slices.Min(offsets), hostClockStep.Milliseconds(),
+		"the host's wall clock stepped between the files' starts: mediaStartHR - mediaStartUTC %v", offsets)
+
+	var lines []string
+	for i, a := range files {
+		for _, b := range files[i+1:] {
+			kinds := "cross-kind"
+			if a.kind() == b.kind() {
+				kinds = "same-kind"
+			}
+			d := a.Late - b.Late
+			lines = append(lines, fmt.Sprintf("%s - %s (%s): %v, margin %v", a.Name, b.Name, kinds, d, bound-d.Abs()))
+		}
+	}
+	t.Logf("lateness across files:\n  %s", strings.Join(lines, "\n  "))
+
+	lates := make([]time.Duration, 0, len(files))
+	for _, f := range files {
+		lates = append(lates, f.Late)
+	}
+	assert.LessOrEqual(t, slices.Max(lates)-slices.Min(lates), bound, "lip sync across files")
+}
+
+func traceTime(tr *corpus.Trace, atUs int64) time.Time {
+	return time.UnixMicro(tr.Header.EpochUnixUs + atUs)
+}
+
+// isOpusSilence reports whether pay is LiveKit's 80-byte Opus silence
+// frame (OpusSilenceFrame in pkg/sfu/downtrack.go). An encoder's own
+// silence frame can start with the same three bytes, but is shorter.
+func isOpusSilence(pay []byte) bool {
+	return len(pay) == 80 && bytes.HasPrefix(pay, []byte{0xF8, 0xFF, 0xFE}) && bytes.Count(pay[3:], []byte{0}) == len(pay)-3
 }

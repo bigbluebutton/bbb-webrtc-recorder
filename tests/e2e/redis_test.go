@@ -309,6 +309,35 @@ type Recording struct {
 	From int
 }
 
+// record starts recording the track sid of room as bbb-webrtc-sfu does on
+// track_published, and waits until its media flows.
+func record(ctx context.Context, t *testing.T, s *Stack, room, sid string) *Recording {
+	t.Helper()
+
+	rec, err := s.Driver.StartRecording(ctx, room, sid)
+	require.NoError(t, err)
+	_, err = s.Driver.WaitRtpStatus(ctx, rec.From, rec.SessionID, "flowing")
+	require.NoError(t, err)
+
+	return rec
+}
+
+// unrecord stops rec as bbb-webrtc-sfu does on track_unpublished, and
+// returns its recordingStopped. The recorder may have stopped the session
+// already, when the unpublished track's reader ended. That stop counts too:
+// the wait starts at rec.From, and the recorder ignores a stop for a session
+// that has ended.
+func unrecord(ctx context.Context, t *testing.T, s *Stack, name string, rec *Recording) *events.RecordingStopped {
+	t.Helper()
+
+	require.NoError(t, s.Driver.Stop(rec.SessionID))
+	stop, err := s.Driver.WaitStopped(ctx, rec.From, rec.SessionID)
+	require.NoError(t, err, "%s: recordingStopped", name)
+	t.Logf("%s: stopped (%s)", name, stop.Reason)
+
+	return stop
+}
+
 // StartRecording starts one LiveKit recording session of trackIDs in room.
 func (d *Driver) StartRecording(ctx context.Context, room string, trackIDs ...string) (*Recording, error) {
 	return d.StartRecordingWith(ctx, StartSpec{Room: room, TrackIDs: trackIDs})

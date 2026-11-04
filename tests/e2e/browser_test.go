@@ -310,6 +310,12 @@ func (p *BrowserPeer) MuteMic() {
 	p.b.call("muteBBBMic", map[string]any{"peer": p.Identity}, nil)
 }
 
+// bbbLiveKitRoom turns on LiveKit's remote unmute, as BBB's livekit.yaml
+// does.
+func bbbLiveKitRoom(cfg map[string]any) {
+	cfg["room"] = map[string]any{"enable_remote_unmute": true}
+}
+
 // UnmuteMic unmutes the microphone of PublishBBBMic as BBB does with its
 // default settings (useLiveKitAudioState off). bbb-webrtc-sfu unmutes a
 // published microphone with LiveKit's MutePublishedTrack, and the page
@@ -375,8 +381,8 @@ type CameraProfile struct {
 	Constraints map[string]any `json:"constraints,omitempty"`
 }
 
-// bbbCameraProfiles are profiles of settings.yml. The camera quality
-// thresholds pick a hidden one (low-u30 at 30 cameras).
+// bbbCameraProfiles are profiles of settings.yml. The camera preview does
+// not list a hidden one (low-u30).
 var bbbCameraProfiles = []CameraProfile{
 	{ID: "low-u30", Bitrate: 30, Hidden: true},
 	{ID: "low", Bitrate: 100},
