@@ -76,7 +76,7 @@ type readFrame struct {
 
 // readFrames returns the frames of tr, a trace with whole payloads, in the
 // order of their first reads. A VP8 frame is its packets' payloads, less
-// their payload descriptors, in sequence order.
+// their payload descriptors, in sequence order. An Opus frame is a packet.
 func readFrames(t *testing.T, tr *corpus.Trace) []*readFrame {
 	t.Helper()
 
@@ -84,10 +84,15 @@ func readFrames(t *testing.T, tr *corpus.Trace) []*readFrame {
 		seq uint16
 		pay []byte
 	}
+	type frameKey struct {
+		ts  uint32
+		seq uint16 // Opus only
+	}
 
 	var frames []*readFrame
-	index := map[uint32]*readFrame{}
-	packets := map[uint32][]packet{}
+	var keys []frameKey
+	index := map[frameKey]*readFrame{}
+	packets := map[frameKey][]packet{}
 	for _, r := range tr.Records {
 		if r.T == corpus.RecordEOF {
 			require.NotContains(t, []string{"truncated", "dropped"}, r.Reason, "the trace misses reads")
@@ -97,22 +102,29 @@ func readFrames(t *testing.T, tr *corpus.Trace) []*readFrame {
 		}
 		require.Len(t, r.Pay, r.PLen, "the trace must hold whole payloads")
 
-		f := index[r.TS]
+		k := frameKey{ts: r.TS}
+		// LiveKit's first blank frame on a mute can reuse the last
+		// timestamp. The recorder skips it.
+		if tr.Header.Codec != corpus.CodecVP8 {
+			k.seq = r.Seq
+		}
+		f := index[k]
 		if f == nil {
 			f = &readFrame{TS: r.TS, Read: r.AtUs}
-			index[r.TS] = f
+			index[k] = f
 			frames = append(frames, f)
+			keys = append(keys, k)
 		}
 		f.Read = min(f.Read, r.AtUs)
 
 		// Retransmitted and repeated reads carry a packet already read.
-		if !slices.ContainsFunc(packets[r.TS], func(p packet) bool { return p.seq == r.Seq }) {
-			packets[r.TS] = append(packets[r.TS], packet{seq: r.Seq, pay: r.Pay})
+		if !slices.ContainsFunc(packets[k], func(p packet) bool { return p.seq == r.Seq }) {
+			packets[k] = append(packets[k], packet{seq: r.Seq, pay: r.Pay})
 		}
 	}
 
-	for _, f := range frames {
-		ps := packets[f.TS]
+	for i, f := range frames {
+		ps := packets[keys[i]]
 		first := ps[0].seq
 		slices.SortFunc(ps, func(a, b packet) int { return cmp.Compare(int16(a.seq-first), int16(b.seq-first)) })
 
