@@ -31,6 +31,12 @@ For each test, the harness:
 Each test checks the WebM through `internal/corpus/oracle`, along with the
 recorder's trace, the `recordingStopped` events and the `/metrics` deltas.
 
+When a row says when a frame was sent, it means when its first packet was
+due, so a late wake of the publisher's send loop does not move it.
+`mediaStart` comes from the least-late of a file's first frames (its first
+2 s of media). So a late wake moves the file's blocks only if all of
+those frames had one.
+
 | Test | Scenario |
 |---|---|
 | `TestBaselineRecording` | **Baseline.** A camera and a microphone, one session per track, about 10 s on a clean path. It checks the frame counts against what was sent and the PTS (increasing, no duplicates, gaps bounded), that the trace and the metrics agree, and that the recorder asks for no key frames. |
@@ -44,6 +50,11 @@ recorder's trace, the `recordingStopped` events and the `/metrics` deltas.
 | `TestSignalRefusedSplitsFile` | **Signal refused.** The proxy also refuses redials for 5 s. The SDK falls back to a full reconnect and every session stops as `closed`. The test retries as the SFU does, so each session ends with two files. This pins today's behaviour; it is not a target. |
 | `TestSlowMicClockKeepsWallClock` | **Slow media clock.** A microphone sends contiguous timestamps at 0.955 of real time, with pion's sender reports, as a sender that loses captured audio does. For 30 s of recording, every frame must play within the onset and steady-state bounds of where it was read, instead of 1.35 s early at the end. A second case mutes the publisher for 2 s: LiveKit then moves the downtrack's timestamps to the wall clock itself, and the recorder must give back the gaps that the jump covers instead of playing the rest up to 0.6 s late. The stats file's `mediaClock` and the `recorder_media_clock_*` metrics must report the rate and the gaps inserted. |
 | `TestBrowserMicCaptureFreeze` | **Browser loses captured audio** (browser mode). Chromium publishes its fake microphone while the test stops its audio service process for 90 ms every 2 s. Chromium drops the audio it missed and keeps its timestamps contiguous. With `livekit.audioClockSync` off, the recording must end early by the time lost. The stats file, the recorder's "Microphone ended behind the wall clock" warning and Chromium's sender reports must show it. With it on, every frame must play within the onset and steady-state bounds of where it was read. A healthy microphone with it on must get no gap. |
+| `TestMediaTimestampsPlaceEachFrame` | **Media timestamps.** A camera and a microphone, as in the baseline. The first key frame the recorder gets loses a packet, so the camera's file starts at the next one, about 600 ms after the flowing event. The publisher tags each frame's index into its payload. Each WebM block must land within 40 ms of when its frame was sent, at `mediaStart` plus its PTS since the first block. The two tracks must land within 15 ms of each other. `recordingStopped` must repeat `mediaStart`, and its `mediaEnd` must add the file's media and its last frame. `recorderStatus` must list `mediaTimestamps`. The test logs where a start stamped on flowing would put the first frame. |
+| `TestMediaTimestampsTakeOffAStartDelay` | **Media timestamps behind a delay at start.** On the NACK scenario's namespaces, with no loss, netem delays everything the test sends the servers by 300 ms. Both recordings start at once. 800 ms after the microphone's flowing event, the delay comes off over 400 ms, 10 ms at a time. So the delay is still on 1 s into the microphone's media, and off before 2 s into either track's. Each WebM block must land within 40 ms of when its frame was sent, and the two tracks within 15 ms of each other. The test first checks that timing, so it cannot pass without a delay to take off. It needs root and `E2E_NETEM=1`, as the NACK scenario does. |
+| `TestSimulcastMediaTimestampsPlaceEachFrame` | **Simulcast media timestamps.** A camera sends BBB's default layers (`bbbCameraLayers`): q at 451x338 and h at 640x480, each a stream with its own sequence numbers, timestamps and picture IDs. A microphone sends with it. Midway, h stops for 3 s: the recorder gets q until h has flowed again for 10 s. Each WebM block, whichever layer its frame came from, must land within 40 ms of when that frame was sent, and the two tracks within 15 ms of each other. `recordingStopped` must repeat `mediaStart`, and its `mediaEnd` must add the file's media and its last frame. The camera's file must hold both switches. |
+| `TestBrowserSimulcastMediaTimestamps` | **Browser simulcast** (browser mode). Chromium publishes its fake camera and microphone as BBB's client does: BBB's room options (dynacast on), and the camera with the default profile's capture and VP8 simulcast layers. LiveKit must list `bbbCameraLayers`. Midway, the page stops sending h for 3 s. The camera's file must hold both switches, and repeat a PTS only for one frame sent on both layers. Both files must pass the browser lip sync scenario's checks and the simulcast scenario's `recordingStopped` checks. A second case starts recording once dynacast has paused the unwatched camera. The recorder's subscription resumes the camera, and the recorder then gets the same media as in the first case. What this case adds is a check that LiveKit and Chromium resume a paused camera. |
+| `TestBrowserMediaTimestampsKeepLipSync` | **Browser lip sync** (browser mode). Chromium publishes its fake camera and microphone as BBB's client does, one session each, once per camera. Each camera is one VP8 stream whose first frames Chromium sends late. They are BBB's low profile, the hidden low-u30 profile at 30 kbps (on time after a 700 ms gap), and low captured at 5 fps. The two tracks' sender reports give each block's frame a capture time on the host's wall clock; the test finds that frame in the trace by its bytes. Each file's `mediaStart`, less its first frame's capture time, is how late it plays its media. The two files' delays must agree within 45 ms, and each block must play within 30 ms of its file's delay. |
 | `TestShutdownSignalClosesRecordings` | **Shutdown signal.** A camera records for 3 s, then the recorder gets SIGINT, and in a second run SIGTERM, the signal systemd sends on stop. Either way it must exit 0 by itself, having closed the WebM (every frame read is written) and ended the trace with its EOF record. |
 | `TestPublisherSendLoop`, `TestVP8PayloadHelpers` | The publisher's send loop (PLI answers, pacing, drops, pauses) and the VP8 payload helpers, with no servers involved. |
 
@@ -62,7 +73,8 @@ of the in-process replay corpus
    configs.
 2. **Publish.** `pub := s.NewPublisher(room, identity)`, with a room unique
    to the test (`"e2e-<scenario>-"` plus a short UUID), then
-   `pub.PublishVP8` or `pub.PublishOpus` with `TrackOptions`. A track sends
+   `pub.PublishVP8` or `pub.PublishOpus` with `TrackOptions`, or
+   `pub.PublishVP8Simulcast` with one `TrackOptions` per layer. A track sends
    a `corpus.GenerateVP8` or `corpus.GenerateOpus` schedule. `TrackOptions`
    also sets how the publisher answers a keyframe request (`KeyframeDelay`,
    `KeyframeSpread`) and which packets it never sends (`Drop`). Wait with
@@ -89,8 +101,8 @@ A scenario that needs root, as the NACK scenario does for its network
 namespaces, skips unless `E2E_NETEM=1` and fails instead when
 `E2E_NETEM_REQUIRED=1` (see `netemSkipReason`).
 
-CI runs the whole package unprivileged. A root-only scenario also needs its
-own step in `.github/workflows/e2e.yml`, as the NACK scenario has.
+CI runs the whole package unprivileged. A root-only scenario also needs to
+run in a root step of `.github/workflows/e2e.yml`, as the netem scenarios do.
 
 ## Browser mode
 
@@ -124,7 +136,8 @@ with these changes:
 1. Start the test with `RequireBrowser(t)`, before the stack.
 2. Publish from the browser: `b := s.NewBrowser()`, then
    `b.Join(room, identity).PublishMic(MicOptions{})`, which returns once
-   LiveKit lists the track.
+   LiveKit lists the track. `JoinAsBBB` and `PublishBBBCamera` publish as
+   BBB's client does.
 3. Impair the browser through the runner, e.g. `b.FreezeCapture`, which
    stops Chromium's audio service process in bursts until `b.ThawCapture`.
 
@@ -153,14 +166,14 @@ Environment:
 |---|---|
 | `LIVEKIT_SERVER_BIN` | The `livekit-server` binary. Default: `livekit-server` on `PATH`. |
 | `REDIS_SERVER_BIN` | The `redis-server` binary. Default: `redis-server` on `PATH`. |
-| `REDIS_ADDR` | Use this Redis instead of starting one. Channel names get a suffix naming the run (stamp and PID) and the test, so concurrent runs and tests do not cross. The NACK scenario and its control always start their own. |
+| `REDIS_ADDR` | Use this Redis instead of starting one. Channel names get a suffix naming the run (stamp and PID) and the test, so concurrent runs and tests do not cross. The netem scenarios and the NACK control always start their own. |
 | `E2E_RECORDER_BIN` | Use this recorder binary instead of building one. |
 | `E2E_RECORDER_RACE=1` | Build the recorder with `-race`; a test fails when its recorder's log reports a data race. The race build needs a lot of cache space. |
 | `E2E_ARTIFACTS` | Root directory for artifacts. When set, every test's artifacts are kept. |
 | `E2E_KEEP_ARTIFACTS=1` | Keep the artifacts of passing tests under the default root. |
 | `E2E_RECORDER_LOG_LEVEL`, `E2E_LIVEKIT_LOG_LEVEL` | Log levels. Defaults: `debug` and `info`. |
-| `E2E_NETEM=1` | Allow the NACK scenario's privileged path. The test must also run as root. |
-| `E2E_NETEM_REQUIRED=1` | Fail the NACK scenario instead of skipping it when the privileged path cannot run. |
+| `E2E_NETEM=1` | Allow the netem scenarios' privileged path. The test must also run as root. |
+| `E2E_NETEM_REQUIRED=1` | Fail the netem scenarios instead of skipping them when the privileged path cannot run. |
 | `E2E_BROWSER=1` | Run the browser scenarios. They need Node and the runner set up (see [Browser mode](#browser-mode)). |
 | `E2E_BROWSER_REQUIRED=1` | Fail the browser scenarios instead of skipping them when they cannot run. |
 | `E2E_BROWSER_BIN` | Run this Chrome or Chromium binary instead of Playwright's Chromium. |
@@ -182,7 +195,7 @@ holds:
 bbb-webrtc-recorder.{yml,log}  livekit-server.{yaml,log}  redis-server.log  lksdk-test-process.log
 pubsub.ndjson                                    # every Redis message sent and received
 browser-<n>.log  browser-<n>-rpc.ndjson          # browser mode: each runner's log, its requests and replies
-publisher.<identity>.<trackSID>.{sent.ndjson.gz,summary.json}
+publisher.<identity>.<trackSID>[.<rid>].{sent.ndjson.gz,summary.json}  # rid: a simulcast layer
 recorder/recordings/<room>/<trackSID>-<session>.webm
                           /<trackSID>-<session>.<trackSID>.trace.ndjson.gz
                           /<trackSID>-<session>-stats.json
@@ -225,6 +238,10 @@ d=$(mktemp -d) &&
     "REDIS_SERVER_BIN=$REDIS_SERVER_BIN" E2E_NETEM=1 E2E_RECORDER_BIN="$d/bwr" \
     E2E_ARTIFACTS="$d/artifacts" "$d/e2e.test" -test.run '^TestNACKRepairUnderLoss$' -test.v
 ```
+
+`TestMediaTimestampsTakeOffAStartDelay` runs the same way, with its name in
+`-test.run`. It builds the same namespaces with no loss, and adds its own
+netem delay on the host's end of the host <-> server link.
 
 `go test -tags e2e -v -run TestNetemPlan ./tests/e2e/...` logs the exact
 setup and teardown commands for a sample PID.
@@ -271,10 +288,10 @@ is cached under that version and checksum, and checked again on a cache hit.
 It installs `redis-server` from apt and stops the system service, then runs
 two steps:
 1. `go test -tags e2e -v -timeout 15m ./tests/e2e/...`, the whole suite
-   unprivileged. The NACK scenario's privileged test skips here.
-2. The NACK scenario as root, as shown above, with
-   `-test.run '^TestNACKRepairUnderLoss$'` and `E2E_NETEM_REQUIRED=1`, so a
-   skip fails the step. This step runs even if step 1 failed, but not if
+   unprivileged. The netem scenarios skip here.
+2. The netem scenarios as root, as shown above, with
+   `-test.run '^(TestNACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$'`
+   and `E2E_NETEM_REQUIRED=1`, so a skip fails the step. This step runs even if step 1 failed, but not if
    setup did, and has its own 10-minute limit. It loads `sch_netem`, and
    installs `linux-modules-extra` for the running kernel if the module is
    missing.
@@ -282,7 +299,7 @@ two steps:
 The job runs three times on every trigger, as a matrix. The first two legs
 run the steps above: once with the plain recorder, and once as
 `Run E2E Tests (race)` with `E2E_RECORDER_RACE=1`,
-where the NACK step builds its recorder with `-race` too. A race report in
+where the netem step builds its recorder with `-race` too. A race report in
 the recorder's log fails that leg. The race detector does not catch every
 race on every run, so a race-leg failure that passes on a rerun is still a
 race in the recorder, not a flake.
@@ -291,14 +308,14 @@ A third leg, `Run E2E Tests (browser)`, runs only the browser scenarios
 (`-run '^TestBrowser'`), against the race-built recorder, with
 `E2E_BROWSER=1` and `E2E_BROWSER_REQUIRED=1`, so a broken setup fails it
 instead of skipping. It installs Node 26, the runner's packages and
-Playwright's Chromium with its system libraries, and skips the NACK step. It
+Playwright's Chromium with its system libraries, and skips the netem step. It
 runs on `ubuntu-24.04`; the matrix in `e2e.yml` says why. The other two legs
 skip the browser scenarios.
 
 `E2E_ARTIFACTS` points at `$RUNNER_TEMP/e2e-artifacts`, so every test's
 artifacts are kept. When the job fails or is cancelled (as a timeout does),
-it uploads them (14-day retention), after a `chown`, because the NACK
-scenario writes them as root with mode 0600.
+it uploads them (14-day retention), after a `chown`, because the netem
+scenarios write them as root with mode 0600.
 
 To bump LiveKit, change `LIVEKIT_VERSION` and `LIVEKIT_SHA256` together. The
 checksum is the `linux_amd64` line of the release's `checksums.txt`.

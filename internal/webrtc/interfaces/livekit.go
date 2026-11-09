@@ -12,6 +12,7 @@ import (
 type LiveKitWebRTCInterface interface {
 	SetConnectionStateCallback(callback func(state utils.ConnectionState))
 	SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool))
+	SetMediaStartCallback(callback func(start time.Time))
 	Init() error
 	Close() time.Duration
 	GetStats() *appstats.CaptureStats

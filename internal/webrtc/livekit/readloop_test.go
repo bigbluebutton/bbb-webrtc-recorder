@@ -125,14 +125,15 @@ func (t *fakeTrack) ReadRTP() (*rtp.Packet, interceptor.Attributes, error) {
 }
 
 // pushRecorder is a mockRecorder that keeps the sequence numbers pushed to
-// it, and panics on the first packet panicOn matches.
+// it and their arrivals, and panics on the first packet panicOn matches.
 type pushRecorder struct {
 	mockRecorder
 	panicOn func(*rtp.Packet) bool
 
-	mu    sync.Mutex
-	video []uint16
-	audio []uint16
+	mu       sync.Mutex
+	video    []uint16
+	audio    []uint16
+	arrivals map[uint16]time.Time
 }
 
 func newPushRecorder() *pushRecorder {
@@ -143,7 +144,7 @@ func newPushRecorder() *pushRecorder {
 	}}
 }
 
-func (r *pushRecorder) push(seqs *[]uint16, p *rtp.Packet) {
+func (r *pushRecorder) push(seqs *[]uint16, p *rtp.Packet, at time.Time) {
 	if r.panicOn != nil && r.panicOn(p) {
 		panic("pushRecorder: scripted panic")
 	}
@@ -151,10 +152,15 @@ func (r *pushRecorder) push(seqs *[]uint16, p *rtp.Packet) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	*seqs = append(*seqs, p.SequenceNumber)
+
+	if r.arrivals == nil {
+		r.arrivals = map[uint16]time.Time{}
+	}
+	r.arrivals[p.SequenceNumber] = at
 }
 
-func (r *pushRecorder) PushVideo(p *rtp.Packet) { r.push(&r.video, p) }
-func (r *pushRecorder) PushAudio(p *rtp.Packet) { r.push(&r.audio, p) }
+func (r *pushRecorder) PushVideoAt(p *rtp.Packet, at time.Time) { r.push(&r.video, p, at) }
+func (r *pushRecorder) PushAudioAt(p *rtp.Packet, at time.Time) { r.push(&r.audio, p, at) }
 
 // loopHarness is a LiveKitWebRTC without a room, to drive readTrack directly,
 // and what it reported. Build it inside the synctest bubble that runs it: the
@@ -426,7 +432,7 @@ type closeOrderRecorder struct {
 	late   []uint16 // pushed after Close
 }
 
-func (r *closeOrderRecorder) PushAudio(p *rtp.Packet) {
+func (r *closeOrderRecorder) PushAudioAt(p *rtp.Packet, _ time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

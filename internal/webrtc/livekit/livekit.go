@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/appstats"
@@ -63,6 +64,29 @@ const (
 	// A microphone that ends this far behind the wall clock is out of lip
 	// sync in the recording.
 	mediaClockLagWarning = 200 * time.Millisecond
+	// The adapter reports a media start this old, settled or not. A track
+	// that pauses inside the recorder's window writes no frame to settle it.
+	// Only a frame that arrived in the window can move the start. One age
+	// serves both kinds: it allows for the video jitter buffer, which holds
+	// frames longer.
+	//
+	// The jitter buffer holds a frame up to videoJitterLatency after its
+	// first packet in sequence. So a frame from the window is written within
+	// MediaSpanWindow plus videoJitterLatency, plus how late that packet
+	// was. The extra 500 ms covers that lateness. A frame that moves the
+	// start back arrived in the new start's window, so this holds from a
+	// moved start too.
+	//
+	// These can still move the start back after it is reported:
+	//   - a frame whose first packet is over 500 ms late;
+	//   - a frame the builtin VP8 samplebuilder (recorder.useCustomSampler
+	//     off) holds behind a gap;
+	//   - an Opus frame the samplebuilder holds behind a loss, when the track
+	//     pauses before enough packets follow;
+	//   - a frame the jitter buffer's timer releases behind a loss, which
+	//     waits in the track buffer for the next packet read: a paused track
+	//     makes none.
+	mediaStartFinal = recorder.MediaSpanWindow + videoJitterLatency + 500*time.Millisecond
 	// Each keyframe request also stops LiveKit's NACK repair on the downtrack
 	// until it forwards a key frame. Must stay below videoJitterLatency: the
 	// key frame the last request brings then follows every loss it suppresses.
@@ -108,6 +132,7 @@ type LiveKitWebRTC struct {
 	hasVideo           bool
 	flowState          map[string]*trackFlowState
 	flowCallback       func(isFlowing bool, timestamp time.Duration, closed bool)
+	mediaStartCallback func(start time.Time)
 	trackStats         map[string]*appstats.AdapterTrackStats
 	startTs            time.Time
 	connStateCallback  func(state utils.ConnectionState)
@@ -132,6 +157,9 @@ type LiveKitWebRTC struct {
 	flowDispatching bool
 	flowDispatched  chan struct{} // closed when the running dispatcher returns
 	flowStopped     bool
+	// Set once the media start is queued, under m. Read without it on every
+	// write, to skip asking the recorder.
+	mediaStartQueued atomic.Bool
 
 	keyframeRequestChan   chan uint32
 	requestKeyframeCtx    context.Context
@@ -211,6 +239,17 @@ func (w *LiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp 
 	defer w.m.Unlock()
 
 	w.flowCallback = callback
+}
+
+// SetMediaStartCallback sets the callback that gets the recording's media
+// start once the recorder settles it or once it is mediaStartFinal old:
+// see recorder.Recorder's MediaSpan. It comes through the flow callback's
+// queue, after the first flowing event.
+func (w *LiveKitWebRTC) SetMediaStartCallback(callback func(start time.Time)) {
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	w.mediaStartCallback = callback
 }
 
 func (w *LiveKitWebRTC) Init() error {
@@ -783,6 +822,8 @@ type flowEvent struct {
 	isFlowing bool
 	timestamp time.Duration
 	closed    bool
+	// mediaStart, if set, makes this a media start event.
+	mediaStart time.Time
 }
 
 // queueFlowEvent queues e for the flow callback. The caller holds m.
@@ -819,11 +860,37 @@ func (w *LiveKitWebRTC) dispatchFlowEvents(dispatched chan<- struct{}) {
 		e := w.flowEvents[0]
 		w.flowEvents = w.flowEvents[1:]
 		callback := w.flowCallback
+		mediaStartCallback := w.mediaStartCallback
 		w.m.Unlock()
 
-		if callback != nil {
+		switch {
+		case !e.mediaStart.IsZero():
+			if mediaStartCallback != nil {
+				mediaStartCallback(e.mediaStart)
+			}
+		case callback != nil:
 			callback(e.isFlowing, e.timestamp, e.closed)
 		}
+	}
+}
+
+// queueMediaStart asks the recorder for its span with m released: the
+// recorder holds its own lock when it requests a key frame, which takes m.
+func (w *LiveKitWebRTC) queueMediaStart() {
+	if w.mediaStartQueued.Load() {
+		return
+	}
+
+	span, ok := w.rec.MediaSpan()
+	if !ok || !span.Settled && time.Since(span.Start) < mediaStartFinal {
+		return
+	}
+
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	if w.mediaStartQueued.CompareAndSwap(false, true) {
+		w.queueFlowEvent(flowEvent{mediaStart: span.Start})
 	}
 }
 
@@ -1159,6 +1226,7 @@ func (w *LiveKitWebRTC) watchFlow(trackID string, done <-chan struct{}) {
 				ticker.Reset(notFlowingTicker)
 			}
 
+			w.queueMediaStart()
 			lastSeqNum = currentSeqNum
 		}
 	}
@@ -1260,15 +1328,18 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 	rtpWriter, rtpWriterExists := w.rtpWriters[info.id]
 	w.m.Unlock()
 
-	writePackets := func(packets []*rtp.Packet) {
+	writePackets := func(packets []jitter.ExtPacket) {
 		for _, p := range packets {
 			switch info.kind {
 			case TrackKindVideo:
-				w.rec.PushVideo(p)
+				w.rec.PushVideoAt(p.Packet, p.ReceivedAt)
 			case TrackKindAudio:
-				w.rec.PushAudio(p)
+				w.rec.PushAudioAt(p.Packet, p.ReceivedAt)
 			}
 		}
+
+		w.queueMediaStart()
+		w.processPacketStats(info.id, packetsOf(packets))
 	}
 
 	push := w.packetPusher(info.id, buffer)
@@ -1291,9 +1362,8 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 						Infof("%s track=%s stopped", info.pubMime, info.id)
 
 					// No later packet hands out what the jitter buffer holds.
-					if tail := buffer.flush(); len(tail) > 0 {
+					if tail := buffer.flushExt(); len(tail) > 0 {
 						writePackets(tail)
-						w.processPacketStats(info.id, tail)
 					}
 				} else {
 					log.WithField("session", w.ctx.Value("session")).
@@ -1324,7 +1394,6 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 		}
 
 		writePackets(packets)
-		w.processPacketStats(info.id, packets)
 	}
 }
 
@@ -1336,12 +1405,13 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 // frame, is not media arriving, nor is a duplicate. LiveKit 1.13.5 to 1.13.9
 // give that padding a 255-byte payload, so only its padding bit tells it apart.
 // A microphone's media clock also needs the arrival, so it moves the
-// timestamps here, after the trace and the RTP dump took the sender's.
-func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*rtp.Packet) []*rtp.Packet {
+// timestamps here, after the trace and the RTP dump took the sender's. The
+// recorder gets each packet with this arrival, to time the media.
+func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*rtp.Packet) []jitter.ExtPacket {
 	var arrived seqWindow
 	clock := w.mediaClock(trackID)
 
-	return func(packet *rtp.Packet) []*rtp.Packet {
+	return func(packet *rtp.Packet) []jitter.ExtPacket {
 		now := time.Now()
 		if !packet.Padding && len(packet.Payload) > 0 && !arrived.duplicate(packet.SequenceNumber) {
 			w.updateFlowState(trackID, packet.SequenceNumber, now)
@@ -1351,7 +1421,7 @@ func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*
 			packet.Timestamp = clock.Timestamp(packet.Timestamp, packet.SequenceNumber, now)
 		}
 
-		return buffer.push(packet)
+		return buffer.pushExt(packet, now)
 	}
 }
 

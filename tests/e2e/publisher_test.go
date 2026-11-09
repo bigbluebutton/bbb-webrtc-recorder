@@ -3,11 +3,15 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,6 +76,15 @@ type TrackOptions struct {
 	Drop func(SentPacket) bool
 	// Width and Height are the signalled video dimensions (default 640x480).
 	Width, Height int
+	// TagFrames writes each frame's index into its first packet, after the
+	// codec's header, for TaggedFrame to read from the recording.
+	TagFrames bool
+	// TagOffset is added to each frame index TagFrames writes. Simulcast
+	// layers use different offsets, so a tag read from the recording shows
+	// which layer the frame came from.
+	TagOffset int
+	// Layer makes the track a simulcast layer; see PublishVP8Simulcast.
+	Layer *livekit.VideoLayer
 }
 
 // SentPacket is one packet the publisher wrote, or withheld.
@@ -161,7 +174,7 @@ func (p *Publisher) publish(c webrtc.RTPCodecCapability, kind corpus.Kind, o Tra
 
 	tr.Pub = pub
 	tr.SID = pub.SID()
-	tr.startSending()
+	tr.startSending(time.Now())
 
 	p.mu.Lock()
 	p.tracks = append(p.tracks, tr)
@@ -170,6 +183,52 @@ func (p *Publisher) publish(c webrtc.RTPCodecCapability, kind corpus.Kind, o Tra
 	t.Logf("publisher %s: %s track %s (%s) sending", p.Identity, kind, tr.SID, tr.opts.Name)
 
 	return tr
+}
+
+// PublishVP8Simulcast publishes one camera as simulcast layers, one track
+// per entry of layers, each sending its own schedule. Each entry must set
+// Layer: its quality picks the layer's rid, and its width and height
+// replace the entry's. The layers start together: frame i of each is due
+// at the same time, as an encoder sends one captured frame on every layer.
+func (p *Publisher) PublishVP8Simulcast(name string, layers ...TrackOptions) []*PubTrack {
+	t := p.t
+	t.Helper()
+
+	tracks := make([]*PubTrack, 0, len(layers))
+	locals := make([]*lksdk.LocalTrack, 0, len(layers))
+
+	for _, o := range layers {
+		require.NotNil(t, o.Layer, "TrackOptions.Layer")
+
+		o.Name = name
+		o.Source = livekit.TrackSource_CAMERA
+		o.Width, o.Height = int(o.Layer.Width), int(o.Layer.Height)
+
+		tr := newPubTrack(t, vp8Capability, corpus.KindVideo, o)
+		tracks = append(tracks, tr)
+		locals = append(locals, tr.Local)
+	}
+
+	pub, err := p.Room.LocalParticipant.PublishSimulcastTrack(locals, &lksdk.TrackPublicationOptions{
+		Name:   name,
+		Source: livekit.TrackSource_CAMERA,
+	})
+	require.NoError(t, err, "publish %s", name)
+
+	start := time.Now()
+	for _, tr := range tracks {
+		tr.Pub = pub
+		tr.SID = pub.SID()
+		tr.startSending(start)
+	}
+
+	p.mu.Lock()
+	p.tracks = append(p.tracks, tracks...)
+	p.mu.Unlock()
+
+	t.Logf("publisher %s: simulcast camera %s (%s) sending %d layers", p.Identity, pub.SID(), name, len(tracks))
+
+	return tracks
 }
 
 // newPubTrack prepares a track's schedule and LocalTrack, not yet published.
@@ -191,7 +250,12 @@ func newPubTrack(t *testing.T, c webrtc.RTPCodecCapability, kind corpus.Kind, o 
 		tr.keyFrame = templateKeyFrame(t, tr.frames, o.Width, o.Height)
 	}
 
-	local, err := lksdk.NewLocalTrack(c, lksdk.WithRTCPHandler(tr.onRTCP))
+	opts := []lksdk.LocalTrackOptions{lksdk.WithRTCPHandler(tr.onRTCP)}
+	if o.Layer != nil {
+		opts = append(opts, lksdk.WithSimulcast(o.Name, o.Layer))
+	}
+
+	local, err := lksdk.NewLocalTrack(c, opts...)
 	require.NoError(t, err)
 
 	tr.Local = local
@@ -199,15 +263,15 @@ func newPubTrack(t *testing.T, c webrtc.RTPCodecCapability, kind corpus.Kind, o 
 	return tr
 }
 
-func (tr *PubTrack) startSending() {
+func (tr *PubTrack) startSending(start time.Time) {
 	ctx, cancel := context.WithCancel(context.Background())
 	tr.cancel = cancel
 
 	tr.mu.Lock()
-	tr.start = time.Now()
+	tr.start = start
 	tr.mu.Unlock()
 
-	go tr.run(ctx, tr.Start())
+	go tr.run(ctx, start)
 }
 
 // Close stops every track, writes their artifacts and leaves the room.
@@ -279,6 +343,37 @@ func waitTracksListed(ctx context.Context, lk *LiveKit, room, identity string, s
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// listedVP8Layers waits until LiveKit lists the VP8 layers of the track sid
+// in room, and returns them.
+func listedVP8Layers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid string) []*livekit.VideoLayer {
+	t.Helper()
+
+	rs := lksdk.NewRoomServiceClient(lk.HTTPURL(), lk.APIKey, lk.APISecret)
+
+	var layers []*livekit.VideoLayer
+	require.Eventually(t, func() bool {
+		resp, err := rs.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
+		if err != nil {
+			return false
+		}
+
+		for _, pi := range resp.Participants {
+			for _, ti := range pi.Tracks {
+				for _, c := range ti.Codecs {
+					if ti.Sid == sid && strings.EqualFold(c.MimeType, webrtc.MimeTypeVP8) && len(c.Layers) > 0 {
+						layers = c.Layers
+						return true
+					}
+				}
+			}
+		}
+
+		return false
+	}, 10*time.Second, 50*time.Millisecond, "LiveKit does not list the VP8 layers of %s", sid)
+
+	return layers
 }
 
 // Start is when the track began sending; SentPacket.At and PLIs count from it.
@@ -357,6 +452,12 @@ func (tr *PubTrack) SentBetween(from, to time.Duration) (frames, keyFrames int) 
 
 // The RTCP handler runs on the track's RTCP reader goroutine: keep it short.
 func (tr *PubTrack) onRTCP(pkt rtcp.Packet) {
+	// pion hands a compound RTCP packet to every SSRC it names, so the
+	// layers of a simulcast camera also read each other's PLIs and NACKs.
+	if ssrc := uint32(tr.Local.SSRC()); ssrc != 0 && !slices.Contains(pkt.DestinationSSRC(), ssrc) {
+		return
+	}
+
 	switch pkt.(type) {
 	case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
 		tr.mu.Lock()
@@ -439,6 +540,10 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 					setVP8PictureID(pkt.Payload, picID)
 				}
 
+				if tr.opts.TagFrames && j == 0 {
+					tagFrame(pkt.Payload, tr.Kind, f.key || pliKey, tr.opts.TagOffset+frame)
+				}
+
 				s := SentPacket{
 					At:     time.Since(start),
 					Due:    sendAt,
@@ -475,6 +580,9 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 // the track's PLIs, NACKs and withheld packets.
 func (tr *PubTrack) writeArtifacts(t *testing.T, dir, identity string) {
 	base := filepath.Join(dir, fmt.Sprintf("publisher.%s.%s", unsafeName.ReplaceAllString(identity, "_"), tr.SID))
+	if rid := tr.Local.RID(); rid != "" {
+		base += "." + rid
+	}
 	sent := tr.Sent()
 
 	h := corpus.NewSyntheticHeader(tr.Kind, 0, "tests/e2e publisher")
@@ -678,6 +786,38 @@ func setVP8PictureID(p []byte, id uint16) {
 	}
 
 	p[2] = byte(id) & 0x7F
+}
+
+// frameTag precedes the frame index tagFrame writes, so TaggedFrame can
+// find it.
+var frameTag = []byte("BBBF")
+
+// tagFrame writes frameTag and frame into payload, the first packet of a
+// frame, past the VP8 descriptor and frame header or the Opus TOC byte.
+func tagFrame(payload []byte, kind corpus.Kind, key bool, frame int) {
+	at := 1
+	if kind == corpus.KindVideo {
+		at = vp8DescriptorLen(payload) + 3
+		if key {
+			at += 7
+		}
+	}
+
+	if len(payload) >= at+len(frameTag)+4 {
+		copy(payload[at:], frameTag)
+		binary.BigEndian.PutUint32(payload[at+len(frameTag):], uint32(frame))
+	}
+}
+
+// TaggedFrame returns the frame index tagFrame wrote into a recorded
+// frame's data, false if it has none.
+func TaggedFrame(data []byte) (int, bool) {
+	i := bytes.Index(data[:min(len(data), 64)], frameTag)
+	if i < 0 || len(data) < i+len(frameTag)+4 {
+		return 0, false
+	}
+
+	return int(binary.BigEndian.Uint32(data[i+len(frameTag):])), true
 }
 
 func sleepUntil(ctx context.Context, at time.Time) bool {

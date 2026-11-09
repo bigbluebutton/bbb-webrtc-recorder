@@ -74,6 +74,9 @@ type checks struct {
 	PacketsWritten    *bound      `json:"packetsWritten,omitempty"`
 	PacketsLostMax    *uint64     `json:"packetsLostMax,omitempty"`
 	Webm              *webmExpect `json:"webm,omitempty"`
+	// MediaStartUs is the media span's start, in µs on the trace's atUs
+	// timeline, for a seed whose start is not its first frame's read.
+	MediaStartUs *float64 `json:"mediaStartUs,omitempty"`
 }
 
 type expectation struct {
@@ -302,6 +305,7 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 	}
 
 	r := h.run(nil, srcs...)
+	r.readStart = fakes[0].start
 	for i, fake := range fakes {
 		assert.False(t, fake.staleDeadline, "%s: a read without a deadline ahead", infos[i].id)
 	}
@@ -394,6 +398,10 @@ func TestCorpusReplay(t *testing.T) {
 			t.Logf("measured: %s", r)
 
 			for _, v := range e.violations(r) {
+				assert.Fail(t, v)
+			}
+
+			for _, v := range mediaSpanViolations(r, traces, e.MediaStartUs) {
 				assert.Fail(t, v)
 			}
 

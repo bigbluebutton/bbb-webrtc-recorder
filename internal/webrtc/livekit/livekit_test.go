@@ -55,6 +55,10 @@ func (m *mockRecorder) GetHasAudio() bool                                       
 func (m *mockRecorder) GetHasVideo() bool                                           { return m.hasVideo }
 func (m *mockRecorder) Close() time.Duration                                        { return 0 }
 
+func (m *mockRecorder) PushVideoAt(packet *rtp.Packet, at time.Time) {}
+func (m *mockRecorder) PushAudioAt(packet *rtp.Packet, at time.Time) {}
+func (m *mockRecorder) MediaSpan() (types.MediaSpan, bool)           { return types.MediaSpan{}, false }
+
 func TestProcessPacketStats_SequenceNumberWraparound(t *testing.T) {
 	lk, _ := setupMockLK()
 	trackIds := lk.trackIds

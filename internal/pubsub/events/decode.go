@@ -29,6 +29,8 @@ func Decode(message []byte) *Event {
 		s = &StartRecordingResponse{}
 	case "recordingRtpStatusChanged":
 		s = &RecordingRtpStatusChanged{}
+	case "recordingMediaStarted":
+		s = &RecordingMediaStarted{}
 	case "getRecorderStatus":
 		s = &GetRecorderStatus{}
 	case "recorderStatus":

@@ -27,7 +27,9 @@
     "minVideoFrames": 37,
     "minKeyframes": 23
   },
+  "mediaStartUs": -94617,
   "residuals": [
-    "writerRequests: ideal 0, pinned 1, at the close-out blank frames: LiveKit's 8x8 key frames fail validateVP8Frame (dimensions < 16) and the writer asks once as the track ends; harmless, pinned"
+    "writerRequests: ideal 0, pinned 1, at the close-out blank frames: LiveKit's 8x8 key frames fail validateVP8Frame (dimensions < 16) and the writer asks once as the track ends; harmless, pinned",
+    "mediaStartUs: pinned -94617, not the first key frame's read (463009): that key frame is about 557 ms behind every later frame, so the frame 1320 ms of PTS after it, read at 1225383, sets the start inside the camera's 2 s window"
   ]
 }

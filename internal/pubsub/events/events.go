@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/AlekSi/pointer"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 )
 
 type Event struct {
@@ -23,6 +24,7 @@ const (
 	StartRecordingKey            = "startRecording"
 	StartRecordingResponseKey    = "startRecordingResponse"
 	RecordingRtpStatusChangedKey = "recordingRtpStatusChanged"
+	RecordingMediaStartedKey     = "recordingMediaStarted"
 	StopRecordingKey             = "stopRecording"
 	RecordingStoppedKey          = "recordingStopped"
 	RecorderStatusKey            = "recorderStatus"
@@ -35,6 +37,10 @@ const (
 	StopReasonAppShutdown = "application_shutdown"
 	StopReasonNormal      = "stopped"
 )
+
+// CapabilityMediaTimestamps, in recorderStatus, says LiveKit sessions send
+// recordingMediaStarted and the media span in recordingStopped.
+const CapabilityMediaTimestamps = "mediaTimestamps"
 
 type AdapterOptions struct {
 	Mediasoup *MediasoupConfig `json:"mediasoup,omitempty"`
@@ -232,8 +238,8 @@ recordingRtpStatusChanged (Recorder -> SFU)
 	id: 'recordingRtpStatusChanged', // media started or stopped flowing
 	status: 'flowing' | 'not_flowing',
 	recordingSessionId: <String>, // file name
-	timestampUTC: <Number>, // latest/trigger frame ts, UTC
-	timestampHR: <Number>, monotonic system time (latest/trigger frame ts),
+	timestampUTC: <String>, // when the event was built, RFC 3339
+	timestampHR: <Number>, // LiveKit: ms since the session began; mediasoup: the WebM's media time
 }
 ```
 */
@@ -255,6 +261,34 @@ func NewRecordingRtpStatusChanged(id string, status bool, ts time.Duration) *Rec
 		Status:       flowingStatus[status],
 		TimestampUTC: time.Now().UTC(),
 		TimestampHR:  ts,
+	}
+}
+
+/*
+recordingMediaStarted (Recorder -> SFU), LiveKit sessions only
+```JSON5
+{
+	id: 'recordingMediaStarted', // once the media start is settled, or 4.5 s old
+	recordingSessionId: <String>,
+	mediaStartUTC: <Number>, // when the first frame written arrived, less any backlog (at most 1 s), epoch ms
+	mediaStartHR: <Number>, // the same time on the host's CLOCK_MONOTONIC, ms
+}
+```
+*/
+
+type RecordingMediaStarted struct {
+	Id            string `json:"id,omitempty"`
+	SessionId     string `json:"recordingSessionId,omitempty"`
+	MediaStartUTC int64  `json:"mediaStartUTC"`
+	MediaStartHR  int64  `json:"mediaStartHR"`
+}
+
+func NewRecordingMediaStarted(id string, start time.Time) *RecordingMediaStarted {
+	return &RecordingMediaStarted{
+		Id:            RecordingMediaStartedKey,
+		SessionId:     id,
+		MediaStartUTC: start.UnixMilli(),
+		MediaStartHR:  MonotonicMs(start),
 	}
 }
 
@@ -290,18 +324,37 @@ recordingStopped (Recorder -> SFU)
 	id: 'recordingStopped',
 	recordingSessionId: <String>, // file name
 	reason: <String>,
-  	timestampUTC: <Number>, // last written frame timestamp, UTC, wall clock
-	timestampHR:  <Number> // last written frame timestamp, monotonic system time
+	timestampUTC: <String>, // when the event was built, RFC 3339
+	timestampHR?: <Number>, // the WebM's video duration, ms; absent without video
+	// LiveKit sessions that wrote a frame; see recordingMediaStarted
+	mediaStartUTC?: <Number>,
+	mediaStartHR?: <Number>,
+	mediaEndUTC?: <Number>, // mediaStart plus the media written, to the end of the last frame
+	mediaEndHR?: <Number>,
 }
 ```
 */
 
 type RecordingStopped struct {
-	Id           string        `json:"id,omitempty"`
-	SessionId    string        `json:"recordingSessionId,omitempty"`
-	Reason       string        `json:"reason,omitempty"`
-	TimestampUTC time.Time     `json:"timestampUTC,omitempty"`
-	TimestampHR  time.Duration `json:"timestampHR,omitempty"`
+	Id            string        `json:"id,omitempty"`
+	SessionId     string        `json:"recordingSessionId,omitempty"`
+	Reason        string        `json:"reason,omitempty"`
+	TimestampUTC  time.Time     `json:"timestampUTC,omitempty"`
+	TimestampHR   time.Duration `json:"timestampHR,omitempty"`
+	MediaStartUTC int64         `json:"mediaStartUTC,omitempty"`
+	MediaStartHR  int64         `json:"mediaStartHR,omitempty"`
+	MediaEndUTC   int64         `json:"mediaEndUTC,omitempty"`
+	MediaEndHR    int64         `json:"mediaEndHR,omitempty"`
+}
+
+// WithMediaSpan adds span's start and end to e and returns e.
+func (e *RecordingStopped) WithMediaSpan(span types.MediaSpan) *RecordingStopped {
+	e.MediaStartUTC = span.Start.UnixMilli()
+	e.MediaStartHR = MonotonicMs(span.Start)
+	e.MediaEndUTC = span.End.UnixMilli()
+	e.MediaEndHR = MonotonicMs(span.End)
+
+	return e
 }
 
 func NewRecordingStopped(id, reason string, ts time.Duration) *RecordingStopped {
@@ -322,23 +375,26 @@ recorderStatus (Recorder -> *)
 	appVersion: <String>, // version of the recorder
 	instanceId: <String>, // unique instance id
 	timestamp: <Number>, // event generation timestamp
+	capabilities: <String[]>, // e.g. 'mediaTimestamps'
 }
 ```
 */
 
 type RecorderStatus struct {
-	Id         string `json:"id,omitempty"`
-	AppVersion string `json:"appVersion,omitempty"`
-	InstanceId string `json:"instanceId,omitempty"`
-	Timestamp  int64  `json:"timestamp,omitempty"`
+	Id           string   `json:"id,omitempty"`
+	AppVersion   string   `json:"appVersion,omitempty"`
+	InstanceId   string   `json:"instanceId,omitempty"`
+	Timestamp    int64    `json:"timestamp,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 func NewRecorderStatus(appVersion string, instanceId string) *RecorderStatus {
 	return &RecorderStatus{
-		Id:         RecorderStatusKey,
-		AppVersion: appVersion,
-		InstanceId: instanceId,
-		Timestamp:  time.Now().UTC().UnixMilli(),
+		Id:           RecorderStatusKey,
+		AppVersion:   appVersion,
+		InstanceId:   instanceId,
+		Timestamp:    time.Now().UTC().UnixMilli(),
+		Capabilities: []string{CapabilityMediaTimestamps},
 	}
 }
 
@@ -389,7 +445,15 @@ type RecordingInfo struct {
 	AdapterOptions *AdapterOptions `json:"adapterOptions,omitempty"`
 	Metadata       map[string]any  `json:"metadata,omitempty"`
 	StartTimeUTC   *int64          `json:"startTimeUTC,omitempty"` // Unix timestamp (milliseconds)
-	StartTimeHR    *time.Duration  `json:"startTimeHR,omitempty"`  // Monotonic system time (nanoseconds)
+	StartTimeHR    *time.Duration  `json:"startTimeHR,omitempty"`  // LiveKit: since the session began; mediasoup: media time (nanoseconds)
+	MediaStartUTC  *int64          `json:"mediaStartUTC,omitempty"`
+	MediaStartHR   *int64          `json:"mediaStartHR,omitempty"`
+}
+
+// SetMediaStart sets the media start as recordingMediaStarted sends it.
+func (i *RecordingInfo) SetMediaStart(start time.Time) {
+	i.MediaStartUTC = pointer.ToInt64(start.UnixMilli())
+	i.MediaStartHR = pointer.ToInt64(MonotonicMs(start))
 }
 
 /*
@@ -406,8 +470,10 @@ getRecordingsResponse (Recorder -> *)
 	            "adapter": "<String>", // "mediasoup" or "livekit"
 	            "metadata": { ... }, // Opaque metadata from the original startRecording request
 	            "adapterOptions": { ... },
-	            "startTimeUTC": "<Number | undefined>", // Wall clock time (milliseconds since epoch) for the first frame
-	            "startTimeHR": "<Number | undefined>" // Monotonic system time (milliseconds) for the first frame
+	            "startTimeUTC": "<Number | undefined>", // epoch ms at the first flowing event
+	            "startTimeHR": "<Number | undefined>", // LiveKit: ns from the session's start to that event; mediasoup: the WebM's media time
+	            "mediaStartUTC": "<Number | undefined>", // LiveKit: as in recordingMediaStarted, once sent
+	            "mediaStartHR": "<Number | undefined>"
 	        }
 	    ]
 	}

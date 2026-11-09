@@ -67,7 +67,7 @@ The class groups the seeds that guard one defect, named in the Guards column. A 
 
 ## Expect v1
 
-`TestCorpusReplay` (`corpus_replay_test.go`) replays every expect file, and fails if a trace is not listed by exactly one. Unknown fields fail the load. Every check is optional: `bufferRequests`, `bufferRequestsMs`, `writerRequests`, `firstRequestMinMs`, `firstRequestMaxMs`, `written`, `packetsWritten`, `packetsLostMax` and `webm`. The required fields are:
+`TestCorpusReplay` (`corpus_replay_test.go`) replays every expect file, and fails if a trace is not listed by exactly one. Unknown fields fail the load. Every check is optional: `bufferRequests`, `bufferRequestsMs`, `writerRequests`, `firstRequestMinMs`, `firstRequestMaxMs`, `written`, `packetsWritten`, `packetsLostMax`, `webm` and `mediaStartUs`. The required fields are:
 
 - `v`: 1;
 - `class`;
@@ -87,6 +87,8 @@ The class groups the seeds that guard one defect, named in the Guards column. A 
 - **`audioClockSync`**, optional, replays with `livekit.audioClockSync` on; it is off by default.
 - **`webm.maxAudioLagMs`** and **`webm.maxFinalAudioLagMs`** bound, by magnitude, how far each Opus frame plays from where it was read, and the last frame (`oracle.TimelineLag`). A frame read late in a burst after a stall is placed by the frames after it. They need exactly one Opus trace and one block per frame read.
 - **Every seed:** the file must hold as many blocks per track as the writer counted frames, so a frame the writer counts but loses fails without a check of its own.
+- **Every single-track seed:** the media span must cover the file's media and start within 1 ms of the first written frame's read (`mediaspan_replay_test.go`). For VP8 that is the earliest read of the first key frame whose packets are all read. For Opus it is the first frame's read, less the lag oracle's backlog.
+- **`mediaStartUs`**, in µs on the trace's `atUs` timeline, replaces that read for a seed whose start is not there.
 - **`residuals`** is a list of notes, one per check pinned away from its ideal value: what the ideal is, and why the pin differs.
 
 ## Determinism
