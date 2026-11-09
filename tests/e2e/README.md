@@ -340,15 +340,18 @@ two steps:
    unprivileged. The netem scenarios skip here.
 2. The netem scenarios as root, as shown above, with
    `-test.run '^(TestNACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$'`
-   and `E2E_NETEM_REQUIRED=1`, so a skip fails the step. This step runs even if step 1 failed, but not if
+   and `E2E_NETEM_REQUIRED=1`. A skip, or a scenario missing from what the
+   pattern lists, fails the step. This step runs even if step 1 failed, but not if
    setup did, and has its own 10-minute limit. It loads `sch_netem`, and
    installs `linux-modules-extra` for the running kernel if the module is
    missing.
 
+The plan and oracle tests of the browser netem scenario run in step 1.
+
 The job runs three times on every trigger, as a matrix. The first two legs
 run the steps above: once with the plain recorder, and once as
 `Run E2E Tests (race)` with `E2E_RECORDER_RACE=1`,
-where the netem step builds its recorder with `-race` too. A race report in
+where step 2 builds its recorder with `-race` too. A race report in
 the recorder's log fails that leg. The race detector does not catch every
 race on every run, so a race-leg failure that passes on a rerun is still a
 race in the recorder, not a flake.
@@ -357,9 +360,14 @@ A third leg, `Run E2E Tests (browser)`, runs only the browser scenarios
 (`-run '^TestBrowser'`), against the race-built recorder, with
 `E2E_BROWSER=1` and `E2E_BROWSER_REQUIRED=1`, so a broken setup fails it
 instead of skipping. It installs Node 26, the runner's packages and
-Playwright's Chromium with its system libraries, and skips the netem step. It
+Playwright's Chromium with its system libraries. It
 runs on `ubuntu-24.04`; the matrix in `e2e.yml` says why. The other two legs
 skip the browser scenarios.
+
+On the browser leg, step 1 runs `TestBrowserNetemControl`, and the browser
+netem scenario skips there. Step 2 runs that scenario instead, with
+`-test.run '^TestBrowserNetemKeepsPlacement$'` and `E2E_BROWSER_REQUIRED=1`,
+and not after a failed browser install.
 
 `E2E_ARTIFACTS` points at `$RUNNER_TEMP/e2e-artifacts`, so every test's
 artifacts are kept. When the job fails or is cancelled (as a timeout does),

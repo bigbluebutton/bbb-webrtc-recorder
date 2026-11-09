@@ -166,6 +166,7 @@ jobs:
       # The system libraries Chromium needs are installed every run; the
       # cache holds only the browser.
       - name: Install the browser runner and Chromium
+        id: browser
         if: matrix.browser == '1'
         working-directory: tests/e2e/browser
         run: |
@@ -183,15 +184,17 @@ jobs:
           E2E_BROWSER_REQUIRED: '1'
         run: go test -tags e2e -v -timeout 15m -run '^TestBrowser' ./tests/e2e/...
 
-      # The netem scenarios build two network namespaces with netem qdiscs, so
-      # they run as root. They run after the suite even if that failed, but not
-      # after a failed setup (redis is the last setup step on the legs that
-      # run them). Both binaries are built as the runner user first: root has
-      # no Go toolchain on PATH, and its build cache would be root-owned. The
-      # variables go on the command line, where sudo's env_reset cannot drop
-      # them.
-      - name: Run the netem scenarios as root (NACK repair, start delay)
-        if: ${{ !cancelled() && steps.redis.outcome == 'success' && matrix.browser != '1' }}
+      # The netem scenarios build network namespaces, so they run as root,
+      # after the suite even if it failed, but not after a failed setup. Both
+      # binaries are built as the runner user first: root has no Go toolchain
+      # on PATH, and its build cache would be root-owned.
+      #
+      # The variables go on the command line, where sudo's env_reset cannot
+      # drop them. PATH carries setup-node's node, and PLAYWRIGHT_BROWSERS_PATH
+      # points root at the cached Chromium, since Playwright under sudo looks
+      # in root's home.
+      - name: Run the netem scenarios as root
+        if: ${{ !cancelled() && steps.redis.outcome == 'success' && (matrix.browser != '1' || steps.browser.outcome == 'success') }}
         timeout-minutes: 10
         run: |
           sudo modprobe sch_netem || {
@@ -204,12 +207,20 @@ jobs:
           if [ "$E2E_RECORDER_RACE" = 1 ]; then race=-race; fi
           go build $race -o "$bin/bbb-webrtc-recorder" ./cmd/bbb-webrtc-recorder
           go test -c -tags e2e -o "$bin/e2e.test" ./tests/e2e
+          if [ "${{ matrix.browser }}" = 1 ]; then
+            run='^TestBrowserNetemKeepsPlacement$' want=1
+          else
+            run='^(TestNACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$' want=2
+          fi
           cd tests/e2e
-          sudo env "PATH=$PATH" "E2E_ARTIFACTS=$E2E_ARTIFACTS" \
-            "LIVEKIT_SERVER_BIN=$LIVEKIT_SERVER_BIN" "REDIS_SERVER_BIN=$REDIS_SERVER_BIN" \
-            E2E_NETEM=1 E2E_NETEM_REQUIRED=1 "E2E_RECORDER_BIN=$bin/bbb-webrtc-recorder" \
-            "$bin/e2e.test" -test.run '^(TestNACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$' \
-            -test.v -test.timeout 5m
+          # A -test.run pattern that selects no test passes.
+          n=$(E2E_RECORDER_BIN="$bin/bbb-webrtc-recorder" "$bin/e2e.test" -test.list "$run" | wc -l)
+          [ "$n" -eq "$want" ] || { echo "::error::$run lists $n tests, want $want"; exit 1; }
+          sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright" \
+            "E2E_ARTIFACTS=$E2E_ARTIFACTS" "LIVEKIT_SERVER_BIN=$LIVEKIT_SERVER_BIN" "REDIS_SERVER_BIN=$REDIS_SERVER_BIN" \
+            E2E_NETEM=1 E2E_NETEM_REQUIRED=1 E2E_BROWSER=1 E2E_BROWSER_REQUIRED=1 \
+            "E2E_RECORDER_BIN=$bin/bbb-webrtc-recorder" \
+            "$bin/e2e.test" -test.run "$run" -test.v -test.timeout 8m
 
       # A job that hits timeout-minutes ends cancelled, not failed.
       - name: Make artifacts readable
