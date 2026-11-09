@@ -132,7 +132,7 @@ func TestSignalCutResumesInPlace(t *testing.T) {
 			places[tr.name] = p
 			logResume(t, tr.name, p, sends, cutAt, resumeWithin)
 			t.Logf("%s: wakeup lag %v at most; ICE pairs, server side: %v", tr.name, maxWakeLag(tr.track),
-				recorderICEPairs(t, r.s.LiveKit.Proc.LogPath, tr.rec.SessionID))
+				iceServerAddrs(t, r.s.LiveKit.Proc.LogPath, "bbb-webrtc-recorder-"+tr.rec.SessionID, "SUBSCRIBER"))
 		})
 	}
 

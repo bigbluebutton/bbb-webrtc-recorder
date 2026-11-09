@@ -70,8 +70,8 @@ func nackOutageFrames() int {
 	return int(math.Ceil(nackCameraFPS * sc.lossOutage().Seconds()))
 }
 
-// netemPlan names the NACK scenario's two namespaces, their three veth links
-// and their addresses, and the commands that build and remove them.
+// netemPlan names the netem scenarios' namespaces, their veth links and
+// their addresses, and the commands that build and remove them.
 // livekit-server and redis-server run in the server namespace, the recorder in
 // the recorder one, and the test process on the host. Every connection that
 // crosses into the host namespace is opened from the host, so the host's
@@ -87,27 +87,42 @@ type netemPlan struct {
 	HostRecIf, RecHostIf string
 	HostRecIP, RecHostIP string
 	// server <-> recorder: everything the recorder exchanges with the
-	// servers. SrvRecIf's egress, server -> recorder, is shaped.
+	// servers.
 	SrvRecIf, RecSrvIf string
 	SrvRecIP, RecSrvIP string
 
-	Loss string // netem's loss argument
+	Loss string // netem's loss argument on SrvRecIf; "" for no qdisc there
 	// Dry plans no namespace: everything stays on the host, with loopback
 	// addresses in place of the links, for TestNACKRepairControl.
 	Dry bool
+
+	// A browser plan's third namespace runs the browser. Its only link goes
+	// to the server namespace, and netem shapes both ends of that link.
+	BrowserNS          string
+	SrvBrwIf, BrwSrvIf string
+	SrvBrwIP, BrwSrvIP string
+	// BrowserNetem is netem's arguments on that link; nil for a plan with no
+	// browser namespace.
+	BrowserNetem []string
+
+	// IPBin is the ip binary the namespace wrappers run; "" finds it on
+	// PATH. A plan test sets a stand-in, so it needs no iproute2.
+	IPBin string
 }
 
 const netemNSPrefix = "bwr-e2e-"
+
+// netemAddr is the address at off in pid's /28.
+func netemAddr(pid, off int) string {
+	v := 198<<24 + 18<<16 + (pid%(1<<13))*16 + off // 2^13 /28s fit in the /15
+	return fmt.Sprintf("%d.%d.%d.%d", v>>24, v>>16&0xff, v>>8&0xff, v&0xff)
+}
 
 // newNetemPlan derives names and three /30s in 198.18.0.0/15 (RFC 2544's
 // benchmarking range, never routed) from pid, so a run's leftovers are
 // recognisable and two runs on a host do not collide.
 func newNetemPlan(pid int, lossPct int) netemPlan {
-	block := 198<<24 + 18<<16 + (pid%(1<<13))*16 // 2^13 /28s fit in the /15; each has a spare /30
-	ip := func(off int) string {
-		v := block + off
-		return fmt.Sprintf("%d.%d.%d.%d", v>>24, v>>16&0xff, v>>8&0xff, v&0xff)
-	}
+	ip := func(off int) string { return netemAddr(pid, off) }
 
 	return netemPlan{
 		ServerNS:   fmt.Sprintf("%s%d-srv", netemNSPrefix, pid),
@@ -128,6 +143,20 @@ func newNetemPlan(pid int, lossPct int) netemPlan {
 	}
 }
 
+// newBrowserNetemPlan is the NACK plan with no loss towards the recorder,
+// plus a browser namespace on the /28's fourth /30. netem shapes its link
+// to the servers with base from the start.
+func newBrowserNetemPlan(pid int, base []string) netemPlan {
+	p := newNetemPlan(pid, 0)
+	p.Loss = ""
+	p.BrowserNS = fmt.Sprintf("%s%d-brw", netemNSPrefix, pid)
+	p.SrvBrwIf, p.BrwSrvIf = "srv-brw", "brw-srv"
+	p.SrvBrwIP, p.BrwSrvIP = netemAddr(pid, 13), netemAddr(pid, 14)
+	p.BrowserNetem = base
+
+	return p
+}
+
 // dryNetemPlan stands loopback addresses in for the links: the servers on
 // two (the test's and the recorder's), the recorder's metrics on a third.
 // lo has only 127.0.0.1, but Linux routes all of 127/8 to it.
@@ -145,9 +174,9 @@ func (p netemPlan) setupCmds() [][]string {
 		return nil
 	}
 
-	srv, rec := p.ServerNS, p.RecorderNS
+	srv, rec, brw := p.ServerNS, p.RecorderNS, p.BrowserNS
 
-	return [][]string{
+	cmds := [][]string{
 		{"ip", "netns", "add", srv},
 		{"ip", "netns", "add", rec},
 		{"ip", "link", "add", p.HostSrvIf, "type", "veth", "peer", "name", p.SrvHostIf, "netns", srv},
@@ -167,11 +196,34 @@ func (p netemPlan) setupCmds() [][]string {
 		{"ip", "-n", rec, "addr", "add", p.RecSrvIP + "/30", "dev", p.RecSrvIf},
 		{"ip", "-n", rec, "link", "set", p.RecSrvIf, "up"},
 		{"ip", "-n", rec, "link", "set", "lo", "up"},
+	}
+
+	if p.Loss != "" {
 		// Everything the servers send the recorder: media, RTX and RTCP, and
 		// the signalling and Redis traffic, which TCP repairs. What the
 		// recorder sends (its NACKs and PLIs) is not shaped.
-		{"tc", "-n", srv, "qdisc", "add", "dev", p.SrvRecIf, "root", "netem", "loss", p.Loss},
+		cmds = append(cmds, []string{"tc", "-n", srv, "qdisc", "add", "dev", p.SrvRecIf, "root", "netem", "loss", p.Loss})
 	}
+
+	if p.BrowserNetem == nil {
+		return cmds
+	}
+
+	// The browser namespace has no default route, so the browser's checks
+	// towards the servers' other addresses fail at once. Each end's egress
+	// is shaped: browser -> server on BrwSrvIf, server -> browser on
+	// SrvBrwIf.
+	return append(cmds,
+		[]string{"ip", "netns", "add", brw},
+		[]string{"ip", "-n", srv, "link", "add", p.SrvBrwIf, "type", "veth", "peer", "name", p.BrwSrvIf, "netns", brw},
+		[]string{"ip", "-n", srv, "addr", "add", p.SrvBrwIP + "/30", "dev", p.SrvBrwIf},
+		[]string{"ip", "-n", srv, "link", "set", p.SrvBrwIf, "up"},
+		[]string{"ip", "-n", brw, "addr", "add", p.BrwSrvIP + "/30", "dev", p.BrwSrvIf},
+		[]string{"ip", "-n", brw, "link", "set", p.BrwSrvIf, "up"},
+		[]string{"ip", "-n", brw, "link", "set", "lo", "up"},
+		append([]string{"tc", "-n", brw, "qdisc", "add", "dev", p.BrwSrvIf, "root", "netem"}, p.BrowserNetem...),
+		append([]string{"tc", "-n", srv, "qdisc", "add", "dev", p.SrvBrwIf, "root", "netem"}, p.BrowserNetem...),
+	)
 }
 
 // teardownCmds removes the namespaces, which takes the veth pairs and the
@@ -181,27 +233,63 @@ func (p netemPlan) teardownCmds() [][]string {
 		return nil
 	}
 
-	return [][]string{
+	cmds := [][]string{
 		{"ip", "netns", "del", p.ServerNS},
 		{"ip", "netns", "del", p.RecorderNS},
-		{"ip", "link", "del", p.HostSrvIf},
-		{"ip", "link", "del", p.HostRecIf},
+	}
+	if p.BrowserNS != "" {
+		cmds = append(cmds, []string{"ip", "netns", "del", p.BrowserNS})
+	}
+
+	return append(cmds,
+		[]string{"ip", "link", "del", p.HostSrvIf},
+		[]string{"ip", "link", "del", p.HostRecIf},
+	)
+}
+
+// shapeCmds returns the commands that change netem's arguments on the
+// browser's link to args. The browser's end comes first because it carries
+// the media.
+func (p netemPlan) shapeCmds(args []string) [][]string {
+	if p.Dry {
+		return nil
+	}
+
+	return [][]string{
+		append([]string{"tc", "-n", p.BrowserNS, "qdisc", "change", "dev", p.BrwSrvIf, "root", "netem"}, args...),
+		append([]string{"tc", "-n", p.ServerNS, "qdisc", "change", "dev", p.SrvBrwIf, "root", "netem"}, args...),
+	}
+}
+
+// browser runs the browser in the browser namespace, dialling LiveKit on the
+// servers' address on its link. A dry plan keeps it on the host.
+func (p netemPlan) browser(t *testing.T) *BrowserNet {
+	if p.Dry {
+		return &BrowserNet{}
+	}
+
+	return &BrowserNet{
+		Host: p.SrvBrwIP,
+		Wrap: func(dir, name, bin string) string { return writeNetnsWrapper(t, p.IPBin, p.BrowserNS, dir, name, bin) },
 	}
 }
 
 // servers places livekit-server and redis-server on the server namespace's
-// two addresses, the test's first, and starts them in that namespace.
+// addresses, the test's first, and starts them in that namespace.
 func (p netemPlan) servers(t *testing.T) *ServerNet {
 	srv := &ServerNet{Addrs: []string{p.SrvHostIP, p.SrvRecIP}}
+	if p.SrvBrwIP != "" {
+		srv.Addrs = append(srv.Addrs, p.SrvBrwIP)
+	}
 	if !p.Dry {
-		srv.Wrap = func(dir, name, bin string) string { return writeNetnsWrapper(t, p.ServerNS, dir, name, bin) }
+		srv.Wrap = func(dir, name, bin string) string { return writeNetnsWrapper(t, p.IPBin, p.ServerNS, dir, name, bin) }
 	}
 
 	return srv
 }
 
-// editLiveKit puts livekit-server's ICE candidates on both of the server
-// namespace's links.
+// editLiveKit puts livekit-server's ICE candidates on every link of the
+// server namespace.
 func (p netemPlan) editLiveKit(cfg map[string]any) {
 	rtc, _ := cfg["rtc"].(map[string]any)
 	if rtc == nil {
@@ -218,8 +306,8 @@ func (p netemPlan) editLiveKit(cfg map[string]any) {
 	includes, _ := ifs["includes"].([]string)
 	includes = slices.Clone(includes)
 
-	for _, name := range []string{p.SrvHostIf, p.SrvRecIf} {
-		if !slices.Contains(includes, name) {
+	for _, name := range []string{p.SrvHostIf, p.SrvRecIf, p.SrvBrwIf} {
+		if name != "" && !slices.Contains(includes, name) {
 			includes = append(includes, name)
 		}
 	}
@@ -262,7 +350,7 @@ func shellQuote(s string) string {
 // namespace under /run/netns.
 func netemSkipReason() string {
 	if os.Geteuid() != 0 || os.Getenv("E2E_NETEM") != "1" {
-		return "The netem scenarios need root and E2E_NETEM=1: they create two network namespaces, three veth pairs and netem qdiscs. " +
+		return "The netem scenarios need root and E2E_NETEM=1: they create network namespaces, veth pairs and netem qdiscs. " +
 			"tests/e2e/README.md shows how to build as the user and run -test.run '^TestNACKRepairUnderLoss$' " +
 			"or '^TestMediaTimestampsTakeOffAStartDelay$' as root."
 	}
@@ -270,19 +358,27 @@ func netemSkipReason() string {
 	return ""
 }
 
-// TestNACKRepairUnderLoss records a camera for 20 s while netem drops 3% of
-// what livekit-server sends the recorder, and checks that LiveKit repaired
-// it: lost packets read later, nearly every frame written, no keyframe loop.
-// A frame held for its retransmission must still play where it was sent.
-func TestNACKRepairUnderLoss(t *testing.T) {
+// requireNetem skips t unless the netem scenarios can run here. With
+// E2E_NETEM_REQUIRED=1 it fails t instead: CI sets it on the privileged
+// steps, where a skip would pass unseen.
+func requireNetem(t *testing.T) {
+	t.Helper()
+
 	if reason := netemSkipReason(); reason != "" {
-		// CI sets it on the privileged step, where a skip would pass unseen.
 		if os.Getenv("E2E_NETEM_REQUIRED") == "1" {
 			require.FailNow(t, reason)
 		}
 
 		t.Skip(reason)
 	}
+}
+
+// TestNACKRepairUnderLoss records a camera for 20 s while netem drops 3% of
+// what livekit-server sends the recorder, and checks that LiveKit repaired
+// it: lost packets read later, nearly every frame written, no keyframe loop.
+// A frame held for its retransmission must still play where it was sent.
+func TestNACKRepairUnderLoss(t *testing.T) {
+	requireNetem(t)
 
 	plan := newNetemPlan(os.Getpid(), nackLossPct)
 	setupNetem(t, plan)
@@ -336,21 +432,196 @@ func TestNACKRepairControl(t *testing.T) {
 // TestNetemPlan checks the namespace plan and the config edits the NACK
 // scenario makes.
 func TestNetemPlan(t *testing.T) {
-	p := newNetemPlan(4194303, nackLossPct) // the largest default pid_max on Linux
+	p := newNetemPlan(maxPID, nackLossPct)
 
-	for _, name := range []string{p.HostSrvIf, p.SrvHostIf, p.HostRecIf, p.RecHostIf, p.SrvRecIf, p.RecSrvIf} {
-		assert.LessOrEqual(t, len(name), 15, "interface name %q over IFNAMSIZ", name)
-	}
+	checkPlanLinks(t, []string{p.HostSrvIf, p.SrvHostIf, p.HostRecIf, p.RecHostIf, p.SrvRecIf, p.RecSrvIf},
+		[][2]string{{p.HostSrvIP, p.SrvHostIP}, {p.HostRecIP, p.RecHostIP}, {p.SrvRecIP, p.RecSrvIP}})
 
 	assert.True(t, strings.HasPrefix(p.ServerNS, netemNSPrefix))
 	assert.True(t, strings.HasPrefix(p.RecorderNS, netemNSPrefix))
 	assert.NotEqual(t, p.ServerNS, p.RecorderNS)
 	assert.NotEqual(t, p.HostSrvIf, p.HostRecIf)
 
+	assert.NotEqual(t, newNetemPlan(1234, nackLossPct).SrvRecIP, newNetemPlan(1235, nackLossPct).SrvRecIP)
+
+	cmds := p.setupCmds()
+	assert.Equal(t, []string{"tc", "-n", p.ServerNS, "qdisc", "add", "dev", p.SrvRecIf, "root", "netem", "loss", "3%"},
+		cmds[len(cmds)-1], "loss on the server's end of the recorder link: server -> recorder")
+	checkHostCmds(t, p)
+
+	assert.Equal(t, [][]string{
+		{"ip", "netns", "del", p.ServerNS},
+		{"ip", "netns", "del", p.RecorderNS},
+		{"ip", "link", "del", p.HostSrvIf},
+		{"ip", "link", "del", p.HostRecIf},
+	}, p.teardownCmds())
+
+	logPlanCmds(t, newNetemPlan(samplePID, nackLossPct))
+
+	srv := p.servers(t)
+	assert.Equal(t, []string{p.SrvHostIP, p.SrvRecIP}, srv.Addrs, "the test reaches the servers on the first")
+	assert.NotNil(t, srv.Wrap)
+
+	lk := lkInterfacesConfig()
+	p.editLiveKit(lk)
+	p.editLiveKit(lk) // idempotent
+	assert.Equal(t, []string{"lo", p.SrvHostIf, p.SrvRecIf}, lookup[[]string](t, lk, "rtc", "interfaces", "includes"))
+
+	rec := RecorderConfig(t, t.TempDir(), &Redis{Addr: "127.0.0.1:1"}, "to", "from",
+		&LiveKit{URL: "ws://127.0.0.1:2", HTTPPort: 2})
+	p.editRecorder(t, rec, &LiveKit{HTTPPort: 2}, &Redis{Addr: p.SrvHostIP + ":3"})
+	assert.Equal(t, "ws://"+p.SrvRecIP+":2", lookup[string](t, rec, "livekit", "host"))
+	assert.Equal(t, p.SrvRecIP+":3", lookup[string](t, rec, "pubsub", "adapters", "redis", "address"))
+	assert.True(t, strings.HasPrefix(lookup[string](t, rec, "prometheus", "listenAddress"), p.RecHostIP+":"))
+
+	assert.Equal(t, "#!/bin/sh\nexec '/sbin/ip' netns exec '"+p.RecorderNS+"' '/x/rec' \"$@\"\n",
+		netnsWrapperScript("/sbin/ip", p.RecorderNS, "/x/rec"))
+
+	for _, name := range []string{p.ServerNS, p.RecorderNS, netemNSPrefix + strconv.Itoa(maxPID)} {
+		pid, ok := netemNSPid(name)
+		assert.True(t, ok, name)
+		assert.Equal(t, maxPID, pid, name)
+	}
+
+	_, ok := netemNSPid("bwr-e2e-x-srv")
+	assert.False(t, ok)
+
+	m := netemDropped.FindStringSubmatch(" Sent 98 bytes 1 pkt (dropped 7, overlimits 0 requeues 0)")
+	require.Len(t, m, 2)
+	assert.Equal(t, "7", m[1])
+}
+
+// TestNetemBrowserPlan checks the browser plan: a third namespace whose
+// one link, to the servers, is the only one shaped.
+func TestNetemBrowserPlan(t *testing.T) {
+	base := []string{"loss", "3%", "delay", "40ms", "20ms"}
+	p := newBrowserNetemPlan(maxPID, base)
+
+	checkPlanLinks(t, []string{p.HostSrvIf, p.SrvHostIf, p.HostRecIf, p.RecHostIf, p.SrvRecIf, p.RecSrvIf, p.SrvBrwIf, p.BrwSrvIf},
+		[][2]string{{p.HostSrvIP, p.SrvHostIP}, {p.HostRecIP, p.RecHostIP}, {p.SrvRecIP, p.RecSrvIP}, {p.SrvBrwIP, p.BrwSrvIP}})
+
+	assert.True(t, strings.HasPrefix(p.BrowserNS, netemNSPrefix))
+	assert.NotContains(t, []string{p.ServerNS, p.RecorderNS}, p.BrowserNS)
+
+	assert.NotEqual(t, newBrowserNetemPlan(1234, base).SrvBrwIP, newBrowserNetemPlan(1235, base).SrvBrwIP)
+
+	var qdiscs [][]string
+	for _, c := range p.setupCmds() {
+		if c[0] == "tc" {
+			qdiscs = append(qdiscs, c)
+		}
+	}
+	checkHostCmds(t, p)
+
+	assert.Equal(t, [][]string{
+		append([]string{"tc", "-n", p.BrowserNS, "qdisc", "add", "dev", p.BrwSrvIf, "root", "netem"}, base...),
+		append([]string{"tc", "-n", p.ServerNS, "qdisc", "add", "dev", p.SrvBrwIf, "root", "netem"}, base...),
+	}, qdiscs, "the browser plan's qdiscs")
+
+	assert.Equal(t, [][]string{
+		{"tc", "-n", p.BrowserNS, "qdisc", "change", "dev", p.BrwSrvIf, "root", "netem", "loss", "100%"},
+		{"tc", "-n", p.ServerNS, "qdisc", "change", "dev", p.SrvBrwIf, "root", "netem", "loss", "100%"},
+	}, p.shapeCmds([]string{"loss", "100%"}), "a blackout changes the browser's end first")
+
+	assert.Contains(t, p.teardownCmds(), []string{"ip", "netns", "del", p.BrowserNS})
+	pid, ok := netemNSPid(p.BrowserNS)
+	assert.True(t, ok)
+	assert.Equal(t, maxPID, pid)
+
+	assert.Equal(t, []string{p.SrvHostIP, p.SrvRecIP, p.SrvBrwIP}, p.servers(t).Addrs, "the test reaches the servers on the first")
+
+	lk := lkInterfacesConfig()
+	p.editLiveKit(lk)
+	p.editLiveKit(lk)
+	assert.Equal(t, []string{"lo", p.SrvHostIf, p.SrvRecIf, p.SrvBrwIf}, lookup[[]string](t, lk, "rtc", "interfaces", "includes"))
+
+	// A stand-in ip prints the arguments the wrapper passes it. The space
+	// and quote in the path check the wrapper's quoting.
+	dir := filepath.Join(t.TempDir(), "with space's")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	p.IPBin = filepath.Join(dir, "ip")
+	require.NoError(t, os.WriteFile(p.IPBin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o755))
+	brw := p.browser(t)
+	assert.Equal(t, p.SrvBrwIP, brw.Host)
+	require.NotNil(t, brw.Wrap)
+	node := filepath.Join(dir, "node")
+	wrapper := brw.Wrap(dir, "browser-1", node)
+	assert.Equal(t, filepath.Join(dir, "browser-1-in-netns.sh"), wrapper)
+	out, err := exec.Command(wrapper, "runner.mjs", "a b").Output()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"netns", "exec", p.BrowserNS, node, "runner.mjs", "a b"},
+		strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"))
+
+	logPlanCmds(t, newBrowserNetemPlan(samplePID, base))
+}
+
+// TestNetemDryPlan checks that the controls' dry plan runs no command and
+// keeps the servers and the browser on loopback, with BrowserNetem set too.
+func TestNetemDryPlan(t *testing.T) {
+	p := dryNetemPlan()
+	p.BrowserNetem = []string{"loss", "3%"}
+
+	assert.Empty(t, p.setupCmds())
+	assert.Empty(t, p.teardownCmds())
+	assert.Empty(t, p.shapeCmds([]string{"loss", "100%"}))
+	assert.Equal(t, &BrowserNet{}, p.browser(t))
+
+	srv := p.servers(t)
+	assert.Equal(t, []string{"127.0.0.2", "127.0.0.3"}, srv.Addrs)
+	assert.Nil(t, srv.Wrap)
+
+	lk := lkInterfacesConfig()
+	p.editLiveKit(lk)
+	assert.Equal(t, []string{"lo"}, lookup[[]string](t, lk, "rtc", "interfaces", "includes"))
+}
+
+// lkInterfacesConfig is the part of StartLiveKit's config that editLiveKit
+// changes.
+func lkInterfacesConfig() map[string]any {
+	return map[string]any{"rtc": map[string]any{"interfaces": map[string]any{"includes": []string{"lo"}}}}
+}
+
+// checkHostCmds checks that p's setup gives the host namespace only the
+// namespaces and the host's ends of their links. It adds no forwarding,
+// route or firewall rule.
+func checkHostCmds(t *testing.T, p netemPlan) {
+	t.Helper()
+
+	for _, c := range p.setupCmds() {
+		if slices.Contains(c, "-n") {
+			continue
+		}
+
+		switch {
+		case slices.Equal(c[:3], []string{"ip", "netns", "add"}):
+		case c[0] == "ip" && slices.Contains([]string{p.HostSrvIf, p.HostRecIf}, c[3]):
+		case c[0] == "ip" && c[1] == "addr" && slices.Contains([]string{p.HostSrvIf, p.HostRecIf}, c[len(c)-1]):
+		default:
+			assert.Fail(t, "a host-namespace command off the host's link ends", "%v", c)
+		}
+	}
+}
+
+const (
+	// The largest PID Linux allows: pid_max is at most 4194304.
+	maxPID = 4194303
+	// The plan tests log the commands of a plan for this PID.
+	samplePID = 123456
+)
+
+// checkPlanLinks checks a plan's interface names and the address pairs of
+// its links: each pair is a /30 of 198.18.0.0/15, and no two overlap.
+func checkPlanLinks(t *testing.T, names []string, pairs [][2]string) {
+	t.Helper()
+
+	for _, name := range names {
+		assert.LessOrEqual(t, len(name), 15, "interface name %q over IFNAMSIZ", name)
+	}
+
 	_, bench, _ := net.ParseCIDR("198.18.0.0/15")
 	var nets []*net.IPNet
 
-	for _, pair := range [][2]string{{p.HostSrvIP, p.SrvHostIP}, {p.HostRecIP, p.RecHostIP}, {p.SrvRecIP, p.RecSrvIP}} {
+	for _, pair := range pairs {
 		_, link, err := net.ParseCIDR(pair[0] + "/30")
 		require.NoError(t, err)
 
@@ -369,96 +640,18 @@ func TestNetemPlan(t *testing.T) {
 
 		nets = append(nets, link)
 	}
+}
 
-	assert.NotEqual(t, newNetemPlan(1234, nackLossPct).SrvRecIP, newNetemPlan(1235, nackLossPct).SrvRecIP)
+func logPlanCmds(t *testing.T, p netemPlan) {
+	t.Helper()
 
-	cmds := p.setupCmds()
-	assert.Equal(t, []string{"tc", "-n", p.ServerNS, "qdisc", "add", "dev", p.SrvRecIf, "root", "netem", "loss", "3%"},
-		cmds[len(cmds)-1], "loss on the server's end of the recorder link: server -> recorder")
-
-	// The host namespace gets the two namespaces and its ends of their links,
-	// nothing else: no forwarding, no route, no firewall rule.
-	for _, c := range cmds {
-		if slices.Contains(c, "-n") {
-			continue
-		}
-
-		switch {
-		case slices.Equal(c[:3], []string{"ip", "netns", "add"}):
-		case c[0] == "ip" && slices.Contains([]string{p.HostSrvIf, p.HostRecIf}, c[3]):
-		case c[0] == "ip" && c[1] == "addr" && slices.Contains([]string{p.HostSrvIf, p.HostRecIf}, c[len(c)-1]):
-		default:
-			assert.Fail(t, "a host-namespace command off the host's link ends", "%v", c)
-		}
+	for _, c := range p.setupCmds() {
+		t.Logf("setup (pid %d): %s", samplePID, strings.Join(c, " "))
 	}
 
-	assert.Equal(t, [][]string{
-		{"ip", "netns", "del", p.ServerNS},
-		{"ip", "netns", "del", p.RecorderNS},
-		{"ip", "link", "del", p.HostSrvIf},
-		{"ip", "link", "del", p.HostRecIf},
-	}, p.teardownCmds())
-	assert.Empty(t, dryNetemPlan().setupCmds())
-	assert.Empty(t, dryNetemPlan().teardownCmds())
-
-	sample := newNetemPlan(123456, nackLossPct)
-	for _, c := range sample.setupCmds() {
-		t.Logf("setup (pid 123456): %s", strings.Join(c, " "))
+	for _, c := range p.teardownCmds() {
+		t.Logf("teardown (pid %d): %s", samplePID, strings.Join(c, " "))
 	}
-
-	for _, c := range sample.teardownCmds() {
-		t.Logf("teardown (pid 123456): %s", strings.Join(c, " "))
-	}
-
-	srv := p.servers(t)
-	assert.Equal(t, []string{p.SrvHostIP, p.SrvRecIP}, srv.Addrs, "the test reaches the servers on the first")
-	assert.NotNil(t, srv.Wrap)
-	assert.Nil(t, dryNetemPlan().servers(t).Wrap)
-
-	lk := map[string]any{"rtc": map[string]any{"interfaces": map[string]any{"includes": []string{"lo"}}}}
-	p.editLiveKit(lk)
-	p.editLiveKit(lk) // idempotent
-	assert.Equal(t, []string{"lo", p.SrvHostIf, p.SrvRecIf}, lookup[[]string](t, lk, "rtc", "interfaces", "includes"))
-
-	dryLK := map[string]any{"rtc": map[string]any{"interfaces": map[string]any{"includes": []string{"lo"}}}}
-	dryNetemPlan().editLiveKit(dryLK)
-	assert.Equal(t, []string{"lo"}, lookup[[]string](t, dryLK, "rtc", "interfaces", "includes"))
-
-	rec := RecorderConfig(t, t.TempDir(), &Redis{Addr: "127.0.0.1:1"}, "to", "from",
-		&LiveKit{URL: "ws://127.0.0.1:2", HTTPPort: 2})
-	p.editRecorder(t, rec, &LiveKit{HTTPPort: 2}, &Redis{Addr: p.SrvHostIP + ":3"})
-	assert.Equal(t, "ws://"+p.SrvRecIP+":2", lookup[string](t, rec, "livekit", "host"))
-	assert.Equal(t, p.SrvRecIP+":3", lookup[string](t, rec, "pubsub", "adapters", "redis", "address"))
-	assert.True(t, strings.HasPrefix(lookup[string](t, rec, "prometheus", "listenAddress"), p.RecHostIP+":"))
-
-	assert.Equal(t, "#!/bin/sh\nexec '/sbin/ip' netns exec '"+p.RecorderNS+"' '/x/rec' \"$@\"\n",
-		netnsWrapperScript("/sbin/ip", p.RecorderNS, "/x/rec"))
-
-	// Paths with a space or a quote reach ip as single arguments. A stand-in
-	// for ip prints each argument it gets on a line of its own.
-	dir := filepath.Join(t.TempDir(), "with space's")
-	require.NoError(t, os.MkdirAll(dir, 0o755))
-	fakeIP := filepath.Join(dir, "ip")
-	require.NoError(t, os.WriteFile(fakeIP, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o755))
-	wrapper := filepath.Join(dir, "wrapper.sh")
-	require.NoError(t, os.WriteFile(wrapper, []byte(netnsWrapperScript(fakeIP, p.RecorderNS, filepath.Join(dir, "rec"))), 0o755))
-	out, err := exec.Command(wrapper, "--config", "a b").Output()
-	require.NoError(t, err)
-	assert.Equal(t, []string{"netns", "exec", p.RecorderNS, filepath.Join(dir, "rec"), "--config", "a b"},
-		strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"))
-
-	for _, name := range []string{p.ServerNS, p.RecorderNS, netemNSPrefix + "4194303"} {
-		pid, ok := netemNSPid(name)
-		assert.True(t, ok, name)
-		assert.Equal(t, 4194303, pid, name)
-	}
-
-	_, ok := netemNSPid("bwr-e2e-x-srv")
-	assert.False(t, ok)
-
-	m := netemDropped.FindStringSubmatch(" Sent 98 bytes 1 pkt (dropped 7, overlimits 0 requeues 0)")
-	require.Len(t, m, 2)
-	assert.Equal(t, "7", m[1])
 }
 
 // nackResult is what runNACKScenario measured, for the privileged checks.
@@ -475,28 +668,7 @@ type nackResult struct {
 func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nackResult {
 	t.Helper()
 
-	prevBin := recorderBin
-	defer func() { recorderBin = prevBin }()
-
-	s := NewStack(t, StackOptions{
-		Servers: plan.servers(t),
-		LiveKitConfig: func(cfg map[string]any) {
-			plan.editLiveKit(cfg)
-			// The selected ICE pairs, which runNACKScenario checks, are logged
-			// at debug.
-			lookup[map[string]any](t, cfg, "logging")["level"] = "debug"
-		},
-		RecorderConfig: func(s *Stack, cfg map[string]any) {
-			plan.editRecorder(t, cfg, s.LiveKit, s.Redis)
-
-			if !plan.Dry {
-				// StartRecorder runs recorderBin; this run's recorder starts in its namespace.
-				recorderBin = writeNetnsWrapper(t, plan.RecorderNS, s.Artifacts, "recorder", prevBin)
-			}
-		},
-	})
-
-	recorderBin = prevBin
+	s := newNetemStack(t, plan, StackOptions{})
 
 	room := "e2e-nack-" + uuid.NewString()[:8]
 	pub := s.NewPublisher(room, "e2e-publisher")
@@ -519,7 +691,7 @@ func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nack
 
 	var pairs []string
 	_ = WaitFor(2*time.Second, nil, func() error {
-		if pairs = recorderICEPairs(t, s.LiveKit.Proc.LogPath, rec.SessionID); len(pairs) == 0 {
+		if pairs = iceServerAddrs(t, s.LiveKit.Proc.LogPath, "bbb-webrtc-recorder-"+rec.SessionID, "SUBSCRIBER"); len(pairs) == 0 {
 			return errors.New("none")
 		}
 
@@ -538,7 +710,7 @@ func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nack
 
 	var res nackResult
 	if !plan.Dry {
-		res.qdisc, res.netemDropped = readNetemStats(t, plan, s.Artifacts)
+		res.qdisc, res.netemDropped = readNetemStats(t, plan.ServerNS, plan.SrvRecIf, s.Artifacts, "netem-qdisc.txt")
 	}
 
 	stopSent := time.Now()
@@ -595,33 +767,84 @@ func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nack
 	return res
 }
 
-// recorderICEPairs returns the server-side address of each ICE pair that
-// livekit-server's debug log shows it selected for the recorder session's
-// subscriber PC, in order.
-func recorderICEPairs(t *testing.T, logPath, sessionID string) []string {
+// newNetemStack starts a stack on plan's network. The servers run in its
+// server namespace and the recorder in its recorder namespace.
+// livekit-server logs at debug. o's own config edits run after the plan's.
+func newNetemStack(t *testing.T, plan netemPlan, o StackOptions) *Stack {
+	t.Helper()
+
+	prevBin := recorderBin
+	defer func() { recorderBin = prevBin }()
+
+	editLK, editRec := o.LiveKitConfig, o.RecorderConfig
+	o.Servers = plan.servers(t)
+	o.LiveKitConfig = func(cfg map[string]any) {
+		plan.editLiveKit(cfg)
+		// The selected ICE pairs the netem scenarios check are logged at
+		// debug.
+		lookup[map[string]any](t, cfg, "logging")["level"] = "debug"
+		if editLK != nil {
+			editLK(cfg)
+		}
+	}
+	o.RecorderConfig = func(s *Stack, cfg map[string]any) {
+		plan.editRecorder(t, cfg, s.LiveKit, s.Redis)
+
+		if !plan.Dry {
+			// StartRecorder runs recorderBin; this run's recorder starts in its namespace.
+			recorderBin = writeNetnsWrapper(t, plan.IPBin, plan.RecorderNS, s.Artifacts, "recorder", prevBin)
+		}
+		if editRec != nil {
+			editRec(s, cfg)
+		}
+	}
+
+	return NewStack(t, o)
+}
+
+// lkLogLine is a livekit-server JSON log line, with the fields the netem
+// scenarios read.
+type lkLogLine struct {
+	Msg         string `json:"msg"`
+	Participant string `json:"participant"`
+	Transport   string `json:"transport"` // PUBLISHER or SUBSCRIBER
+	Pair        struct {
+		LocalAddress string `json:"localAddress"`
+	} `json:"pair"`
+}
+
+// lkLogLines returns the lines of livekit-server's log at logPath with msg,
+// for participant.
+func lkLogLines(t *testing.T, logPath, msg, participant string) []lkLogLine {
 	t.Helper()
 
 	data, err := os.ReadFile(logPath)
 	require.NoError(t, err)
 
-	var out []string
+	var out []lkLogLine
 
 	for _, line := range strings.Split(string(data), "\n") {
-		var e struct {
-			Msg         string `json:"msg"`
-			Participant string `json:"participant"`
-			Transport   string `json:"transport"`
-			Pair        struct {
-				LocalAddress string `json:"localAddress"`
-			} `json:"pair"`
+		var e lkLogLine
+		if json.Unmarshal([]byte(line), &e) == nil && e.Msg == msg && e.Participant == participant {
+			out = append(out, e)
 		}
+	}
 
-		if json.Unmarshal([]byte(line), &e) != nil || e.Msg != "selected ICE candidate pair changed" ||
-			e.Participant != "bbb-webrtc-recorder-"+sessionID || e.Transport != "SUBSCRIBER" {
-			continue
+	return out
+}
+
+// iceServerAddrs returns the server-side address of each ICE pair that
+// livekit-server's debug log shows it selected for participant's transport
+// PC, in order.
+func iceServerAddrs(t *testing.T, logPath, participant, transport string) []string {
+	t.Helper()
+
+	var out []string
+
+	for _, e := range lkLogLines(t, logPath, "selected ICE candidate pair changed", participant) {
+		if e.Transport == transport {
+			out = append(out, e.Pair.LocalAddress)
 		}
-
-		out = append(out, e.Pair.LocalAddress)
 	}
 
 	return out
@@ -634,9 +857,16 @@ func setupNetem(t *testing.T, plan netemPlan) {
 
 	removeStaleNetns(t)
 
-	// Registered before the stack starts, so it runs after the processes in
-	// the namespaces have stopped.
+	// Registered before the stack starts, so it runs after the stack's own
+	// cleanups. It kills what they leave.
 	t.Cleanup(func() {
+		for _, ns := range []string{plan.ServerNS, plan.RecorderNS, plan.BrowserNS} {
+			if ns == "" {
+				continue
+			}
+			killNetnsProcs(t, ns)
+		}
+
 		for _, c := range plan.teardownCmds() {
 			_ = exec.Command(c[0], c[1:]...).Run()
 		}
@@ -648,13 +878,20 @@ func setupNetem(t *testing.T, plan netemPlan) {
 			strings.Join(c, " "), strings.TrimSpace(string(out)))
 	}
 
-	t.Logf("netem: servers in netns %s at %s (test) and %s (recorder), recorder in netns %s at %s "+
-		"(metrics %s), loss %s on %s's egress",
-		plan.ServerNS, plan.SrvHostIP, plan.SrvRecIP, plan.RecorderNS, plan.RecSrvIP, plan.RecHostIP, plan.Loss, plan.SrvRecIf)
+	t.Logf("netem: servers in netns %s at %s (test) and %s (recorder), recorder in netns %s at %s (metrics %s)",
+		plan.ServerNS, plan.SrvHostIP, plan.SrvRecIP, plan.RecorderNS, plan.RecSrvIP, plan.RecHostIP)
+	if plan.Loss != "" {
+		t.Logf("netem: loss %q on %s's egress", plan.Loss, plan.SrvRecIf)
+	}
+
+	if plan.BrowserNS != "" {
+		t.Logf("netem: browser in netns %s at %s, servers at %s; netem %v on %s's and %s's egress",
+			plan.BrowserNS, plan.BrwSrvIP, plan.SrvBrwIP, plan.BrowserNetem, plan.BrwSrvIf, plan.SrvBrwIf)
+	}
 }
 
-// removeStaleNetns deletes the namespaces of NACK scenario runs whose process
-// is gone, and those runs' host-side links.
+// removeStaleNetns deletes the namespaces of netem scenario runs whose
+// process is gone, and those runs' host-side links.
 func removeStaleNetns(t *testing.T) {
 	out, err := exec.Command("ip", "netns", "list").Output()
 	if err != nil {
@@ -670,6 +907,7 @@ func removeStaleNetns(t *testing.T) {
 		}
 
 		t.Logf("netem: removing stale netns %s", name)
+		killNetnsProcs(t, name)
 		_ = exec.Command("ip", "netns", "del", name).Run()
 
 		stale := newNetemPlan(pid, nackLossPct)
@@ -678,7 +916,25 @@ func removeStaleNetns(t *testing.T) {
 	}
 }
 
-// netemNSPid returns the pid in a NACK scenario namespace's name.
+// killNetnsProcs kills every process in namespace ns. Deleting a namespace
+// leaves what runs in it running, and Chromium can outlive the runner's
+// process group, as FreezeCapture says.
+func killNetnsProcs(t *testing.T, ns string) {
+	out, _ := exec.Command("ip", "netns", "pids", ns).Output()
+	pids := strings.Fields(string(out))
+	if len(pids) == 0 {
+		return
+	}
+
+	t.Logf("netem: killing the processes left in %s: %s", ns, pids)
+	for _, p := range pids {
+		if pid, err := strconv.Atoi(p); err == nil {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+}
+
+// netemNSPid returns the pid in a netem plan namespace's name.
 func netemNSPid(name string) (int, bool) {
 	rest, ok := strings.CutPrefix(name, netemNSPrefix)
 	if !ok {
@@ -696,11 +952,14 @@ func isDead(pid int) bool {
 }
 
 // writeNetnsWrapper writes dir/<name>-in-netns.sh, which runs bin in ns.
-func writeNetnsWrapper(t *testing.T, ns, dir, name, bin string) string {
+func writeNetnsWrapper(t *testing.T, ipBin, ns, dir, name, bin string) string {
 	t.Helper()
 
-	ipBin, err := exec.LookPath("ip")
-	require.NoError(t, err)
+	if ipBin == "" {
+		var err error
+		ipBin, err = exec.LookPath("ip")
+		require.NoError(t, err)
+	}
 
 	path := filepath.Join(dir, name+"-in-netns.sh")
 	require.NoError(t, os.WriteFile(path, []byte(netnsWrapperScript(ipBin, ns, bin)), 0o755))
@@ -710,14 +969,14 @@ func writeNetnsWrapper(t *testing.T, ns, dir, name, bin string) string {
 
 var netemDropped = regexp.MustCompile(`dropped (\d+)`)
 
-// readNetemStats saves the shaped link's qdisc statistics as an artifact
-// and returns them with netem's drop count.
-func readNetemStats(t *testing.T, plan netemPlan, dir string) (string, int) {
+// readNetemStats saves the statistics of the qdisc on dev, in namespace ns,
+// as the artifact name, and returns them with netem's drop count.
+func readNetemStats(t *testing.T, ns, dev, dir, name string) (string, int) {
 	t.Helper()
 
-	out, err := exec.Command("tc", "-n", plan.ServerNS, "-s", "qdisc", "show", "dev", plan.SrvRecIf).CombinedOutput()
+	out, err := exec.Command("tc", "-n", ns, "-s", "qdisc", "show", "dev", dev).CombinedOutput()
 	require.NoError(t, err, "tc -s qdisc: %s", out)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "netem-qdisc.txt"), out, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), out, 0o644))
 
 	m := netemDropped.FindSubmatch(out)
 	require.Len(t, m, 2, "no drop count in %q", out)

@@ -28,13 +28,7 @@ import (
 // It uses the NACK scenario's namespaces, with no loss, so it needs root and
 // E2E_NETEM=1 too.
 func TestMediaTimestampsTakeOffAStartDelay(t *testing.T) {
-	if reason := netemSkipReason(); reason != "" {
-		if os.Getenv("E2E_NETEM_REQUIRED") == "1" {
-			require.FailNow(t, reason)
-		}
-
-		t.Skip(reason)
-	}
+	requireNetem(t)
 
 	const (
 		cameraFPS = 15
@@ -58,20 +52,7 @@ func TestMediaTimestampsTakeOffAStartDelay(t *testing.T) {
 	}
 	netem("add", delay)
 
-	prevBin := recorderBin
-	defer func() { recorderBin = prevBin }()
-
-	s := NewStack(t, StackOptions{
-		Servers:       plan.servers(t),
-		LiveKitConfig: plan.editLiveKit,
-		RecorderConfig: func(s *Stack, cfg map[string]any) {
-			plan.editRecorder(t, cfg, s.LiveKit, s.Redis)
-			// As in runNACKScenario.
-			recorderBin = writeNetnsWrapper(t, plan.RecorderNS, s.Artifacts, "recorder", prevBin)
-		},
-	})
-
-	recorderBin = prevBin
+	s := newNetemStack(t, plan, StackOptions{})
 
 	room := "e2e-startdelay-" + uuid.NewString()[:8]
 	pub := s.NewPublisher(room, "e2e-publisher")

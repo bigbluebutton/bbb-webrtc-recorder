@@ -50,6 +50,15 @@ func (n *ServerNet) command(dir, name, bin string) string {
 	return n.Wrap(dir, name, bin)
 }
 
+// BrowserNet is where a stack's browsers run and how they reach LiveKit.
+type BrowserNet struct {
+	// Host is the address the page dials LiveKit on; "" keeps LiveKit's URL.
+	Host string
+	// Wrap, if set, returns the command that runs the runner's interpreter
+	// bin, as ServerNet.Wrap does for a server.
+	Wrap func(dir, name, bin string) string
+}
+
 // Stack is one test's redis-server, livekit-server, recorder and driver.
 type Stack struct {
 	T         *testing.T

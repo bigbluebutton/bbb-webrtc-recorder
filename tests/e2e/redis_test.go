@@ -53,7 +53,7 @@ func StartRedis(t *testing.T, dir string, srv *ServerNet) *Redis {
 		args := append([]string{"--port", strconv.Itoa(port), "--bind"}, srv.Addrs...)
 		args = append(args,
 			// Protected mode refuses clients off loopback, which is where the
-			// NACK scenario's are; the binds keep the server private.
+			// netem scenarios' clients are; the binds keep the server private.
 			"--protected-mode", "no",
 			"--save", "",
 			"--appendonly", "no",
