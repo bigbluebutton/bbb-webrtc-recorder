@@ -438,15 +438,7 @@ func (d *Driver) StopAndWait(ctx context.Context, sessionID string) (*events.Rec
 // status ("flowing" or "not_flowing") at message index from or later,
 // received before or after the call; from is as for WaitStopped.
 func (d *Driver) WaitRtpStatus(ctx context.Context, from int, sessionID, status string) (*events.RecordingRtpStatusChanged, error) {
-	m, _, err := d.WaitMessage(ctx, from, func(m Message) bool {
-		if m.ID != events.RecordingRtpStatusChangedKey || m.SessionID != sessionID {
-			return false
-		}
-
-		var e events.RecordingRtpStatusChanged
-
-		return json.Unmarshal(m.Raw, &e) == nil && e.Status == status
-	})
+	m, _, err := d.WaitMessage(ctx, from, rtpStatusMatch(sessionID, status))
 	if err != nil {
 		return nil, fmt.Errorf("waiting for %s %s: %w", sessionID, status, err)
 	}
@@ -454,6 +446,18 @@ func (d *Driver) WaitRtpStatus(ctx context.Context, from int, sessionID, status 
 	var e events.RecordingRtpStatusChanged
 
 	return &e, json.Unmarshal(m.Raw, &e)
+}
+
+func rtpStatusMatch(sessionID, status string) func(Message) bool {
+	return func(m Message) bool {
+		if m.ID != events.RecordingRtpStatusChangedKey || m.SessionID != sessionID {
+			return false
+		}
+
+		var e events.RecordingRtpStatusChanged
+
+		return json.Unmarshal(m.Raw, &e) == nil && e.Status == status
+	}
 }
 
 func deref(s *string) string {

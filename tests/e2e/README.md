@@ -54,8 +54,11 @@ those frames had one.
 | `TestMediaTimestampsTakeOffAStartDelay` | **Media timestamps behind a delay at start.** On the NACK scenario's namespaces, with no loss, netem delays everything the test sends the servers by 300 ms. Both recordings start at once. 800 ms after the microphone's flowing event, the delay comes off over 400 ms, 10 ms at a time. So the delay is still on 1 s into the microphone's media, and off before 2 s into either track's. Each WebM block must land within 40 ms of when its frame was sent, and the two tracks within 15 ms of each other. The test also checks that timing, so it cannot pass without a delay to take off. It needs root and `E2E_NETEM=1`, as the NACK scenario does. |
 | `TestSimulcastMediaTimestampsPlaceEachFrame` | **Simulcast media timestamps.** A camera sends BBB's default layers (`bbbCameraLayers`): q at 451x338 and h at 640x480, each a stream with its own sequence numbers, timestamps and picture IDs. A microphone sends with it. Midway, h stops for 3 s: the recorder gets q until h has flowed again for 10 s. Each WebM block, whichever layer its frame came from, must land within 40 ms of when that frame was sent, and the two tracks within 15 ms of each other. `recordingStopped` must repeat `mediaStart`, and its `mediaEnd` must add the file's media and its last frame. The camera's file must hold both switches. |
 | `TestBrowserSimulcastMediaTimestamps` | **Browser simulcast** (browser mode). Chromium publishes its fake camera and microphone as BBB's client does: BBB's room options (dynacast on), and the camera with the default profile's capture and VP8 simulcast layers. LiveKit must list `bbbCameraLayers`. Midway, the page stops sending h for 3 s. The camera's file must hold both switches, and repeat a PTS only for one frame sent on both layers. Both files must pass the browser lip sync scenario's checks and the simulcast scenario's `recordingStopped` checks. A second case starts recording once dynacast has paused the unwatched camera. The recorder's subscription resumes the camera, and the recorder then gets the same media as in the first case. What this case adds is a check that LiveKit and Chromium resume a paused camera. |
-| `TestBrowserMediaTimestampsKeepLipSync` | **Browser lip sync** (browser mode). Chromium publishes its fake camera and microphone as BBB's client does, one session each, once per camera. Each camera is one VP8 stream whose first frames Chromium sends late. They are BBB's low profile, the hidden low-u30 profile at 30 kbps (on time after a 700 ms gap), and low captured at 5 fps. The two tracks' sender reports give each block's frame a capture time on the host's wall clock; the test finds that frame in the trace by its bytes. Each file's `mediaStart`, less its first frame's capture time, is how late it plays its media. The two files' delays must agree within 45 ms, and each block must play within 30 ms of its file's delay. |
-| `TestBrowserMidMeetingFilesKeepLipSync` | **Files that start mid-meeting** (browser mode). Chromium publishes a microphone and a camera as BBB's client does, the camera with the low-u30 profile, whose first frames come late. The microphone is user-provided, with RED on and no DTX, and BBB's 5 s unpublish-on-mute timer runs in the page. The test records each new track as the SFU does on `track_published`, and stops it on `track_unpublished`. A 3 s mute keeps the file and must leave a read gap over 1 s in it. The test logs how many of LiveKit's silence packets the trace holds. A mute past 5 s unpublishes the microphone, and the unmute publishes it again as a new track and file. The camera is stopped and shared again, with the low profile after a 1 s preview, as a new track and file. Four files result; the two new ones each start while a file of the other kind runs. Each file's `mediaStart`, less its first frame's capture time from Chromium's sender reports, must agree with every other file's within 45 ms. Each block must play within 30 ms of its file's delay, and `recordingStopped` must repeat `mediaStart` and end at the last frame. |
+| `TestBrowserMediaTimestampsKeepLipSync` | **Browser lip sync** (browser mode). Chromium publishes its fake camera and microphone as BBB's client does, one session each, once per camera. Each camera is one VP8 stream whose first frames Chromium sends late. The cameras are BBB's low profile; the hidden low-u30 profile at 30 kbps, whose first on-time frame follows a 700 ms gap; and low captured at 5 fps. The two tracks' sender reports give each block's frame a capture time on the host's wall clock. A file's delay is its `mediaStart` less its first frame's capture time, how late it plays its media. It must be from -25 ms (-5 ms for the camera) to 30 ms. `mediaStart` must also be at most 5 ms after the start that the reads in the file's start window give. The two files' delays must agree within 45 ms, and each block must play within 30 ms of its file's delay. |
+| `TestBrowserMidMeetingFilesKeepLipSync` | **Files that start mid-meeting** (browser mode). Chromium publishes a microphone and a camera as BBB's client does, the camera with the low-u30 profile, whose first frames come late. The microphone is user-provided, with RED on and no DTX, and BBB's 5 s unpublish-on-mute timer runs in the page. The test records each new track as the SFU does on `track_published`, and stops it on `track_unpublished`. A 3 s mute keeps the file and must leave a read gap over 1 s in it. The test logs how many of LiveKit's silence packets the trace holds. A mute past 5 s unpublishes the microphone, and the unmute publishes it again as a new track and file. The camera is stopped and shared again, with the low profile after a 1 s preview, as a new track and file. Four files result, and each new one starts while a file of the other kind runs. A file's delay is its `mediaStart` less its first frame's capture time from Chromium's sender reports. It must be from -25 ms (-5 ms for a camera) to 30 ms, and agree with every other file's within 45 ms. Each file must also pass the lip sync scenario's check on its start window's reads. Each block must play within 30 ms of its file's delay, and `recordingStopped` must repeat `mediaStart` and end at the last frame. |
+| `TestBrowserNetemKeepsPlacement` | **Browser behind a bad network** (root, browser mode). Chromium gets a namespace whose only link goes to the servers, and netem shapes both ends of that link. Chromium publishes a microphone and a camera as BBB's client does, and the test records each new track as the SFU does on `track_published`. (a) 3% loss and 40 ms ± 20 ms delay from before publish, on BBB's low camera. (b) A 3 s blackout, on BBB's default simulcast camera. (c) A 13.5 s blackout on that camera: the server's ICE goes disconnected and recovers. (d) A 25 s blackout on the low camera. LiveKit closes the participant, and livekit-client reconnects with new tracks, recorded in new files. Each file's delay must be from -25 ms (-5 ms for a camera) to 30 ms. In (a) the upper bound is 50 ms, for netem's least delay of 20 ms. Each file must also pass the lip sync scenario's check on its start window's reads. Each block must play within 30 ms of its file's delay, through the sender reports read on its own side of each blackout. All files of a case must agree on their delay within 45 ms. Across a blackout, the PTS step must equal the capture step. `mediaEnd` must end at the last block, the old files' included. In (d), the old files must hold no media captured after the link went dark, apart from the silence frames LiveKit sends the old microphone at the close. In (a), Chromium must get NACKs and retransmit. The microphone's reads must lag capture by 15 ms or more (median), with a p10-p90 spread of 20 ms or more, in the file and in its first second. In (b) and (c), no media that Chromium captured during a blackout may be read before it ends. The microphone's `not_flowing` must come in the blackout, within 600 ms of its last read. |
+| `TestBrowserNetemControl` | The browser netem scenario's 3 s blackout case on loopback (browser mode), where the blackout changes nothing. The checks that detect the fault must find none. The placement checks must pass, the split at the blackout included. Two checks must find the opposite of a blackout, to show they can tell one. Media captured during the blackout is read during it. The microphone's capture step across the blackout stays well under its length, and its PTS step is at most one 20 ms frame plus the 30 ms drift bound. |
+| `TestNetemBrowserPlan`, `TestSenderClockSegments` | The browser netem plan's commands, and how the oracle splits the sender reports at a blackout. After a LiveKit re-base, a report from before it maps a frame 500 ms off; one from the frame's side maps it right. Both run unprivileged, without a browser. |
 | `TestShutdownSignalClosesRecordings` | **Shutdown signal.** A camera records for 3 s, then the recorder gets SIGINT, and in a second run SIGTERM, the signal systemd sends on stop. Either way it must exit 0 by itself, having closed the WebM (every frame read is written) and ended the trace with its EOF record. |
 | `TestPublisherSendLoop`, `TestScheduleFramesFindsKeyFrames` | The publisher's send loop (PLI answers, pacing, drops, pauses) and how it finds key frames, with no servers involved. |
 
@@ -98,9 +101,9 @@ of the in-process replay corpus
    (`-count=3`) to check that its bounds hold.
 7. **Register it** with a row in the table above.
 
-A scenario that needs root, as the NACK scenario does for its network
-namespaces, skips unless `E2E_NETEM=1` and fails instead when
-`E2E_NETEM_REQUIRED=1` (see `netemSkipReason`).
+A scenario that needs root, as the netem scenarios do for their network
+namespaces, starts with `requireNetem(t)`: it skips unless `E2E_NETEM=1`
+and fails instead when `E2E_NETEM_REQUIRED=1`.
 
 CI runs the whole package unprivileged. A root-only scenario also needs to
 run in a root step of `.github/workflows/e2e.yml`, as the netem scenarios do.
@@ -126,10 +129,12 @@ cd tests/e2e/browser && npm ci && npx playwright install --no-shell chromium
 On a host without Chromium's system libraries, add `--with-deps`, which
 installs them with apt through sudo, as CI does.
 
-Browser scenarios are named `TestBrowser*` and skip unless `E2E_BROWSER=1`:
+Browser scenarios are named `TestBrowser*` and skip unless `E2E_BROWSER=1`.
+`TestBrowserNetemKeepsPlacement` also needs root (see
+[The browser netem scenario (root)](#the-browser-netem-scenario-root)):
 
 ```sh
-E2E_BROWSER=1 go test -tags e2e -run '^TestBrowser' -v ./tests/e2e/...
+E2E_BROWSER=1 go test -tags e2e -timeout 15m -run '^TestBrowser' -v ./tests/e2e/...
 ```
 
 To add a browser scenario, follow [Adding a scenario](#adding-a-scenario),
@@ -168,7 +173,7 @@ Environment:
 |---|---|
 | `LIVEKIT_SERVER_BIN` | The `livekit-server` binary. Default: `livekit-server` on `PATH`. |
 | `REDIS_SERVER_BIN` | The `redis-server` binary. Default: `redis-server` on `PATH`. |
-| `REDIS_ADDR` | Use this Redis instead of starting one. Channel names get a suffix naming the run (stamp and PID) and the test, so concurrent runs and tests do not cross. The netem scenarios and the NACK control always start their own. |
+| `REDIS_ADDR` | Use this Redis instead of starting one. Channel names get a suffix naming the run (stamp and PID) and the test, so concurrent runs and tests do not cross. The netem scenarios and their controls always start their own. |
 | `E2E_RECORDER_BIN` | Use this recorder binary instead of building one. |
 | `E2E_RECORDER_RACE=1` | Build the recorder with `-race`; a test fails when its recorder's log reports a data race. The race build needs a lot of cache space. |
 | `E2E_ARTIFACTS` | Root directory for artifacts. When set, every test's artifacts are kept. |
@@ -263,6 +268,48 @@ until the recorder's next request up to 1 s later. Frames are compared from
 the first one written: when netem drops the first packet of the first key
 frame, no NACK can name it, and the recording starts only once the jitter
 buffer's 2 s have passed.
+
+### The browser netem scenario (root)
+
+`TestBrowserNetemKeepsPlacement` uses the NACK scenario's namespaces and
+links, with no loss on the recorder's link, and adds a third namespace for
+the browser:
+- it runs the Node runner and Chromium, through
+  `<artifacts>/browser-<n>-in-netns.sh`;
+- its only link goes to the server namespace, and it has no default route.
+  The page dials LiveKit on the servers' address on that link;
+- netem sits on both ends of that link. The browser's end shapes what the
+  browser sends: media, sender reports, signalling and ICE checks. The
+  servers' end shapes what they send it: NACKs, PLIs, feedback and
+  signalling.
+
+The recorder's link, the test's link and the recorder's metrics are not
+shaped, so the fault cannot impair the recorder's own traffic or the test's
+measurements. Playwright drives Chromium over a pipe and the test drives
+the runner over stdio, so the test can still call the page in a blackout.
+
+A blackout is `tc qdisc change ... netem loss 100%` on both ends, the
+browser's end first, and the same change back to the case's arguments.
+No link goes down, so Chromium sees no `offline` event, which
+livekit-client would act on.
+
+Run it as the NACK scenario, with `-test.run '^TestBrowserNetemKeepsPlacement$'`
+and two more variables in sudo's `env`: `E2E_BROWSER=1`, and
+`"PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"`, since under sudo
+Playwright looks for its browsers under root's home. The `PATH` it passes
+must hold Node.
+
+Without sudo, run the test binary inside
+`unshare --user --map-root-user --net --mount`, after mounting a tmpfs over
+`/run/netns` and `ip link set lo up`.
+
+The NACK scenario's warning holds: do this only on a disposable machine.
+Chromium also runs as root here, without its sandbox.
+
+The blackouts' lengths, in `browserNetemCases`, come from livekit-server
+1.13.7's ICE and participant timers. A LiveKit bump must check them again.
+The test logs livekit-server's ICE states and participant closes, and
+livekit-client's reconnect events, to show which timer fired.
 
 ## CI
 

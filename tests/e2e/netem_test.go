@@ -93,7 +93,8 @@ type netemPlan struct {
 
 	Loss string // netem's loss argument on SrvRecIf; "" for no qdisc there
 	// Dry plans no namespace: everything stays on the host, with loopback
-	// addresses in place of the links, for TestNACKRepairControl.
+	// addresses in place of the links, for TestNACKRepairControl and
+	// TestBrowserNetemControl.
 	Dry bool
 
 	// A browser plan's third namespace runs the browser. Its only link goes
@@ -261,6 +262,38 @@ func (p netemPlan) shapeCmds(args []string) [][]string {
 	}
 }
 
+// netemEdge is when each end of the browser's link changed: the start and
+// end of each tc exec.
+type netemEdge struct {
+	UpStart, UpEnd     time.Time // BrwSrvIf, browser -> server
+	DownStart, DownEnd time.Time // SrvBrwIf, server -> browser
+}
+
+// blackout drops everything on the browser's link, or with on false gives
+// it back its BrowserNetem. A dry plan only stamps the times.
+func (p netemPlan) blackout(t *testing.T, on bool) netemEdge {
+	t.Helper()
+
+	args := p.BrowserNetem
+	if on {
+		args = []string{"loss", "100%"}
+	}
+
+	cmds := p.shapeCmds(args)
+	var stamps [4]time.Time
+
+	for i := range 2 {
+		stamps[2*i] = time.Now()
+		if cmds != nil {
+			out, err := exec.Command(cmds[i][0], cmds[i][1:]...).CombinedOutput()
+			require.NoError(t, err, "%s: %s", strings.Join(cmds[i], " "), strings.TrimSpace(string(out)))
+		}
+		stamps[2*i+1] = time.Now()
+	}
+
+	return netemEdge{UpStart: stamps[0], UpEnd: stamps[1], DownStart: stamps[2], DownEnd: stamps[3]}
+}
+
 // browser runs the browser in the browser namespace, dialling LiveKit on the
 // servers' address on its link. A dry plan keeps it on the host.
 func (p netemPlan) browser(t *testing.T) *BrowserNet {
@@ -351,8 +384,8 @@ func shellQuote(s string) string {
 func netemSkipReason() string {
 	if os.Geteuid() != 0 || os.Getenv("E2E_NETEM") != "1" {
 		return "The netem scenarios need root and E2E_NETEM=1: they create network namespaces, veth pairs and netem qdiscs. " +
-			"tests/e2e/README.md shows how to build as the user and run -test.run '^TestNACKRepairUnderLoss$' " +
-			"or '^TestMediaTimestampsTakeOffAStartDelay$' as root."
+			"tests/e2e/README.md shows how to build as the user and run -test.run '^TestNACKRepairUnderLoss$', " +
+			"'^TestMediaTimestampsTakeOffAStartDelay$' or '^TestBrowserNetemKeepsPlacement$' as root."
 	}
 
 	return ""
@@ -688,17 +721,8 @@ func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nack
 	started := time.Now()
 
 	_, err = s.Driver.WaitRtpStatus(ctx, rec.From, rec.SessionID, "flowing")
-
-	var pairs []string
-	_ = WaitFor(2*time.Second, nil, func() error {
-		if pairs = iceServerAddrs(t, s.LiveKit.Proc.LogPath, "bbb-webrtc-recorder-"+rec.SessionID, "SUBSCRIBER"); len(pairs) == 0 {
-			return errors.New("none")
-		}
-
-		return nil
-	})
+	pairs := selectedICEAddrs(t, s.LiveKit.Proc.LogPath, "bbb-webrtc-recorder-"+rec.SessionID, "SUBSCRIBER")
 	require.NoError(t, err, "not flowing; the server's selected ICE addresses for the recorder: %v", pairs)
-	require.NotEmpty(t, pairs, "no selected ICE pair for the recorder in %s", s.LiveKit.Proc.LogPath)
 
 	if !plan.Dry {
 		// Only the server <-> recorder link carries the loss; the recorder's
@@ -760,9 +784,7 @@ func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nack
 	// LiveKit's own PLI as the downtrack starts, plus one per recorder request at most.
 	assert.LessOrEqual(t, pliKeys, maxRequests+1, "key frames sent for PLIs: a keyframe loop")
 
-	if assert.NotNil(t, out.EOF, "trace eof") {
-		assert.Empty(t, out.EOF.Reason, "trace truncated or dropped records")
-	}
+	assertTraceEnded(t, "camera", out)
 
 	return res
 }
@@ -780,8 +802,8 @@ func newNetemStack(t *testing.T, plan netemPlan, o StackOptions) *Stack {
 	o.Servers = plan.servers(t)
 	o.LiveKitConfig = func(cfg map[string]any) {
 		plan.editLiveKit(cfg)
-		// The selected ICE pairs the netem scenarios check are logged at
-		// debug.
+		// The selected ICE pairs and the ICE states the netem scenarios
+		// check are logged at debug.
 		lookup[map[string]any](t, cfg, "logging")["level"] = "debug"
 		if editLK != nil {
 			editLK(cfg)
@@ -805,12 +827,19 @@ func newNetemStack(t *testing.T, plan netemPlan, o StackOptions) *Stack {
 // lkLogLine is a livekit-server JSON log line, with the fields the netem
 // scenarios read.
 type lkLogLine struct {
-	Msg         string `json:"msg"`
-	Participant string `json:"participant"`
-	Transport   string `json:"transport"` // PUBLISHER or SUBSCRIBER
+	TS          float64 `json:"ts"` // Unix seconds
+	Msg         string  `json:"msg"`
+	Participant string  `json:"participant"`
+	Transport   string  `json:"transport"` // PUBLISHER or SUBSCRIBER
+	State       string  `json:"state"`
+	Reason      string  `json:"reason"`
 	Pair        struct {
 		LocalAddress string `json:"localAddress"`
 	} `json:"pair"`
+}
+
+func (l lkLogLine) at() time.Time {
+	return time.Unix(0, int64(l.TS*float64(time.Second)))
 }
 
 // lkLogLines returns the lines of livekit-server's log at logPath with msg,
@@ -848,6 +877,40 @@ func iceServerAddrs(t *testing.T, logPath, participant, transport string) []stri
 	}
 
 	return out
+}
+
+// selectedICEAddrs waits up to 2 s for iceServerAddrs to return a pair, and
+// returns them.
+func selectedICEAddrs(t *testing.T, logPath, participant, transport string) []string {
+	t.Helper()
+
+	var addrs []string
+	_ = WaitFor(2*time.Second, nil, func() error {
+		if addrs = iceServerAddrs(t, logPath, participant, transport); len(addrs) == 0 {
+			return errors.New("no selected pair")
+		}
+
+		return nil
+	})
+	require.NotEmpty(t, addrs, "no selected ICE pair for %s's %s PC in %s", participant, transport, logPath)
+
+	return addrs
+}
+
+// iceStates returns each ICE connection state livekit-server's debug log
+// shows for participant's PCs, in order.
+func iceStates(t *testing.T, logPath, participant string) []lkLogLine {
+	t.Helper()
+
+	return lkLogLines(t, logPath, "ice connection state change", participant)
+}
+
+// participantClosings returns each time livekit-server closed participant,
+// with its reason.
+func participantClosings(t *testing.T, logPath, participant string) []lkLogLine {
+	t.Helper()
+
+	return lkLogLines(t, logPath, "participant closing", participant)
 }
 
 // setupNetem builds plan's namespaces and links, removing first any a dead

@@ -109,7 +109,7 @@ func TestSignalCutResumesInPlace(t *testing.T) {
 	for _, tr := range r.tracks {
 		t.Run(tr.name, func(t *testing.T) {
 			assert.Equal(t, events.StopReasonNormal, stopped[tr.rec.SessionID].Reason)
-			assert.Len(t, sessionFiles(t, r.s, r.room, tr), 1, "files for the session")
+			assert.Len(t, sessionFiles(t, r.s, r.room, tr.track.SID, tr.rec.SessionID), 1, "files for the session")
 
 			out := ReadOutput(t, tr.rec, tr.track.SID)
 			webm := out.WebM
@@ -280,7 +280,7 @@ func TestSignalRefusedSplitsFile(t *testing.T) {
 		res := results[i]
 		require.NoError(t, res.err)
 
-		_, _, err := r.s.Driver.WaitMessage(ctx, res.from, flowingMatch(tr.rec.SessionID))
+		_, _, err := r.s.Driver.WaitMessage(ctx, res.from, rtpStatusMatch(tr.rec.SessionID, "flowing"))
 		require.NoError(t, err, "%s: retried session not flowing", tr.name)
 
 		t.Logf("%s: stopped %s after the cut, %d failed retries (%v), restarted %s after the cut",
@@ -314,7 +314,7 @@ func TestSignalRefusedSplitsFile(t *testing.T) {
 		t.Run(tr.name, func(t *testing.T) {
 			assert.Equal(t, events.StopReasonNormal, stopped[tr.rec.SessionID].Reason)
 			// Pinned: the split. One file up to the cut, one from the retry on.
-			assert.Len(t, sessionFiles(t, r.s, r.room, tr), 2, "files for the session")
+			assert.Len(t, sessionFiles(t, r.s, r.room, tr.track.SID, tr.rec.SessionID), 2, "files for the session")
 
 			first := ReadOutput(t, tr.rec, tr.track.SID)
 			second := ReadOutput(t, tr.retry, tr.track.SID)
@@ -467,12 +467,9 @@ func (r *signalRig) stopAll() (time.Time, map[string]*events.RecordingStopped) {
 	stopped := map[string]*events.RecordingStopped{}
 
 	for _, tr := range r.tracks {
-		m, _, err := r.s.Driver.WaitMessage(r.ctx, from, stoppedMatch(tr.rec.SessionID))
+		st, err := r.s.Driver.WaitStopped(r.ctx, from, tr.rec.SessionID)
 		require.NoError(t, err, "%s: no recordingStopped after stopRecording", tr.name)
-
-		var st events.RecordingStopped
-		require.NoError(t, json.Unmarshal(m.Raw, &st))
-		stopped[tr.rec.SessionID] = &st
+		stopped[tr.rec.SessionID] = st
 	}
 
 	return stopSent, stopped
@@ -481,18 +478,6 @@ func (r *signalRig) stopAll() (time.Time, map[string]*events.RecordingStopped) {
 func stoppedMatch(sessionID string) func(Message) bool {
 	return func(m Message) bool {
 		return m.ID == events.RecordingStoppedKey && m.SessionID == sessionID
-	}
-}
-
-func flowingMatch(sessionID string) func(Message) bool {
-	return func(m Message) bool {
-		if m.ID != events.RecordingRtpStatusChangedKey || m.SessionID != sessionID {
-			return false
-		}
-
-		var e events.RecordingRtpStatusChanged
-
-		return json.Unmarshal(m.Raw, &e) == nil && e.Status == "flowing"
 	}
 }
 
@@ -508,12 +493,13 @@ func lastRestart(tracks []*signalTrack) time.Time {
 	return last
 }
 
-// sessionFiles lists the WebM files the recorder wrote for tr's session.
-func sessionFiles(t *testing.T, s *Stack, room string, tr *signalTrack) []string {
+// sessionFiles lists the WebM files the recorder wrote for track sid in
+// session sessionID.
+func sessionFiles(t *testing.T, s *Stack, room, sid, sessionID string) []string {
 	t.Helper()
 
 	files, err := filepath.Glob(filepath.Join(s.Recorder.Dir, "recordings", room,
-		fmt.Sprintf("%s-%s*.webm", tr.track.SID, tr.rec.SessionID)))
+		fmt.Sprintf("%s-%s*.webm", sid, sessionID)))
 	require.NoError(t, err)
 
 	return files

@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"context"
-	"encoding/json"
 	"math"
 	"slices"
 	"sync/atomic"
@@ -79,12 +78,9 @@ func frameSends(tr *PubTrack) map[int]time.Time {
 // event. Without media timestamps, bbb-webrtc-sfu stamps the recording's
 // start when it handles that event.
 func firstFlowing(d *Driver, from int, sessionID string) time.Time {
-	for _, m := range d.Messages()[from:] {
-		var e events.RecordingRtpStatusChanged
-		if m.ID == events.RecordingRtpStatusChangedKey && m.SessionID == sessionID &&
-			json.Unmarshal(m.Raw, &e) == nil && e.Status == "flowing" {
-			return m.At
-		}
+	msgs := d.Messages()[from:]
+	if i := slices.IndexFunc(msgs, rtpStatusMatch(sessionID, "flowing")); i >= 0 {
+		return msgs[i].At
 	}
 
 	return time.Time{}

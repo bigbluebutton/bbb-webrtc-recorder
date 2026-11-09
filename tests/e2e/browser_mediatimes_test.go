@@ -62,14 +62,9 @@ func (c senderClock) segment(atUs int64) int {
 	return 0
 }
 
-// at returns when the sender captured the media at ts, by the report
-// nearest to it.
-func (c senderClock) at(ts uint32) time.Time {
-	return c.by(ts, c.reports)
-}
-
-// atIn is at by the reports read in segment seg only. It returns false if
-// that segment has none.
+// atIn returns when the sender captured the media at ts, by the report
+// read in segment seg nearest to it. It returns false if that segment has
+// none.
 func (c senderClock) atIn(ts uint32, seg int) (time.Time, bool) {
 	var in []corpus.Record
 	for _, r := range c.reports {
@@ -237,6 +232,10 @@ const (
 	// 15 ms late. So on loopback its frames can seem to be read, and its
 	// file to play, up to 15 ms before their capture. 25 ms leaves a margin.
 	browserReportError = 25 * time.Millisecond
+	// A camera's reports place its capture closely: on loopback its file
+	// plays its media 0.2 ms or more after its capture. 5 ms allows for the
+	// event's truncation to the ms and a report a few ms off.
+	browserCameraReportError = 5 * time.Millisecond
 	// How late a file may play its media after its capture on loopback.
 	// There the least delayed frame is read at most 3 ms after its capture,
 	// through Chromium's encoder and pacer and the read path. 30 ms is a
@@ -248,6 +247,16 @@ const (
 	// too, can put a few ms between the two.
 	readToArrival = 5 * time.Millisecond
 )
+
+// reportError is how late the sender reports of a browser track of kind can
+// place a capture.
+func reportError(kind corpus.Kind) time.Duration {
+	if kind == corpus.KindVideo {
+		return browserCameraReportError
+	}
+
+	return browserReportError
+}
 
 type capturePlacement struct {
 	Name     string
@@ -320,16 +329,17 @@ func (p capturePlacement) startByReads() time.Time {
 func placeOnCaptureClock(ctx context.Context, t *testing.T, s *Stack, name string, rec *Recording, sid string) capturePlacement {
 	t.Helper()
 
-	return placeOnCaptureClockCut(ctx, t, s, name, rec, sid, time.Time{})
+	return placeOnCaptureClockCut(ctx, t, s, name, rec, sid, time.Time{}, 0)
 }
 
 // placeOnCaptureClockCut is placeOnCaptureClock for a file cut by a
 // blackout. cutAfter is the blackout's end: the first media read at or after
 // it starts a second segment, and a zero cutAfter cuts nothing. Each block's
 // frame gets its capture time from the reports read in its own segment, which
-// must have one.
+// must have one. browserLateMax grows by pathDelay, a shaped link's least
+// delay.
 func placeOnCaptureClockCut(ctx context.Context, t *testing.T, s *Stack, name string, rec *Recording, sid string,
-	cutAfter time.Time,
+	cutAfter time.Time, pathDelay time.Duration,
 ) capturePlacement {
 	t.Helper()
 
@@ -371,8 +381,9 @@ func placeOnCaptureClockCut(ctx context.Context, t *testing.T, s *Stack, name st
 
 	captured := p.captured(0)
 	p.Late = p.Start.Sub(captured)
-	assert.GreaterOrEqual(t, p.Late, -browserReportError, "%s: mediaStart plays the media before its capture", name)
-	assert.LessOrEqual(t, p.Late, browserLateMax, "%s: how late mediaStart plays the media", name)
+	lateMin, lateMax := -reportError(out.Trace.Header.Kind), browserLateMax+pathDelay
+	assert.GreaterOrEqual(t, p.Late, lateMin, "%s: mediaStart plays the media before its capture", name)
+	assert.LessOrEqual(t, p.Late, lateMax, "%s: how late mediaStart plays the media", name)
 	for i, b := range p.Blocks {
 		drift := p.placed(b).Sub(p.captured(i)) - p.Late
 		if drift.Abs() > p.Worst.Abs() {
@@ -386,12 +397,59 @@ func placeOnCaptureClockCut(ctx context.Context, t *testing.T, s *Stack, name st
 		segments = 2
 	}
 	flowingAt := firstFlowing(s.Driver, rec.From, rec.SessionID)
-	t.Logf("%s: %d blocks, %d sender reports, %d segments; mediaStart plays the media %v after its capture, "+
-		"drifting %v at worst; the first block was read %v after its capture; "+
-		"a start stamped on flowing would play it %v after",
-		name, len(p.Blocks), len(clock.reports), segments, p.Late, p.Worst, p.Read.Sub(captured), flowingAt.Sub(captured))
+	t.Logf("%s: %d blocks, %d sender reports, %d segments; mediaStart plays the media %v after its capture "+
+		"(%v under the bound), drifting %v at worst; mediaStart is %v after the start its window's reads give; "+
+		"the first block was read %v after its capture; a start stamped on flowing would play it %v after",
+		name, len(p.Blocks), len(clock.reports), segments, p.Late, lateMax-p.Late, p.Worst, p.Start.Sub(byReads),
+		p.Read.Sub(captured), flowingAt.Sub(captured))
 
 	return p
+}
+
+// cutStep is how a file steps across the cut of its clock: from its last
+// block before the cut to its first after it.
+type cutStep struct {
+	After   int           // the index of the first block after the cut
+	PTS     time.Duration // the two blocks' PTS step
+	Capture time.Duration // their capture step, each by its own segment's reports
+	// The trace's jump from the last media read before the cut to the first
+	// at it.
+	SeqJump int
+	TSJump  time.Duration
+}
+
+// stepAcrossCut returns p's step across its cut, or false if p has no
+// block on one side of it.
+func (p capturePlacement) stepAcrossCut() (cutStep, bool) {
+	i := slices.IndexFunc(p.Segments, func(seg int) bool { return seg > 0 })
+	if i <= 0 {
+		return cutStep{}, false
+	}
+
+	st := cutStep{
+		After:   i,
+		PTS:     time.Duration(p.Blocks[i].PTS-p.Blocks[i-1].PTS) * time.Millisecond,
+		Capture: p.captured(i).Sub(p.captured(i - 1)),
+	}
+
+	tr := p.Out.Trace
+	var last *corpus.Record
+	for j, r := range tr.Records {
+		if r.T != corpus.RecordRTP || r.Pad {
+			continue
+		}
+		if r.AtUs < p.Clock.cut {
+			last = &tr.Records[j]
+			continue
+		}
+		if last != nil {
+			st.SeqJump = int(int16(r.Seq - last.Seq))
+			st.TSJump = time.Duration(int32(r.TS-last.TS)) * time.Second / time.Duration(tr.Header.ClockRate)
+		}
+		break
+	}
+
+	return st, true
 }
 
 // TestBrowserMediaTimestampsKeepLipSync records Chromium's camera and
@@ -460,19 +518,16 @@ func TestBrowserMediaTimestampsKeepLipSync(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			late := map[string]time.Duration{}
+			var files []capturePlacement
 			for _, c := range []struct {
 				name string
 				rec  *Recording
 				sid  string
 			}{{"camera", recCam, cam.SID}, {"microphone", recMic, mic.SID}} {
-				p := placeOnCaptureClock(ctx, t, s, c.name, c.rec, c.sid)
-				late[c.name] = p.Late
+				files = append(files, placeOnCaptureClock(ctx, t, s, c.name, c.rec, c.sid))
 			}
 
-			lipSync := late["camera"] - late["microphone"]
-			t.Logf("lip sync: the camera plays %v later than the microphone", lipSync)
-			assert.LessOrEqual(t, lipSync.Abs(), browserLipSyncBound, "lip sync")
+			assertFilesAgree(t, files, browserLipSyncBound)
 		})
 	}
 }
@@ -582,7 +637,7 @@ func TestSenderClockSegments(t *testing.T) {
 	at, ok := clock.atIn(ts, 1)
 	require.True(t, ok)
 	assert.WithinDuration(t, captured, at, time.Millisecond, "the segment's own report")
-	assert.WithinDuration(t, captured.Add(rebase), clock.at(ts), time.Millisecond,
+	assert.WithinDuration(t, captured.Add(rebase), clock.by(ts, clock.reports), time.Millisecond,
 		"the nearest report, from before the gap, maps the frame by the old base")
 
 	clock.cut = (14*time.Second + delay).Microseconds()

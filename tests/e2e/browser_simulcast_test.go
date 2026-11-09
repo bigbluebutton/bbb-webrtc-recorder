@@ -106,25 +106,19 @@ func testBrowserSimulcast(t *testing.T, paused bool) {
 		require.NoError(t, err)
 	}
 
-	late := map[string]time.Duration{}
-	var camFile capturePlacement
+	var files []capturePlacement
 	for _, c := range []struct {
-		name    string
-		rec     *Recording
-		sid     string
-		maxStep time.Duration
-	}{{"camera", recCam, cam.SID, maxVideoStep}, {"microphone", recMic, mic.SID, maxAudioStep}} {
+		name string
+		rec  *Recording
+		sid  string
+	}{{"camera", recCam, cam.SID}, {"microphone", recMic, mic.SID}} {
 		p := placeOnCaptureClock(ctx, t, s, c.name, c.rec, c.sid)
-		late[c.name] = p.Late
-		assertMediaEnd(t, c.name, p.Started, stops[c.rec.SessionID], p.Out.WebM.PTS, c.maxStep)
-		if c.name == "camera" {
-			camFile = p
-		}
+		files = append(files, p)
+		assertMediaEnd(t, c.name, p.Started, stops[c.rec.SessionID], p.Out.WebM.PTS, maxStepOf(p.kind()))
 	}
+	camFile := files[0]
 
-	lipSync := late["camera"] - late["microphone"]
-	t.Logf("lip sync: the camera plays %v later than the microphone", lipSync)
-	assert.LessOrEqual(t, lipSync.Abs(), browserLipSyncBound, "lip sync")
+	assertFilesAgree(t, files, browserLipSyncBound)
 
 	// Key frames tell the layers apart by size. Chromium can scale q down
 	// while it is the only layer sent, so any size but h's is q. Both
@@ -143,27 +137,37 @@ func testBrowserSimulcast(t *testing.T, paused bool) {
 	assert.True(t, down, "camera: no switch from h to q while h was stopped")
 	assert.True(t, up, "camera: no switch from q back to h")
 
-	// On a switch up, LiveKit can forward two encodings of one captured frame:
-	// q's key frame, then h's. Their RTP timestamps are under a ms apart, and
-	// the recorder's PTS is in whole ms, so both can get the same PTS.
-	//
-	// CheckNoDuplicatePTS would fail this file. Here, two blocks may share a
-	// PTS only if they hold the same captured frame. The bound adds a ms for
-	// the camera's sender reports, which can disagree by that much.
-	byPTS := map[int64]pairedBlock{}
+	t.Logf("camera: %d blocks repeat an earlier block's PTS", assertRepeatsHoldOneFrame(t, "camera", camFile))
+}
+
+// assertRepeatsHoldOneFrame checks a simulcast camera's repeated PTS, and
+// returns how many blocks repeat one.
+//
+// On a switch up, LiveKit can forward two encodings of one captured frame:
+// q's key frame, then h's. Their RTP timestamps are under a ms apart, and
+// the recorder's PTS is in whole ms, so both can get the same PTS.
+//
+// CheckNoDuplicatePTS would fail such a file. Here, two blocks may share a
+// PTS only if they hold the same captured frame. The bound adds a ms for
+// the camera's sender reports, which can disagree by that much.
+func assertRepeatsHoldOneFrame(t *testing.T, name string, p capturePlacement) int {
+	t.Helper()
+
+	byPTS := map[int64]int{}
 	repeats := 0
-	for _, b := range camFile.Blocks {
+	for i, b := range p.Blocks {
 		other, ok := byPTS[b.PTS]
 		if !ok {
-			byPTS[b.PTS] = b
+			byPTS[b.PTS] = i
 			continue
 		}
 
 		repeats++
-		apart := camFile.Clock.at(b.Frame.TS).Sub(camFile.Clock.at(other.Frame.TS))
-		assert.Less(t, apart.Abs(), 2*time.Millisecond, "camera: the block at %d ms repeats another frame's PTS", b.PTS)
+		apart := p.captured(i).Sub(p.captured(other))
+		assert.Less(t, apart.Abs(), 2*time.Millisecond, "%s: the block at %d ms repeats another frame's PTS", name, b.PTS)
 	}
-	t.Logf("camera: %d blocks repeat an earlier block's PTS", repeats)
+
+	return repeats
 }
 
 // layerSizes describes layers as quality, size and bitrate, the fields a
