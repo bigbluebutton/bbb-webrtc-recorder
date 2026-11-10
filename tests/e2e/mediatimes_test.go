@@ -264,11 +264,16 @@ func assertMediaEnd(t *testing.T, name string, started events.RecordingMediaStar
 // The first key frame the recorder gets loses a packet. The camera's file
 // then starts at the next key frame, but the flowing event came with the
 // first.
+//
+// Midway, the camera is muted for 3 s, as BBB's away mode does: its file
+// runs on with a gap.
 func TestMediaTimestampsPlaceEachFrame(t *testing.T) {
 	const (
 		cameraFPS     = 15
 		keyframeDelay = 300 * time.Millisecond
-		recordFor     = 6 * time.Second
+		beforeMute    = 2 * time.Second
+		muteFor       = 3 * time.Second
+		afterMute     = 4 * time.Second
 	)
 
 	s := NewStack(t, StackOptions{})
@@ -309,7 +314,11 @@ func TestMediaTimestampsPlaceEachFrame(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	time.Sleep(recordFor)
+	time.Sleep(beforeMute)
+	cam.Pub.SetMuted(true)
+	time.Sleep(muteFor)
+	cam.Pub.SetMuted(false)
+	time.Sleep(afterMute)
 
 	stops := map[string]*events.RecordingStopped{}
 	for _, rec := range []*Recording{recCam, recMic} {
@@ -342,6 +351,13 @@ func TestMediaTimestampsPlaceEachFrame(t *testing.T) {
 		if c.name == "camera" {
 			require.GreaterOrEqual(t, firstSent.Sub(flowingAt), keyframeDelay,
 				"the camera's file must start after the key frame that follows the loss")
+
+			var gap time.Duration
+			for i := 1; i < len(p.Blocks); i++ {
+				gap = max(gap, sends[p.Blocks[i].Frame].Sub(sends[p.Blocks[i-1].Frame]))
+			}
+			t.Logf("camera: the mute left %v between two blocks' sends", gap)
+			assert.Greater(t, gap, maxVideoStep, "the camera's file must hold the mute's gap")
 		}
 	}
 
