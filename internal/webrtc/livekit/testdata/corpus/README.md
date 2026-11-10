@@ -68,7 +68,7 @@ The class groups the seeds that guard one defect, or a few related ones, named i
 | `c24-blackout-9s-seq2160` | 24 | synthetic | generators | A 9 s mid-file blackout, 2160 seqs (< 3000); the frames read in the 700 ms after it are read 300 ms late. The jitter buffer holds and counts the loss, and the PTS must keep the 9.6 s gap |
 | `c24-blackout-9s-seq3240` | 24 | synthetic | generators | The same blackout and late frames at 360 pkt/s, 3240 seqs (>= 3000): the jitter buffer's new-stream path |
 | `c24-resume-4s` | 24 | synthetic | generators | A LiveKit pause and resume: seqs and picture IDs follow on, and only the timestamp, re-based to the wall clock, carries the 4 s. The frames read in the 700 ms after it are read 300 ms late |
-| `c24-start-stall-2500ms` | 24 | synthetic | generators | Every read of the first 2.5 s held to 2.5 s: pins mediaSpanMaxBacklog (1 s), which leaves the start late by the stall less 1 s |
+| `c24-start-stall-2500ms` | 24 | synthetic | generators | Every read of the first 2.5 s held to 2.5 s: pins MediaSpanMaxBacklog (1 s), which leaves the start late by the stall less 1 s |
 | `c24-mic-blackout-9s` | 24 | synthetic | generators | A 9 s mid-file blackout of a microphone, 450 seqs, and the 300 ms after it read in one burst: the PTS must keep the 9.02 s gap |
 | `c24-mic-resume-4s` | 24 | synthetic | generators | A microphone that sends nothing for 4 s: seqs follow on, and only the timestamp carries the 4.02 s. The 300 ms after it is read in one burst. LiveKit's 1 s of silence at a mute is left out; `TestBrowserMidMeetingFilesKeepLipSync` records through it |
 | `baseline-av` (`.video` + `.audio`) | baseline | synthetic | generators | The ordinary path |

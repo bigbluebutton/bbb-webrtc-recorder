@@ -22,6 +22,7 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -745,7 +746,7 @@ func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nack
 	out := ReadOutput(t, rec, cam.SID)
 	webm := out.WebM
 	res.out, res.cam = out, cam
-	res.place, _ = checkPlacement(ctx, t, s.Driver, "camera", rec, frameSends(cam), st, maxVideoStep)
+	res.place, _ = checkPlacement(ctx, t, s.Driver, "camera", rec, frameSends(cam), st, recorder.MaxVideoStep)
 	t.Logf("publisher: wakeup lag %v at most", maxWakeLag(cam))
 
 	// Compared from the first frame written. When netem drops the first

@@ -673,7 +673,7 @@ func checkCut(t *testing.T, s *Stack, plan netemPlan, bo *netemBlackout, mic fol
 		tr := f.p.Out.Trace
 		var reads []string
 		for _, r := range tr.Records {
-			at := traceTime(tr, r.AtUs)
+			at := tr.Header.Time(r.AtUs)
 			if r.T != corpus.RecordRTP || r.Pad || !at.After(bo.On.UpEnd) || !at.Before(bo.Off.UpStart) {
 				continue
 			}
@@ -709,7 +709,7 @@ func checkCut(t *testing.T, s *Stack, plan netemPlan, bo *netemBlackout, mic fol
 
 	var lastRead time.Time
 	for _, r := range micP.Out.Trace.Records {
-		if at := traceTime(micP.Out.Trace, r.AtUs); r.T == corpus.RecordRTP && !r.Pad && at.Before(micNotFlowing) {
+		if at := micP.Out.Trace.Header.Time(r.AtUs); r.T == corpus.RecordRTP && !r.Pad && at.Before(micNotFlowing) {
 			lastRead = at
 		}
 	}
@@ -741,7 +741,7 @@ func checkImpairedStart(t *testing.T, mic capturePlacement, cam map[string]Sende
 	firstRead := mic.Blocks[0].Frame.Read
 	var all, early []time.Duration
 	for i, b := range mic.Blocks {
-		d := traceTime(mic.Out.Trace, b.Frame.Read).Sub(mic.captured(i))
+		d := mic.Out.Trace.Header.Time(b.Frame.Read).Sub(mic.captured(i))
 		all = append(all, d)
 		if b.Frame.Read-firstRead < time.Second.Microseconds() {
 			early = append(early, d)

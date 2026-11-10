@@ -123,7 +123,7 @@ func TestMediaTimestampsTakeOffAStartDelay(t *testing.T) {
 		rec     *Recording
 		track   *PubTrack
 		maxStep time.Duration
-	}{{"camera", recCam, cam, maxVideoStep}, {"microphone", recMic, mic, maxAudioStep}} {
+	}{{"camera", recCam, cam, recorder.MaxVideoStep}, {"microphone", recMic, mic, recorder.MaxAudioStep}} {
 		sends := frameSends(c.track)
 		p, _ := checkPlacement(ctx, t, s.Driver, c.name, c.rec, sends, stops[c.rec.SessionID], c.maxStep)
 		places[c.name] = p

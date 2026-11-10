@@ -448,11 +448,20 @@ const ntpEpochOffset = 2208988800
 // SenderNTP is the 64-bit NTP time of atUs on the sender's clock, as
 // SenderReports writes it.
 func SenderNTP(atUs int64) uint64 {
-	t := senderEpoch.Add(time.Duration(atUs) * time.Microsecond)
+	return NTP(senderEpoch.Add(time.Duration(atUs) * time.Microsecond))
+}
+
+// NTP is t as a 64-bit NTP time.
+func NTP(t time.Time) uint64 {
 	secs := uint64(t.Unix() + ntpEpochOffset)
 	frac := (uint64(t.Nanosecond()) << 32) / uint64(time.Second)
 
 	return secs<<32 | frac
+}
+
+// NTPTime is the time of a 64-bit NTP time.
+func NTPTime(ntp uint64) time.Time {
+	return time.Unix(int64(ntp>>32)-ntpEpochOffset, int64((ntp&0xFFFFFFFF)*uint64(time.Second)>>32))
 }
 
 func isOriginal(r Record) bool {

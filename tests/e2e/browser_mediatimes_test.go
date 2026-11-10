@@ -22,13 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ntpEpoch is the NTP era's start, 1900-01-01, in Unix seconds.
-const ntpEpoch = -2208988800
-
-func ntpTime(ntp uint64) time.Time {
-	return time.Unix(int64(ntp>>32)+ntpEpoch, int64((ntp&0xFFFFFFFF)*uint64(time.Second)>>32))
-}
-
 // senderClock maps a track's RTP timestamps to its sender's capture clock
 // through the sender reports in its trace. LiveKit forwards them with the
 // publisher's NTP time and the downtrack's RTP time.
@@ -85,7 +78,7 @@ func (c senderClock) by(ts uint32, reports []corpus.Record) time.Time {
 		return cmp.Compare(abs64(int64(int32(ts-a.TS))), abs64(int64(int32(ts-b.TS))))
 	})
 
-	return ntpTime(sr.NTP).Add(time.Duration(int32(ts-sr.TS)) * time.Second / time.Duration(c.rate))
+	return corpus.NTPTime(sr.NTP).Add(time.Duration(int32(ts-sr.TS)) * time.Second / time.Duration(c.rate))
 }
 
 func abs64(v int64) int64 {
@@ -293,9 +286,7 @@ func (p capturePlacement) captured(i int) time.Time {
 // after their reads, so its start is at most readToArrival after this one.
 // It can be earlier, so the check against it is one-sided.
 func (p capturePlacement) startByReads() time.Time {
-	// 120 ms and the 1 s floor below are the recorder's unexported
-	// mediaSpanAudioJumpStep and mediaSpanMaxBacklog.
-	window, jumpStep := recorder.MediaSpanWindow, 120*time.Millisecond
+	window, jumpStep := recorder.MediaSpanWindow, recorder.MediaSpanAudioJumpStep
 	if p.Out.Trace.Header.Kind == corpus.KindVideo {
 		jumpStep = 0
 	}
@@ -307,12 +298,12 @@ func (p capturePlacement) startByReads() time.Time {
 		if after >= window || jumpStep > 0 && step >= jumpStep {
 			break
 		}
-		if at := traceTime(p.Out.Trace, p.Blocks[i].Frame.Read).Add(-after); at.Before(start) {
+		if at := p.Out.Trace.Header.Time(p.Blocks[i].Frame.Read).Add(-after); at.Before(start) {
 			start = at
 		}
 	}
 
-	if floor := p.Read.Add(-time.Second); start.Before(floor) {
+	if floor := p.Read.Add(-recorder.MediaSpanMaxBacklog); start.Before(floor) {
 		return floor
 	}
 
@@ -349,7 +340,7 @@ func placeOnCaptureClockCut(ctx context.Context, t *testing.T, s *Stack, name st
 
 	if !cutAfter.IsZero() {
 		for _, r := range out.Trace.Records {
-			if r.T == corpus.RecordRTP && !r.Pad && !traceTime(out.Trace, r.AtUs).Before(cutAfter) {
+			if r.T == corpus.RecordRTP && !r.Pad && !out.Trace.Header.Time(r.AtUs).Before(cutAfter) {
 				clock.cut = r.AtUs
 				break
 			}
@@ -374,9 +365,9 @@ func placeOnCaptureClockCut(ctx context.Context, t *testing.T, s *Stack, name st
 		require.True(t, ok, "%s: no sender report in segment %d, which holds the block at %d ms", name, p.Segments[i], b.PTS)
 	}
 
-	p.Read = traceTime(out.Trace, p.Blocks[0].Frame.Read)
+	p.Read = out.Trace.Header.Time(p.Blocks[0].Frame.Read)
 	byReads := p.startByReads()
-	assert.WithinRange(t, p.Start, p.Read.Add(-time.Second-time.Millisecond), byReads.Add(readToArrival),
+	assert.WithinRange(t, p.Start, p.Read.Add(-recorder.MediaSpanMaxBacklog-time.Millisecond), byReads.Add(readToArrival),
 		"%s: mediaStart against the reads of its start window", name)
 
 	captured := p.captured(0)
@@ -579,10 +570,6 @@ func assertFilesAgree(t *testing.T, files []capturePlacement, bound time.Duratio
 	assert.LessOrEqual(t, slices.Max(lates)-slices.Min(lates), bound, "lip sync across files")
 }
 
-func traceTime(tr *corpus.Trace, atUs int64) time.Time {
-	return time.UnixMicro(tr.Header.EpochUnixUs + atUs)
-}
-
 // isOpusSilence reports whether pay is LiveKit's 80-byte Opus silence
 // frame (OpusSilenceFrame in pkg/sfu/downtrack.go). An encoder's own
 // silence frame can start with the same three bytes, but is shorter.
@@ -606,9 +593,6 @@ func TestSenderClockSegments(t *testing.T) {
 	)
 
 	epoch := time.Unix(1_800_000_000, 0)
-	ntp := func(at time.Time) uint64 {
-		return uint64(at.Unix()-ntpEpoch)<<32 | uint64(at.Nanosecond())<<32/uint64(time.Second)
-	}
 	ticks := func(d time.Duration) uint32 { return uint32(d * rate / time.Second) }
 
 	tr := &corpus.Trace{Header: corpus.NewSyntheticHeader(corpus.KindAudio, 1, "TestSenderClockSegments")}
@@ -618,7 +602,7 @@ func TestSenderClockSegments(t *testing.T) {
 		for c := from; c < to; c += frame {
 			ts := ticks(c + shift)
 			if slices.Contains(reportsAt, c) {
-				tr.Records = append(tr.Records, corpus.Record{T: corpus.RecordSR, AtUs: (c + delay).Microseconds(), TS: ts, NTP: ntp(epoch.Add(c))})
+				tr.Records = append(tr.Records, corpus.Record{T: corpus.RecordSR, AtUs: (c + delay).Microseconds(), TS: ts, NTP: corpus.NTP(epoch.Add(c))})
 			}
 			tr.Records = append(tr.Records, corpus.Record{T: corpus.RecordRTP, AtUs: (c + delay).Microseconds(), Seq: seq, TS: ts, PLen: 1})
 			seq++

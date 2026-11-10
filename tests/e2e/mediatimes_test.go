@@ -13,6 +13,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -93,18 +94,12 @@ func medianMs(ds []time.Duration) float64 {
 	return float64(s[len(s)/2]) / float64(time.Millisecond)
 }
 
-// The recorder's caps on the last frame's duration in mediaEnd.
-const (
-	maxVideoStep = time.Second
-	maxAudioStep = 120 * time.Millisecond
-)
-
 func maxStepOf(kind corpus.Kind) time.Duration {
 	if kind == corpus.KindVideo {
-		return maxVideoStep
+		return recorder.MaxVideoStep
 	}
 
-	return maxAudioStep
+	return recorder.MaxAudioStep
 }
 
 const (
@@ -335,7 +330,7 @@ func TestMediaTimestampsPlaceEachFrame(t *testing.T) {
 		rec     *Recording
 		track   *PubTrack
 		maxStep time.Duration
-	}{{"camera", recCam, cam, maxVideoStep}, {"microphone", recMic, mic, maxAudioStep}} {
+	}{{"camera", recCam, cam, recorder.MaxVideoStep}, {"microphone", recMic, mic, recorder.MaxAudioStep}} {
 		sends := frameSends(c.track)
 		p, ok := checkPlacement(ctx, t, s.Driver, c.name, c.rec, sends, stops[c.rec.SessionID], c.maxStep)
 		places[c.name] = p
@@ -358,7 +353,7 @@ func TestMediaTimestampsPlaceEachFrame(t *testing.T) {
 				gap = max(gap, sends[p.Blocks[i].Frame].Sub(sends[p.Blocks[i-1].Frame]))
 			}
 			t.Logf("camera: the mute left %v between two blocks' sends", gap)
-			assert.Greater(t, gap, maxVideoStep, "the camera's file must hold the mute's gap")
+			assert.Greater(t, gap, recorder.MaxVideoStep, "the camera's file must hold the mute's gap")
 		}
 	}
 

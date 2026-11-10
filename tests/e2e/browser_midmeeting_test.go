@@ -21,7 +21,7 @@ func srSpread(c senderClock) time.Duration {
 	first := c.reports[0]
 	var lo, hi time.Duration
 	for i, r := range c.reports {
-		off := ntpTime(r.NTP).Sub(ntpTime(first.NTP)) -
+		off := corpus.NTPTime(r.NTP).Sub(corpus.NTPTime(first.NTP)) -
 			time.Duration(int32(r.TS-first.TS))*time.Second/time.Duration(c.rate)
 		if i == 0 || off < lo {
 			lo = off
@@ -42,7 +42,7 @@ func readGap(tr *corpus.Trace, until time.Time) (gap time.Duration, start, end t
 		if r.T != corpus.RecordRTP || r.Pad {
 			continue
 		}
-		at := traceTime(tr, r.AtUs)
+		at := tr.Header.Time(r.AtUs)
 		if !at.Before(until) {
 			break
 		}
@@ -219,7 +219,7 @@ func TestBrowserMidMeetingFilesKeepLipSync(t *testing.T) {
 	gap, gapStart, gapEnd := readGap(mic1Trace, longMuteAt)
 	silence := 0
 	for _, r := range mic1Trace.Records {
-		at := traceTime(mic1Trace, r.AtUs)
+		at := mic1Trace.Header.Time(r.AtUs)
 		if r.T == corpus.RecordRTP && !r.Pad && !at.Before(muteAt) && !at.After(gapStart) && isOpusSilence(r.Pay) {
 			silence++
 		}
@@ -232,7 +232,7 @@ func TestBrowserMidMeetingFilesKeepLipSync(t *testing.T) {
 	// sender report built after it. Until Chromium's next report, LiveKit
 	// keeps extrapolating the reports from before the mute.
 	assert.True(t, slices.ContainsFunc(mic1Trace.Records, func(r corpus.Record) bool {
-		at := traceTime(mic1Trace, r.AtUs)
+		at := mic1Trace.Header.Time(r.AtUs)
 		return r.T == corpus.RecordSR && !at.Before(unmuteDone.Add(lkReportAge)) && at.Before(longMuteAt)
 	}), "mic1: no sender report %v after the unmute", lkReportAge)
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/google/uuid"
 	"github.com/livekit/protocol/livekit"
 	"github.com/stretchr/testify/assert"
@@ -122,7 +123,7 @@ func TestSimulcastMediaTimestampsPlaceEachFrame(t *testing.T) {
 		rec     *Recording
 		sends   map[int]time.Time
 		maxStep time.Duration
-	}{{"camera", recCam, camSends, maxVideoStep}, {"microphone", recMic, frameSends(mic), maxAudioStep}} {
+	}{{"camera", recCam, camSends, recorder.MaxVideoStep}, {"microphone", recMic, frameSends(mic), recorder.MaxAudioStep}} {
 		p, _ := checkPlacement(ctx, t, s.Driver, c.name, c.rec, c.sends, stops[c.rec.SessionID], c.maxStep)
 		places[c.name] = p
 	}

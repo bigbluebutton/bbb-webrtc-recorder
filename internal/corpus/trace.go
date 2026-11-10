@@ -5,6 +5,7 @@ package corpus
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/pion/rtp"
 )
@@ -66,6 +67,9 @@ type Header struct {
 	Seed        *int64     `json:"seed,omitempty"`
 	Note        string     `json:"note,omitempty"`
 }
+
+// Time is the wall-clock time of atUs, through EpochUnixUs.
+func (h Header) Time(atUs int64) time.Time { return time.UnixMicro(h.EpochUnixUs + atUs) }
 
 // Record is one packet read from the track, a sender report, a reader
 // event, or the end of the stream. A sender report carries T, AtUs, NTP and

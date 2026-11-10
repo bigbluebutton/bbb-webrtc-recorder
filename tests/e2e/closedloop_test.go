@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -66,7 +67,7 @@ func TestUnrepairedLossRequestsKeyframe(t *testing.T) {
 				outageStep int64
 			)
 			if webm.Blocks > 0 {
-				p, _ = checkPlacement(t.Context(), t, r.Stack.Driver, "camera", r.Rec, frameSends(r.Cam), r.Stopped, maxVideoStep)
+				p, _ = checkPlacement(t.Context(), t, r.Stack.Driver, "camera", r.Rec, frameSends(r.Cam), r.Stopped, recorder.MaxVideoStep)
 				outage, outageStep = assertLossOutage(t, r, p)
 			}
 

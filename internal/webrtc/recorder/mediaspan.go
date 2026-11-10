@@ -21,17 +21,17 @@ const (
 	// Opus frames are 20 ms apart. A gap that MediaClock inserts moves the
 	// PTS ahead of the arrivals, and would move the start back by the gap.
 	// So a longer step between a microphone's frames settles its start.
-	mediaSpanAudioJumpStep = 120 * time.Millisecond
+	MediaSpanAudioJumpStep = 120 * time.Millisecond
 	// The start moves back at most this far from the first frame's arrival.
 	// bbb-webrtc-sfu ignores a start more than PREVIOUS_FILE_TOLERANCE_MS
 	// (1 s) before its request, and the first frame arrives after that
 	// request: change both together. So a track whose first frames stall
 	// over 1 s starts late by the stall less 1 s.
-	mediaSpanMaxBacklog = time.Second
+	MediaSpanMaxBacklog = time.Second
 	// The step before the last frame stands for its duration, up to these.
 	// Opus packets are 120 ms at most.
-	maxAudioStep = 120 * time.Millisecond
-	maxVideoStep = time.Second
+	MaxAudioStep = 120 * time.Millisecond
+	MaxVideoStep = time.Second
 	// Frames whose arrivals are kept until the start settles.
 	mediaSpanMaxArrivals = 256
 )
@@ -42,13 +42,13 @@ type spanRules struct {
 }
 
 var (
-	audioSpan = spanRules{jumpStep: mediaSpanAudioJumpStep, maxStep: maxAudioStep}
+	audioSpan = spanRules{jumpStep: MediaSpanAudioJumpStep, maxStep: MaxAudioStep}
 	// Video has no jump step; a screen share gets a camera's rules. A PTS
 	// step longer than its arrival step means the frames before it were
 	// late, or the PTS after it ran ahead. Moving the start back then places
 	// every later frame where it arrived. A step of elapsed time has an
 	// equal arrival gap, so it does not move the start.
-	videoSpan = spanRules{maxStep: maxVideoStep}
+	videoSpan = spanRules{maxStep: MaxVideoStep}
 )
 
 // mediaSpan finds where the media a recorder writes sits on the wall clock.
@@ -126,7 +126,7 @@ func (s *mediaSpan) wrote(ts uint32, pts, step time.Duration, r spanRules) {
 		s.order = nil
 	case known:
 		start := at.Add(-(pts - s.firstPTS))
-		if floor := s.first.Add(-mediaSpanMaxBacklog); start.Before(floor) {
+		if floor := s.first.Add(-MediaSpanMaxBacklog); start.Before(floor) {
 			start = floor
 		}
 

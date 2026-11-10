@@ -29,6 +29,6 @@
   },
   "mediaStartUs": 1500000,
   "residuals": [
-    "mediaStartUs: ideal 333 (the frames from 75 on are on time; with ms PTS the least delayed, frame 76, is 333 us late), pinned 1500000: the start moves back at most mediaSpanMaxBacklog (1 s) from the first frame's arrival, as bbb-webrtc-sfu ignores a start more than 1 s before its request"
+    "mediaStartUs: ideal 333 (the frames from 75 on are on time; with ms PTS the least delayed, frame 76, is 333 us late), pinned 1500000: the start moves back at most MediaSpanMaxBacklog (1 s) from the first frame's arrival, as bbb-webrtc-sfu ignores a start more than 1 s before its request"
   ]
 }
