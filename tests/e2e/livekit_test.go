@@ -24,13 +24,18 @@ const (
 	devAPISecret = "secret"
 )
 
+// liveKitICETCP offers ICE over TCP: a TCP port, and the fallback to it.
+// BBB's packaged livekit.yaml turns both off, so the stacks do too. Under
+// netem, media on TCP would see loss as delay.
+const liveKitICETCP = false
+
 // LiveKit is a livekit-server on free ports, bound to loopback unless its
 // stack's ServerNet says otherwise.
 type LiveKit struct {
 	Host       string // the address the test reaches it on
 	URL        string // ws://<Host>:<HTTPPort>
 	HTTPPort   int
-	TCPPort    int // ICE/TCP
+	TCPPort    int // ICE/TCP; 0 unless liveKitICETCP
 	UDPPort    int // ICE/UDP, one port muxing every peer connection
 	APIKey     string
 	APISecret  string
@@ -65,10 +70,12 @@ func startLiveKit(t *testing.T, dir string, srv *ServerNet, edit func(cfg map[st
 	lk := &LiveKit{
 		Host:      srv.host(),
 		HTTPPort:  FreePort(t, "tcp"),
-		TCPPort:   FreePort(t, "tcp"),
 		UDPPort:   FreePort(t, "udp"),
 		APIKey:    devAPIKey,
 		APISecret: devAPISecret,
+	}
+	if liveKitICETCP {
+		lk.TCPPort = FreePort(t, "tcp")
 	}
 	lk.URL = fmt.Sprintf("ws://%s:%d", lk.Host, lk.HTTPPort)
 
@@ -78,6 +85,7 @@ func startLiveKit(t *testing.T, dir string, srv *ServerNet, edit func(cfg map[st
 		"rtc": map[string]any{
 			"udp_port":                  lk.UDPPort,
 			"tcp_port":                  lk.TCPPort,
+			"allow_tcp_fallback":        liveKitICETCP,
 			"use_external_ip":           false,
 			"enable_loopback_candidate": true,
 			// The server's candidates are on lo only. A client may pair them
