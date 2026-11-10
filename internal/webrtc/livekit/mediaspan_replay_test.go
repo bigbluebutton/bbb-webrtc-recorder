@@ -6,15 +6,15 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 )
 
-// PTS are whole ms, so the span can start up to 1 ms away from its
-// expected start.
+// PTS are whole ms: the span's start can be 1 ms off, and its end 2 ms.
 const mediaSpanTolerance = time.Millisecond
 
 // mediaSpanViolations checks the recorder's media span against a replay of
-// one trace. The span must cover the file's media, and start at startUs
-// when set.
+// one trace. The span must last the file's media and its capped last frame,
+// and start at startUs when set.
 //
 // Otherwise a VP8 span starts at oracle.Placement's IdealStartUs. An Opus
 // span starts at the first frame's read, less the lag oracle's backlog. A
@@ -42,9 +42,16 @@ func mediaSpanViolations(r replayResult, traces []*corpus.Trace, startUs *float6
 	}
 
 	var v []string
-	media := time.Duration(track.LastPTS-track.FirstPTS) * time.Millisecond
-	if d := r.span.End.Sub(r.span.Start); d < media || d > media+time.Second {
-		v = append(v, fmt.Sprintf("media span lasts %v, the file's media %v", d, media))
+	length := time.Duration(track.LastPTS-track.FirstPTS) * time.Millisecond
+	if n := len(track.PTS); n > 1 {
+		maxStep := recorder.MaxVideoStep
+		if track.Codec == oracle.CodecOpus {
+			maxStep = recorder.MaxAudioStep
+		}
+		length += min(time.Duration(track.PTS[n-1]-track.PTS[n-2])*time.Millisecond, maxStep)
+	}
+	if d := r.span.End.Sub(r.span.Start); (d - length).Abs() > 2*mediaSpanTolerance {
+		v = append(v, fmt.Sprintf("media span lasts %v, want the file's media and its last frame, %v", d, length))
 	}
 
 	var firstUs float64
