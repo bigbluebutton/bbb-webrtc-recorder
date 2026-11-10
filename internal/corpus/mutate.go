@@ -194,18 +194,198 @@ func Delay(fromUs, toUs, delayUs int64) Op {
 			return nil, fmt.Errorf("invalid delay of %d us over [%d, %d) us", delayUs, fromUs, toUs)
 		}
 
-		out := slices.Clone(recs)
-		var last int64
-		for i := range out {
-			if out[i].AtUs >= fromUs && out[i].AtUs < toUs {
-				out[i].AtUs += delayUs
+		return delayEach(recs, func(r Record) int64 {
+			if r.AtUs >= fromUs && r.AtUs < toUs {
+				return delayUs
 			}
 
-			out[i].AtUs = max(out[i].AtUs, last)
-			last = out[i].AtUs
+			return 0
+		}), nil
+	}
+}
+
+// delayEach reads each record by(record) later, then drains as in Delay.
+func delayEach(recs []Record, by func(Record) int64) []Record {
+	out := slices.Clone(recs)
+	var last int64
+	for i := range out {
+		out[i].AtUs = max(out[i].AtUs+by(out[i]), last)
+		last = out[i].AtUs
+	}
+
+	return out
+}
+
+// Blackout removes every original packet read between fromUs and toUs, as
+// a path that carries nothing then would. Copies read then, such as RTX,
+// stay. The gaps in sequence number, picture ID and timestamp are what the
+// sender sent meanwhile.
+func Blackout(fromUs, toUs int64) Op {
+	return func(recs []Record) ([]Record, error) {
+		if fromUs < 0 || toUs <= fromUs {
+			return nil, fmt.Errorf("invalid blackout [%d, %d) us", fromUs, toUs)
+		}
+
+		return slices.DeleteFunc(slices.Clone(recs), func(r Record) bool {
+			return isOriginal(r) && r.AtUs >= fromUs && r.AtUs < toUs
+		}), nil
+	}
+}
+
+// Stall models a receiver that reads nothing between fromUs and toUs. It
+// then reads what came meanwhile in one burst: every record of the span is
+// read at toUs, in the same order.
+func Stall(fromUs, toUs int64) Op {
+	return func(recs []Record) ([]Record, error) {
+		if fromUs < 0 || toUs <= fromUs {
+			return nil, fmt.Errorf("invalid stall [%d, %d) us", fromUs, toUs)
+		}
+
+		out := slices.Clone(recs)
+		for i := range out {
+			if out[i].AtUs >= fromUs && out[i].AtUs < toUs {
+				out[i].AtUs = toUs
+			}
 		}
 
 		return out, nil
+	}
+}
+
+// Pause models a camera that sends no frame between fromUs and toUs. An
+// encoder that skips frames does this, and so does LiveKit across a pause
+// and resume.
+//
+// It removes the frames whose first original packet is read then, copies
+// included. Later sequence numbers and VP8 picture IDs follow on with no
+// gap, and the timestamps keep the sender's clock. Every payload except
+// padding must use the VP8Payload layout, with a 15-bit picture ID.
+func Pause(fromUs, toUs int64) Op { return pause(fromUs, toUs, true) }
+
+// PauseOpus is Pause for an Opus track, which has no picture ID.
+func PauseOpus(fromUs, toUs int64) Op { return pause(fromUs, toUs, false) }
+
+func pause(fromUs, toUs int64, vp8 bool) Op {
+	return func(recs []Record) ([]Record, error) {
+		if fromUs < 0 || toUs <= fromUs {
+			return nil, fmt.Errorf("invalid pause [%d, %d) us", fromUs, toUs)
+		}
+
+		// Sequence numbers and picture IDs are unwrapped in read order, so
+		// a record counts the removed values before it across a wrap.
+		var (
+			cut     = map[uint32]bool{}
+			seen    = map[uint32]bool{}
+			seqs    = make([]int64, len(recs))
+			pics    = make([]int64, len(recs))
+			seq     unwrapper
+			pic     unwrapper
+			cutSeqs []int64
+			cutPics []int64
+		)
+
+		for i, r := range recs {
+			if r.T != RecordRTP {
+				continue
+			}
+
+			seqs[i] = seq.next(int64(r.Seq), 1<<16)
+			if vp8 && !r.Pad {
+				id, bits := VP8PictureID(r.Pay)
+				if bits != 15 {
+					return nil, fmt.Errorf("record %d: no 15-bit VP8 picture ID", i)
+				}
+
+				pics[i] = pic.next(int64(id), 1<<15)
+			}
+
+			if isOriginal(r) && !seen[r.TS] {
+				seen[r.TS] = true
+				cut[r.TS] = r.AtUs >= fromUs && r.AtUs < toUs
+				if cut[r.TS] {
+					cutPics = append(cutPics, pics[i])
+				}
+			}
+
+			if cut[r.TS] && isOriginal(r) {
+				cutSeqs = append(cutSeqs, seqs[i])
+			}
+		}
+
+		slices.Sort(cutSeqs)
+		slices.Sort(cutPics)
+		before := func(cut []int64, v int64) int {
+			n, _ := slices.BinarySearch(cut, v)
+
+			return n
+		}
+
+		out := make([]Record, 0, len(recs))
+		for i, r := range recs {
+			if r.T != RecordRTP {
+				out = append(out, r)
+
+				continue
+			}
+
+			if cut[r.TS] {
+				continue
+			}
+
+			r.Seq -= uint16(before(cutSeqs, seqs[i]))
+			if vp8 && !r.Pad {
+				r.Pay = slices.Clone(r.Pay)
+				SetVP8PictureID(r.Pay, uint16(pics[i]-int64(before(cutPics, pics[i]))))
+			}
+
+			out = append(out, r)
+		}
+
+		return out, nil
+	}
+}
+
+// unwrapper extends a counter that wraps at some modulus, in read order.
+type unwrapper struct {
+	started bool
+	last    int64
+}
+
+func (u *unwrapper) next(v, mod int64) int64 {
+	if !u.started {
+		u.started, u.last = true, v
+
+		return v
+	}
+
+	d := (v - u.last%mod + mod) % mod
+	if d >= mod/2 {
+		d -= mod
+	}
+
+	u.last += d
+
+	return u.last
+}
+
+// DelayFrames models frames that each wait their own time, as a camera's
+// first frames do while its encoder starts. Every packet of the frame at
+// timestamp ts is read delays[ts] µs later, then drains as in Delay.
+func DelayFrames(delays map[uint32]int64) Op {
+	return func(recs []Record) ([]Record, error) {
+		for ts, d := range delays {
+			if d < 0 {
+				return nil, fmt.Errorf("negative delay of %d us for timestamp %d", d, ts)
+			}
+		}
+
+		return delayEach(recs, func(r Record) int64 {
+			if r.T != RecordRTP {
+				return 0
+			}
+
+			return delays[r.TS]
+		}), nil
 	}
 }
 
@@ -268,11 +448,20 @@ const ntpEpochOffset = 2208988800
 // SenderNTP is the 64-bit NTP time of atUs on the sender's clock, as
 // SenderReports writes it.
 func SenderNTP(atUs int64) uint64 {
-	t := senderEpoch.Add(time.Duration(atUs) * time.Microsecond)
+	return NTP(senderEpoch.Add(time.Duration(atUs) * time.Microsecond))
+}
+
+// NTP is t as a 64-bit NTP time.
+func NTP(t time.Time) uint64 {
 	secs := uint64(t.Unix() + ntpEpochOffset)
 	frac := (uint64(t.Nanosecond()) << 32) / uint64(time.Second)
 
 	return secs<<32 | frac
+}
+
+// NTPTime is the time of a 64-bit NTP time.
+func NTPTime(ntp uint64) time.Time {
+	return time.Unix(int64(ntp>>32)-ntpEpochOffset, int64((ntp&0xFFFFFFFF)*uint64(time.Second)>>32))
 }
 
 func isOriginal(r Record) bool {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,6 +32,16 @@ type Output struct {
 	// PLIs counts the trace's pli records by reason.
 	PLIs map[string]int
 	EOF  *corpus.Record
+}
+
+// assertTraceEnded checks that out's trace ends with an eof record that
+// reports no truncation and no dropped records.
+func assertTraceEnded(t *testing.T, name string, out *Output) {
+	t.Helper()
+
+	if assert.NotNil(t, out.EOF, "%s: trace eof", name) {
+		assert.Empty(t, out.EOF.Reason, "%s: trace truncated or dropped records", name)
+	}
 }
 
 // ReadOutput reads rec's WebM with the oracle and the trace the capture

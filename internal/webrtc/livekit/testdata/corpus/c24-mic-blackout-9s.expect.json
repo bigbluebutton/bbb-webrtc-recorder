@@ -1,0 +1,27 @@
+{
+  "v": 1,
+  "class": "24",
+  "intent": "A 9 s mid-file blackout of a microphone: 450 sequence numbers, under the jitter buffer's 3000. The buffer counts the 450 lost and releases frame 600; an Opus track requests no key frame. The frames sent in the 300 ms after it are read in one burst at its end, which the lag oracle maps back. Every frame read is written, and frame 600's PTS must keep the 9.02 s gap after frame 149. RED: a writer that takes an Opus step over 1 s for one 20 ms frame plays every frame after the blackout 9 s early (maxAudioLagMs). RED: a writer that takes the arrival gap for an Opus step over 1 s plays every frame after the blackout 300 ms late (maxAudioLagMs).",
+  "traces": [
+    "c24-mic-blackout-9s.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 350,
+    "max": 350
+  },
+  "packetsLostMin": 450,
+  "packetsLostMax": 450,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "maxAudioLagMs": 1
+  }
+}

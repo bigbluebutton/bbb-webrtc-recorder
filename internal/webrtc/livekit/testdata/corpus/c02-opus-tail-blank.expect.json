@@ -6,7 +6,8 @@
     "c02-opus-tail-blank.ndjson.gz"
   ],
   "written": {
-    "min": 251
+    "min": 251,
+    "max": 251
   },
   "packetsWritten": {
     "min": 252,
@@ -16,6 +17,14 @@
   "webm": {
     "noDupPTS": true,
     "monotonic": true,
-    "minAudioFrames": 251
-  }
+    "minAudioFrames": 251,
+    "audioMaxGapMs": {
+      "min": 41,
+      "max": 41
+    }
+  },
+  "mediaStartUs": 0,
+  "residuals": [
+    "mediaStartUs: frame 0, read on time at 0. The lag oracle cannot place this track: it needs one block per frame, and the skipped +1-tick frame leaves 252 frames read and 251 blocks. So only the start, the largest step, the exact count, PTS order and the media span's length are checked"
+  ]
 }

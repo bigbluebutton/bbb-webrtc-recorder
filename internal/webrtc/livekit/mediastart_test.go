@@ -265,23 +265,42 @@ func TestAdapterReportsTheStartAHeldFrameMoves(t *testing.T) {
 // A camera that captures at 5 fps sends frames 200 ms apart. Chromium sends
 // its first ones late, and the frames that caught up set the start.
 func TestAdapterReportsALowFrameRateCameraStart(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		h := newMediaStartHarness(t, videoInfo)
-		reads := videoReads(300*time.Millisecond, 5, 30)
-		for i, late := range []time.Duration{321, 222, 61} {
-			for j := range 3 {
-				reads[3*i+j].at += late * time.Millisecond
-			}
+	fps5 := videoReads(300*time.Millisecond, 5, 30)
+	for i, late := range []time.Duration{321, 222, 61} {
+		for j := range 3 {
+			fps5[3*i+j].at += late * time.Millisecond
 		}
+	}
 
-		src := newFakeTrack(reads)
-		h.run(src, videoInfo)
+	// At 30 kbps, Chromium sends frames 0, 1 and 3 about 450 ms late. Then
+	// it sends none until frame 10, on time at PTS 1001. So a 1 s window
+	// settles before the frame that sets the start.
+	kbps30, err := corpus.GenerateVP8(corpus.VP8Options{FPS: 9.99, Duration: 4 * time.Second, StartSeq: 1000, StartTS: 90000})
+	require.NoError(t, err)
+	kbps30.Records, err = corpus.Apply(kbps30.Records,
+		corpus.Pause(150000, 250000), corpus.Pause(350000, 1e6), corpus.Delay(0, 1e6, 450000))
+	require.NoError(t, err)
+	kbps30Reads, _ := traceReads(kbps30)
 
-		events, starts := h.reported()
-		assert.Equal(t, []string{"flowing", "mediaStart"}, events)
-		require.Len(t, starts, 1)
-		assert.Equal(t, src.start.Add(300*time.Millisecond), starts[0])
-	})
+	for _, c := range []struct {
+		name  string
+		reads []trackRead
+		start time.Duration
+	}{{"5 fps", fps5, 300 * time.Millisecond}, {"30 kbps", kbps30Reads, 0}} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := newMediaStartHarness(t, videoInfo)
+				src := newFakeTrack(c.reads)
+				h.run(src, videoInfo)
+
+				events, starts := h.reported()
+				assert.Equal(t, []string{"flowing", "mediaStart"}, events)
+				require.Len(t, starts, 1)
+				// PTS are whole ms, the reads are not.
+				assert.WithinDuration(t, src.start.Add(c.start), starts[0], time.Millisecond)
+			})
+		})
+	}
 }
 
 // A camera pauses 500 ms in. Like the paused microphone of

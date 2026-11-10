@@ -4,9 +4,11 @@ package e2e
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -19,7 +21,8 @@ const reasonPacketDrop = "packet_drop"
 // TestUnrepairedLossRequestsKeyframe withholds one packet from the middle of a
 // camera frame. LiveKit cannot repair it, so the recorder must ask for a key
 // frame early, by its sequence gap, not when the jitter buffer gives up on the
-// frame.
+// frame. The file skips each frame up to that key frame. Its PTS keep the
+// gap, so every frame still plays where it was sent.
 func TestUnrepairedLossRequestsKeyframe(t *testing.T) {
 	for _, sc := range []lossScenario{
 		{
@@ -55,6 +58,19 @@ func TestUnrepairedLossRequestsKeyframe(t *testing.T) {
 
 			assertResponseKey(t, r, gap)
 
+			// With no WebM, skip the file's checks: they would stop the test
+			// before the log below, whose key-frame requests show whether
+			// the recorder looped. runLoss already reports the missing file.
+			var (
+				p          placement
+				outage     int
+				outageStep int64
+			)
+			if webm.Blocks > 0 {
+				p, _ = checkPlacement(t.Context(), t, r.Stack.Driver, "camera", r.Rec, frameSends(r.Cam), r.Stopped, recorder.MaxVideoStep)
+				outage, outageStep = assertLossOutage(t, r, p)
+			}
+
 			lossPTS := l.ptsOf(webm, gap.TS)
 			after := framesAfter(webm, lossPTS)
 			minAfter := sc.minFrames(r.StopSent.Sub(r.DropAt) - sc.lossOutage())
@@ -63,9 +79,11 @@ func TestUnrepairedLossRequestsKeyframe(t *testing.T) {
 			assert.NoError(t, webm.CheckNoDuplicatePTS())
 
 			t.Logf("closedloop %s: requestAfterRevealMs=%.1f bound=[%.0f,%.0f) requests=%v "+
-				"publisherPLIsAfterLoss=%d framesAfterLoss=%d min=%d blocks=%d vp8Keyframes=%d maxGapMs=%d",
+				"publisherPLIsAfterLoss=%d framesAfterLoss=%d min=%d blocks=%d vp8Keyframes=%d maxGapMs=%d "+
+				"outageFrames=%d outageStepMs=%d placement=%.1fms median, %v worst wakeLag=%v",
 				sc.name, ms(delay), ms(gapRequestDelay), ms(sc.requestBound()), pliReasons(l),
-				pubPLIs, after, minAfter, webm.Blocks, webm.VP8Keyframes, webm.MaxGapMs)
+				pubPLIs, after, minAfter, webm.Blocks, webm.VP8Keyframes, webm.MaxGapMs,
+				outage, outageStep, p.Median, p.Worst, maxWakeLag(r.Cam))
 		})
 	}
 }
@@ -139,6 +157,35 @@ func assertResponseKey(t *testing.T, r *lossRun, gap traceGap) {
 	pts := l.ptsOf(webm, key.TS)
 	assert.True(t, hasPTS(webm, pts), "the key frame read %.1f ms after the loss, PTS %d, is not in the WebM",
 		float64(key.AtUs-gap.RevealUs)/1000, pts)
+}
+
+// assertLossOutage checks the frames the loss cost: the lossy one and each
+// delta frame after it, up to the PLI's key frame. That key frame must be the
+// first block after them. It returns the frames lost and the PTS step across
+// them, in ms.
+func assertLossOutage(t *testing.T, r *lossRun, p placement) (int, int64) {
+	t.Helper()
+
+	key, ok := pliKeyAfter(r.Cam, r.Dropped.At)
+	if !ok {
+		return 0, 0 // assertResponseKey reports the missing key frame
+	}
+
+	// The request follows the loss by gapRequestDelay or more, at least a
+	// frame interval at both rates. So a delta frame goes out between the
+	// lossy frame and the key frame, and the writer must drop it too.
+	lost := key.Frame - r.Dropped.Frame
+	assert.GreaterOrEqual(t, lost, 2, "frames from the lossy one to the PLI key frame")
+
+	i := slices.IndexFunc(p.Blocks, func(b taggedBlock) bool { return b.Frame >= r.Dropped.Frame })
+	if !assert.Positive(t, i, "blocks on both sides of the loss") {
+		return lost, 0
+	}
+
+	assert.Equal(t, key.Frame, p.Blocks[i].Frame, "the first block after the loss: frames %d to %d were lost",
+		r.Dropped.Frame, key.Frame-1)
+
+	return lost, p.Blocks[i].PTS - p.Blocks[i-1].PTS
 }
 
 func pliReasons(l *traceLoss) []string {

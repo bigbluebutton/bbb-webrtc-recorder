@@ -41,14 +41,9 @@ func testBrowserMic(t *testing.T, freeze, clockSync bool) {
 
 	const (
 		recordFor = 45 * time.Second
-		// Chromium sends a sender report every 2.5 to 7.5 s, and LiveKit
-		// forwards the latest every 3 s. The reports can take two of
-		// Chromium's intervals and a forwarding interval to show the rate,
-		// and the lag grows until they do.
-		onsetLag = 18 * time.Second
-		// The newest report can be one of Chromium's intervals and a
-		// forwarding interval old.
-		reportAge = 10*time.Second + 500*time.Millisecond
+		// The reports can take two of Chromium's intervals and a forwarding
+		// interval to show the rate, and the lag grows until they do.
+		onsetLag = 2*chromiumReportIntervalMax + lkReportInterval
 	)
 
 	// 4.5 % of the time, the worst rate a production sender showed.
@@ -59,7 +54,7 @@ func testBrowserMic(t *testing.T, freeze, clockSync bool) {
 	}})
 	b := s.NewBrowser()
 	room := "e2e-browser-mic-" + uuid.NewString()[:8]
-	mic := b.Join(room, "e2e-browser").PublishMic(MicOptions{})
+	mic := b.Join(room, "e2e-browser").PublishBBBMic("microphone")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -68,12 +63,9 @@ func testBrowserMic(t *testing.T, freeze, clockSync bool) {
 		b.FreezeCapture(freezeFor)
 	}
 
-	rec, err := s.Driver.StartRecording(ctx, room, mic.SID)
-	require.NoError(t, err)
-	_, err = s.Driver.WaitRtpStatus(ctx, rec.From, rec.SessionID, "flowing")
-	require.NoError(t, err)
+	rec := record(ctx, t, s, room, mic.SID)
 	time.Sleep(recordFor)
-	_, err = s.Driver.StopAndWait(ctx, rec.SessionID)
+	_, err := s.Driver.StopAndWait(ctx, rec.SessionID)
 	require.NoError(t, err)
 
 	// A burst is the most media lost at once.
@@ -126,7 +118,7 @@ func testBrowserMic(t *testing.T, freeze, clockSync bool) {
 	}
 
 	assert.Positive(t, mc.SenderReports, "LiveKit forwards Chromium's sender reports")
-	assert.InDelta(t, -lost, float64(mc.ReportedDriftMs), deficit(reportAge)+burst+jitter, "drift by Chromium's sender reports")
+	assert.InDelta(t, -lost, float64(mc.ReportedDriftMs), deficit(lkReportAge)+burst+jitter, "drift by Chromium's sender reports")
 
 	if !clockSync {
 		// Chromium's timestamps stay contiguous: one 20 ms frame apart.

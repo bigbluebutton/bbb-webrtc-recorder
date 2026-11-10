@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "class": "24",
+  "intent": "A receiver that reads nothing of a camera for the first 2.5 s, then the backlog at once. The media start moves back at most 1 s from the first frame's arrival. So the start is 1.5 s, late by the stall less 1 s, and frame 0 plays 1 s before its read. RED: without that limit the start moves back to 501 ms; with a 500 ms limit it is 2000 ms; a start that never moves back stays at 2500 ms.",
+  "traces": [
+    "c24-start-stall-2500ms.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 240,
+    "max": 240
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 4,
+    "videoDropped": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "mediaStartUs": 1500000,
+  "residuals": [
+    "mediaStartUs: ideal 333 (the frames from 75 on are on time; with ms PTS the least delayed, frame 76, is 333 us late), pinned 1500000: the start moves back at most MediaSpanMaxBacklog (1 s) from the first frame's arrival, as bbb-webrtc-sfu ignores a start more than 1 s before its request"
+  ]
+}

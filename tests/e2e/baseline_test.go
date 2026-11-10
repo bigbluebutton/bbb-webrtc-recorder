@@ -158,9 +158,7 @@ func TestBaselineRecording(t *testing.T) {
 			assert.Equal(t, corpus.ProvenanceCapture, h.Provenance)
 			assert.Equal(t, c.track.SID, h.TrackID)
 			assert.Equal(t, c.kind, h.Kind)
-			if assert.NotNil(t, out.EOF, "trace eof") {
-				assert.Empty(t, out.EOF.Reason, "trace truncated or dropped records")
-			}
+			assertTraceEnded(t, c.name, out)
 			assert.LessOrEqual(t, webm.Blocks, out.ReadFrames, "frames written but never read")
 			assert.LessOrEqual(t, out.ReadFrames-webm.Blocks, stopTailFrames, "frames read but not written")
 

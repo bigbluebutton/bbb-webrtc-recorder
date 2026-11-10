@@ -7,6 +7,7 @@ import (
 
 	"github.com/at-wat/ebml-go/mkvcore"
 	"github.com/at-wat/ebml-go/webm"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/pion/rtp"
@@ -129,6 +130,37 @@ func TestSummarizeWebMVideoKeyAndDeltaFrames(t *testing.T) {
 	assert.Equal(t, int64(40), vt.MaxGapMs)
 	assert.Equal(t, int64(0), vt.FirstPTS)
 	assert.Equal(t, int64(200), vt.LastPTS)
+	assert.Equal(t, make([]uint32, 6), vt.Tags)
+	assert.Equal(t, make([]bool, 6), vt.TagOK, "no frame is tagged")
+}
+
+func TestSummarizeWebMVideoFrameTags(t *testing.T) {
+	key := []byte{0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a, 0x40, 0x01, 0xf0, 0x00}
+	frame := func(hdr []byte, tag uint32) []byte {
+		// A packet with the 4-byte descriptor, as TagFrame sees it.
+		p := append([]byte{0x90, 0x80, 0x80, 0x01}, hdr...)
+		p = append(p, make([]byte, 16)...)
+		corpus.TagFrame(p, corpus.KindVideo, hdr[0]&0x01 == 0, tag)
+
+		return p[4:]
+	}
+
+	file := writeRaw(t, []webm.TrackEntry{
+		{Name: "Video", TrackNumber: 1, TrackUID: 1, CodecID: oracle.CodecVP8, TrackType: 1},
+	}, func(ws []webm.BlockWriteCloser) {
+		for i, data := range [][]byte{frame(key, 90000), frame([]byte{0x11, 0x02, 0x00}, 0xFFFFFFFF), {0x11, 0x02, 0x00}} {
+			_, err := ws[0].Write(i == 0, int64(i*40), data)
+			require.NoError(t, err)
+		}
+	})
+
+	s, err := oracle.SummarizeWebM(file)
+	require.NoError(t, err)
+
+	vt := s.Track(oracle.CodecVP8)
+	require.NotNil(t, vt)
+	assert.Equal(t, []uint32{90000, 0xFFFFFFFF, 0}, vt.Tags)
+	assert.Equal(t, []bool{true, true, false}, vt.TagOK)
 }
 
 func TestSummarizeWebMVideoDuplicatePTS(t *testing.T) {

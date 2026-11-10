@@ -73,6 +73,19 @@ func frames(recs []corpus.Record) [][]int {
 func seqOf(recs []corpus.Record, f, j int) uint16 { return recs[frames(recs)[f][j]].Seq }
 func atOf(recs []corpus.Record, f, j int) int64   { return recs[frames(recs)[f][j]].AtUs }
 
+// lateFrames returns the corpus.DelayFrames map that delays every frame
+// with a packet read in [fromUs, toUs) by us microseconds.
+func lateFrames(recs []corpus.Record, fromUs, toUs, us int64) map[uint32]int64 {
+	delays := map[uint32]int64{}
+	for _, r := range recs {
+		if r.T == corpus.RecordRTP && r.AtUs >= fromUs && r.AtUs < toUs {
+			delays[r.TS] = us
+		}
+	}
+
+	return delays
+}
+
 func synth(t *corpus.Trace, gen string, sd *int64, trackID, note string) *corpus.Trace {
 	t.Header.Generator = gen
 	t.Header.Seed = sd
@@ -533,6 +546,106 @@ func seeds() []seed {
 			"c18-delay-step/microphone", "A clean microphone whose packets, and reports, sent from 20 to 35 s are read 400 ms late; "+
 				"the queue drains at 35 s. A sender report every 5 s.")
 		out = append(out, seed{name: "c18-delay-step", class: "18", tracks: []*corpus.Trace{t}})
+	}
+
+	// The first frames after a gap often come late: a paced key frame, or
+	// a queue that drains. The camera seeds delay each one. The microphone
+	// seeds read them in one burst (Stall): the lag oracle maps only a burst
+	// back.
+	const resumeLateUs, resumeLateForUs = 300000, 700000
+	lateGen := func(fromS int) string {
+		return fmt.Sprintf("+DelayFrames{read in [%ds,%.1fs):+%dms}", fromS, float64(fromS)+float64(resumeLateForUs)/1e6, resumeLateUs/1000)
+	}
+	lateNote := func(after string) string {
+		return fmt.Sprintf("Every frame read in the %d ms after %s is read %d ms later. Then the queue drains, "+
+			"so the frames sent in the next %d ms are read with the last of them.", resumeLateForUs/1000, after, resumeLateUs/1000, resumeLateUs/1000)
+	}
+
+	// Class 24: a camera whose path carries nothing for 9 s mid-file. That
+	// is less than LiveKit's 10 s ICE disconnect timer, so the SSRC stays.
+	// At 240 packets/s the sequence gap stays under the jitter buffer's
+	// 3000, at 360 it does not.
+	for _, c := range []struct {
+		tag     string
+		packets int
+	}{{"seq2160", 8}, {"seq3240", 12}} {
+		name := "c24-blackout-9s-" + c.tag
+		t := must(corpus.GenerateVP8(corpus.VP8Options{FPS: 30, Duration: 16e9, KeyPackets: c.packets, DeltaPackets: c.packets, KeyInterval: 63,
+			SpreadUs: 3000, StartSeq: 1000, StartTS: 90000, StartPictureID: 100, SSRC: next()}))
+		end := endAt(t.Records)
+		r := must(corpus.Apply(t.Records, corpus.Blackout(3e6, 12e6)))
+		r = must(corpus.Apply(r, corpus.DelayFrames(lateFrames(r, 12e6, 12e6+resumeLateForUs, resumeLateUs))))
+		t.Records = must(corpus.Apply(r, corpus.EOFAt(end+50000)))
+		last, resume := seqOf(t.Records, 89, c.packets-1), seqOf(t.Records, 90, 0)
+		synth(t, fmt.Sprintf("corpus.GenerateVP8{FPS:30,Duration:16s,KeyPackets:%d,DeltaPackets:%d,KeyInterval:63,SpreadUs:3000}+Blackout(3s,12s)%s+EOFAt",
+			c.packets, c.packets, lateGen(12)), nil, name+"/camera", fmt.Sprintf("Frames 90-359 are never read: seqs %d-%d (%d), 270 picture IDs and 9 s of RTP time. %s "+
+			"Delta 360 is read at %.3f ms. Key frames 126-315 fall in the blackout, so the next one is frame 378.",
+			last+1, resume-1, resume-last-1, lateNote("the blackout"), ms(atOf(t.Records, 90, 0))))
+		out = append(out, seed{name: name, class: "24", tracks: []*corpus.Trace{t}})
+	}
+
+	// A camera paused for 4 s and resumed. LiveKit re-bases the timestamp
+	// to the wall clock and keeps the sequence numbers contiguous.
+	{
+		t := must(corpus.GenerateVP8(corpus.VP8Options{FPS: 30, Duration: 12e9, KeyPackets: 8, DeltaPackets: 3, KeyInterval: 90, SpreadUs: 3000,
+			StartSeq: 1000, StartTS: 90000, StartPictureID: 100, SSRC: next()}))
+		n := len(t.Records)
+		end := endAt(t.Records)
+		r := must(corpus.Apply(t.Records, corpus.Pause(5e6, 9e6)))
+		r = must(corpus.Apply(r, corpus.DelayFrames(lateFrames(r, 9e6, 9e6+resumeLateForUs, resumeLateUs))))
+		t.Records = must(corpus.Apply(r, corpus.EOFAt(end+50000)))
+		synth(t, "corpus.GenerateVP8{FPS:30,Duration:12s,KeyPackets:8,DeltaPackets:3,KeyInterval:90,SpreadUs:3000}+Pause(5s,9s)"+
+			lateGen(9)+"+EOFAt", nil,
+			"c24-resume-4s/camera", fmt.Sprintf("Frames 150-269 (%d packets) are not sent; the seqs and picture IDs after them follow on. %s "+
+				"Key frame 270 is read at %.3f ms, its timestamp 4.033 s after frame 149's.", n-len(t.Records)+1, lateNote("the resume"), ms(atOf(t.Records, 150, 0))))
+		out = append(out, seed{name: "c24-resume-4s", class: "24", tracks: []*corpus.Trace{t}})
+	}
+
+	// A receiver that reads nothing of a camera for the first 2.5 s, then
+	// the backlog at once.
+	{
+		t := must(corpus.GenerateVP8(corpus.VP8Options{FPS: 30, Duration: 8e9, KeyPackets: 8, DeltaPackets: 3, KeyInterval: 60, SpreadUs: 3000,
+			StartSeq: 1000, StartTS: 90000, StartPictureID: 100, SSRC: next()}))
+		t.Records = must(corpus.Apply(t.Records, corpus.Stall(0, 2.5e6), corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, "corpus.GenerateVP8{FPS:30,Duration:8s,KeyPackets:8,DeltaPackets:3,KeyInterval:60,SpreadUs:3000}+Stall(0,2.5s)+EOFAt", nil,
+			"c24-start-stall-2500ms/camera", "Frames 0-74 are all read at 2500 ms; frame 75, sent then, is on time.")
+		out = append(out, seed{name: "c24-start-stall-2500ms", class: "24", tracks: []*corpus.Trace{t}})
+	}
+
+	// A first key frame of 8x8, the size of LiveKit's blank frames, which
+	// the writer rejects. Its timestamp still starts the writer's clock.
+	{
+		t := must(corpus.GenerateVP8(corpus.VP8Options{FPS: 30, Duration: 4e9, KeyPackets: 8, DeltaPackets: 3, KeyInterval: 20, SpreadUs: 3000,
+			StartSeq: 1000, StartTS: 90000, StartPictureID: 100, SSRC: next()}))
+		t.Records[0].Pay = corpus.VP8Payload(100, true, true, 8, 8)
+		t.Records = must(corpus.Apply(t.Records, corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, "corpus.GenerateVP8{FPS:30,Duration:4s,KeyPackets:8,DeltaPackets:3,KeyInterval:20,SpreadUs:3000}+frame 0 at 8x8+EOFAt", nil,
+			"c15-start-blank-key/camera", "Key frame 0 is 8x8. Key frame 20, the next, is 666.667 ms of RTP time after it.")
+		out = append(out, seed{name: "c15-start-blank-key", class: "15", tracks: []*corpus.Trace{t}})
+	}
+
+	// Class 24 for a microphone: a 9 s blackout, 450 sequence numbers, and
+	// a 4 s pause that only the timestamp carries. They come last so that
+	// the SSRCs of the seeds above stay.
+	{
+		t := must(corpus.GenerateOpus(corpus.OpusOptions{Duration: 16e9, StartSeq: 1000, StartTS: 90000, SSRC: next()}))
+		end := endAt(t.Records)
+		t.Records = must(corpus.Apply(t.Records, corpus.Blackout(3e6, 12e6), corpus.Stall(12e6, 12e6+resumeLateUs), corpus.EOFAt(end+20000)))
+		synth(t, fmt.Sprintf("corpus.GenerateOpus{Duration:16s}+Blackout(3s,12s)+Stall(12s,%.1fs)+EOFAt", 12+float64(resumeLateUs)/1e6), nil,
+			"c24-mic-blackout-9s/microphone", fmt.Sprintf("Frames 150-599 are never read: seqs %d-%d (450) and 9 s of RTP time. "+
+				"Frames 600-%d, sent in the %d ms after the blackout, are all read at %.0f ms.",
+				seqOf(t.Records, 149, 0)+1, seqOf(t.Records, 150, 0)-1, 600+resumeLateUs/20000-1, resumeLateUs/1000, 12000+float64(resumeLateUs)/1000))
+		out = append(out, seed{name: "c24-mic-blackout-9s", class: "24", tracks: []*corpus.Trace{t}})
+	}
+	{
+		t := must(corpus.GenerateOpus(corpus.OpusOptions{Duration: 12e9, StartSeq: 1000, StartTS: 90000, SSRC: next()}))
+		end := endAt(t.Records)
+		t.Records = must(corpus.Apply(t.Records, corpus.PauseOpus(5e6, 9e6), corpus.Stall(9e6, 9e6+resumeLateUs), corpus.EOFAt(end+20000)))
+		synth(t, fmt.Sprintf("corpus.GenerateOpus{Duration:12s}+PauseOpus(5s,9s)+Stall(9s,%.1fs)+EOFAt", 9+float64(resumeLateUs)/1e6), nil,
+			"c24-mic-resume-4s/microphone", fmt.Sprintf("Frames 250-449 are not sent; the seqs after them follow on. "+
+				"Frame 450's timestamp is 4.02 s after frame 249's. Frames 450-%d, sent in the %d ms after the resume, are all read at %.0f ms.",
+				450+resumeLateUs/20000-1, resumeLateUs/1000, 9000+float64(resumeLateUs)/1000))
+		out = append(out, seed{name: "c24-mic-resume-4s", class: "24", tracks: []*corpus.Trace{t}})
 	}
 
 	return out

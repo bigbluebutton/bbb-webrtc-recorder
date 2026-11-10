@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "class": "24",
+  "intent": "A camera paused for 4 s and resumed as LiveKit sends it. Sequence numbers and picture IDs follow on with no gap. Only the timestamp, re-based to the wall clock, carries the 4 s. The frames read in the 700 ms after the resume come 300 ms late, as a paced key frame or a draining queue would. No loss path fires and every frame is written. RED: a writer that caps a frame step at 1 s plays the rest of the file 3 s early (timeline). RED: a writer that takes the arrival gap for a step over 3 s plays the rest of the file 300 ms late (timeline and the media span).",
+  "traces": [
+    "c24-resume-4s.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 240,
+    "max": 240
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 3,
+    "videoDropped": {
+      "min": 0,
+      "max": 0
+    }
+  }
+}

@@ -1,7 +1,7 @@
 {
   "v": 1,
   "class": "1",
-  "intent": "Live paced camera downtrack (3.5 fps; 29 of 37 multi-packet frames read over 200 ms, max 497 ms; 29 key frames by size). At 2 s all 37 media frames are written with no buffer request, as in the live run; the 6 close-out blank frames are not media. RED at 200 ms: 0 written and 17 buffer requests.",
+  "intent": "Live paced camera downtrack (3.5 fps; 29 of 37 multi-packet frames read over 200 ms, max 497 ms; 29 key frames by size). At 2 s all 37 media frames are written with no buffer request, as in the live run; the 6 close-out blank frames are not media. The first key frame is read about 557 ms behind the later frames. So the media start must come from a later, less delayed frame inside the camera's 2 s window. RED at 200 ms: 0 written and 17 buffer requests. RED with a 1 s camera window: the start is 18 ms late.",
   "traces": [
     "c01-px-ml-ab-1-reccam.ndjson.gz"
   ],
@@ -27,9 +27,7 @@
     "minVideoFrames": 37,
     "minKeyframes": 23
   },
-  "mediaStartUs": -94617,
   "residuals": [
-    "writerRequests: ideal 0, pinned 1, at the close-out blank frames: LiveKit's 8x8 key frames fail validateVP8Frame (dimensions < 16) and the writer asks once as the track ends; harmless, pinned",
-    "mediaStartUs: pinned -94617, not the first key frame's read (463009): that key frame is about 557 ms behind every later frame, so the frame 1320 ms of PTS after it, read at 1225383, sets the start inside the camera's 2 s window"
+    "writerRequests: ideal 0, pinned 1, at the close-out blank frames: LiveKit's 8x8 key frames fail validateVP8Frame (dimensions < 16) and the writer asks once as the track ends; harmless, pinned"
   ]
 }

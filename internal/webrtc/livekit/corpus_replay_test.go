@@ -55,9 +55,15 @@ type webmExpect struct {
 	// (oracle.TimelineLag) by magnitude, MaxFinalAudioLagMs the last frame's.
 	MaxAudioLagMs      *float64 `json:"maxAudioLagMs,omitempty"`
 	MaxFinalAudioLagMs *float64 `json:"maxFinalAudioLagMs,omitempty"`
+	// VideoDropped counts the VP8 frames read but not written
+	// (oracle.VideoPlacement).
+	VideoDropped *bound `json:"videoDropped,omitempty"`
+	// AudioMaxGapMs bounds the Opus track's largest PTS step.
+	AudioMaxGapMs *window `json:"audioMaxGapMs,omitempty"`
 }
 
-// window is an inclusive time range, in ms on the trace's atUs timeline.
+// window is an inclusive range, in ms. In BufferRequestsMs it holds times
+// on the trace's atUs timeline; elsewhere it holds durations.
 type window struct {
 	Min float64 `json:"min"`
 	Max float64 `json:"max"`
@@ -73,9 +79,10 @@ type checks struct {
 	Written           *bound      `json:"written,omitempty"`
 	PacketsWritten    *bound      `json:"packetsWritten,omitempty"`
 	PacketsLostMax    *uint64     `json:"packetsLostMax,omitempty"`
+	PacketsLostMin    *uint64     `json:"packetsLostMin,omitempty"`
 	Webm              *webmExpect `json:"webm,omitempty"`
 	// MediaStartUs is the media span's start, in µs on the trace's atUs
-	// timeline, for a seed whose start is not its first frame's read.
+	// timeline, for a seed whose start is not the ideal one.
 	MediaStartUs *float64 `json:"mediaStartUs,omitempty"`
 }
 
@@ -133,6 +140,9 @@ func (e *checks) violations(r replayResult) []string {
 
 	if e.PacketsLostMax != nil && r.packetsLost > *e.PacketsLostMax {
 		add(fmt.Sprintf("packetsLost = %d, want <= %d", r.packetsLost, *e.PacketsLostMax))
+	}
+	if e.PacketsLostMin != nil && r.packetsLost < *e.PacketsLostMin {
+		add(fmt.Sprintf("packetsLost = %d, want >= %d", r.packetsLost, *e.PacketsLostMin))
 	}
 
 	if e.Webm != nil {
@@ -209,7 +219,57 @@ func (e *webmExpect) violations(r replayResult) []string {
 		}
 	}
 
+	if w := e.AudioMaxGapMs; w != nil {
+		if tr := r.webm.Track(oracle.CodecOpus); tr == nil {
+			v = append(v, "webm: no audio track for audioMaxGapMs")
+		} else if m := float64(tr.MaxGapMs); m < w.Min || m > w.Max {
+			v = append(v, fmt.Sprintf("webm audio max gap %d ms, want [%v, %v]", tr.MaxGapMs, w.Min, w.Max))
+		}
+	}
+
+	if e.VideoDropped != nil {
+		switch {
+		case r.videoPlaceErr != nil:
+			v = append(v, fmt.Sprintf("webm video placement: %v", r.videoPlaceErr))
+		case r.videoPlace == nil:
+			v = append(v, "webm video placement: needs exactly one VP8 trace")
+		default:
+			if s := e.VideoDropped.violation("videoDropped", r.videoPlace.Dropped); s != "" {
+				v = append(v, s)
+			}
+		}
+	}
+
 	return v
+}
+
+// videoTimelineSpreadMs bounds the spread of the VP8 timeline errors. The
+// writer floors each PTS to ms, counting from the first key frame it sees.
+// When it rejects that key frame, the first block's PTS is floored too.
+// The errors then fall either side of 0, less than 1 ms apart.
+//
+// The writer also truncates each frame duration to whole ns, so the PTS
+// falls up to 1 ns per block behind. The 0.01 ms covers float error.
+func videoTimelineSpreadMs(blocks int) float64 {
+	return 1.01 + float64(blocks)*1e-6
+}
+
+// videoPlaceViolations checks every block of a replayed VP8 track. Each
+// must name a frame read, in increasing order. Their timeline errors must
+// lie within videoTimelineSpreadMs of each other.
+func videoPlaceViolations(r replayResult) []string {
+	if r.videoPlaceErr != nil {
+		return []string{fmt.Sprintf("video placement: %v", r.videoPlaceErr)}
+	}
+
+	if p := r.videoPlace; p != nil {
+		if spread, want := p.TimelineMaxMs-p.TimelineMinMs, videoTimelineSpreadMs(p.Placed); spread > want {
+			return []string{fmt.Sprintf("video blocks %d and %d play %+.3f and %+.3f ms from their RTP time since the first block, %.3f ms apart, want <= %.6f",
+				p.TimelineMinAt, p.TimelineMaxAt, p.TimelineMinMs, p.TimelineMaxMs, spread, want)}
+		}
+	}
+
+	return nil
 }
 
 func loadExpectation(t *testing.T, path string) *expectation {
@@ -244,6 +304,32 @@ func traceInfo(t *testing.T, i int, tr *corpus.Trace) (trackInfo, uint32) {
 	}
 
 	return info, tr.Header.ClockRate
+}
+
+// tagVP8Frames tags the first packet of each VP8 frame in reads, and every
+// copy of it, with its RTP timestamp. oracle.VideoPlacement reads it back
+// from each block. Each read holds a packet of its own, so the trace is
+// left as it is.
+func tagVP8Frames(reads []trackRead) {
+	for _, read := range reads {
+		p := read.pkt
+		if p == nil || p.Padding {
+			continue
+		}
+
+		d, key := corpus.VP8FrameStart(p.Payload)
+		if d == 0 {
+			continue
+		}
+
+		// A small frame's first packet can be too short for the tag. Pad it with
+		// zeros: the writer reads only the first 10 bytes of a frame. A packet
+		// shorter than that stays as it is, since the writer drops a one-packet
+		// frame that short.
+		for len(p.Payload)-d >= 10 && !corpus.TagFrame(p.Payload, corpus.KindVideo, key, p.Timestamp) {
+			p.Payload = append(p.Payload, 0)
+		}
+	}
 }
 
 // traceReads is what tr's records replay as, events skipped, and which of
@@ -296,8 +382,16 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 	turn := make(chan struct{}, 1)
 	srcs := make([]trackSource, 0, len(traces))
 	fakes := make([]*fakeTrack, 0, len(traces))
-	for _, tr := range traces {
+	var audio, video []int
+	for i, tr := range traces {
 		reads, _ := traceReads(tr)
+		switch tr.Header.Codec {
+		case corpus.CodecVP8:
+			tagVP8Frames(reads)
+			video = append(video, i)
+		case corpus.CodecOpus:
+			audio = append(audio, i)
+		}
 		fake := newFakeTrack(reads)
 		fake.onRTCP = h.w.onRTCP
 		fakes = append(fakes, fake)
@@ -310,12 +404,6 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 		assert.False(t, fake.staleDeadline, "%s: a read without a deadline ahead", infos[i].id)
 	}
 
-	var audio []int
-	for i, tr := range traces {
-		if tr.Header.Codec == corpus.CodecOpus {
-			audio = append(audio, i)
-		}
-	}
 	if len(audio) == 1 {
 		if clock := h.w.mediaClock(infos[audio[0]].id); clock != nil {
 			st := clock.Stats()
@@ -326,6 +414,13 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 				lag, err := oracle.TimelineLag(tr, traces[audio[0]])
 				r.audioLag, r.audioLagErr = &lag, err
 			}
+		}
+	}
+
+	if len(video) == 1 && r.webm != nil {
+		if tr := r.webm.Track(oracle.CodecVP8); tr != nil {
+			p, err := oracle.VideoPlacement(tr, traces[video[0]])
+			r.videoPlace, r.videoPlaceErr = &p, err
 		}
 	}
 
@@ -355,7 +450,13 @@ func (r replayResult) String() string {
 	}
 
 	if r.audioLagErr == nil && r.audioLag != nil {
-		webm += fmt.Sprintf(" audioLag{max=%.1fms final=%.1fms}", r.audioLag.MaxMs, r.audioLag.FinalMs)
+		webm += fmt.Sprintf(" audioLag{max=%.1fms final=%.1fms start=%.1fms}", r.audioLag.MaxMs, r.audioLag.FinalMs, r.audioLag.StartMs)
+	}
+
+	if p := r.videoPlace; r.videoPlaceErr == nil && p != nil {
+		webm += fmt.Sprintf(" videoPlace{frames=%d placed=%d dropped=%d timeline=[%+.3fms@%d,%+.3fms@%d] ideal=%.0fus}",
+			p.Frames, p.Placed, p.Dropped, p.TimelineMinMs, p.TimelineMinAt, p.TimelineMaxMs, p.TimelineMaxAt,
+			p.IdealStartUs)
 	}
 
 	return fmt.Sprintf("buffer=%d%s writer=%d%s frames v=%d a=%d packets=%d lost=%d dropped=%d webm=%s",
@@ -405,6 +506,10 @@ func TestCorpusReplay(t *testing.T) {
 				assert.Fail(t, v)
 			}
 
+			for _, v := range videoPlaceViolations(r) {
+				assert.Fail(t, v)
+			}
+
 			// The writer's count and the file must agree, or a frame the
 			// writer counts can go missing from the recording unseen.
 			if r.webm != nil {
@@ -446,6 +551,44 @@ func TestReplayTraces(t *testing.T) {
 		r = replayTraces(t, traces)
 	})
 	t.Logf("measured: %s", r)
+}
+
+// TestReplayTagsShortFrames replays a camera whose small delta frames
+// have a first packet too short for the tag, and are the only frames read
+// on time. Replay grows them to fit, so they set the ideal start.
+func TestReplayTagsShortFrames(t *testing.T) {
+	tr, err := corpus.GenerateVP8(corpus.VP8Options{FPS: 30, Frames: 60, SSRC: 1})
+	require.NoError(t, err)
+
+	// 14 bytes, the generator's minimum, is one short of a delta frame's tag.
+	short := 0
+	late := map[uint32]int64{}
+	for i, r := range tr.Records {
+		if (r.TS/3000)%3 != 1 {
+			late[r.TS] = 5000
+		} else if r.Pay[0]&0x10 != 0 {
+			tr.Records[i].PLen = 14
+			short++
+		}
+	}
+	require.Equal(t, 20, short)
+	tr.Records, err = corpus.Apply(tr.Records, corpus.DelayFrames(late), corpus.EOFAt(2050000))
+	require.NoError(t, err)
+
+	var r replayResult
+	synctest.Test(t, func(t *testing.T) {
+		r = replayTraces(t, []*corpus.Trace{tr})
+	})
+	t.Logf("measured: %s", r)
+
+	require.NoError(t, r.videoPlaceErr)
+	require.NotNil(t, r.videoPlace)
+	assert.Equal(t, 60, r.videoFrames)
+	assert.Equal(t, 60, r.videoPlace.Placed)
+	assert.Equal(t, 0, r.videoPlace.Dropped)
+	assert.InDelta(t, 333, r.videoPlace.IdealStartUs, 1, "frame 1, read at 33.333 ms, PTS 33")
+	assert.Empty(t, videoPlaceViolations(r))
+	assert.Empty(t, mediaSpanViolations(r, []*corpus.Trace{tr}, nil))
 }
 
 // TestKeyframeLoopDoesNotPersist closes the loop the corpus cannot: the

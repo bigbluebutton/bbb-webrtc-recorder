@@ -9,6 +9,7 @@ import (
 
 	"github.com/at-wat/ebml-go"
 	"github.com/at-wat/ebml-go/webm"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 )
 
 const (
@@ -33,6 +34,11 @@ type Track struct {
 	VP8Keyframes int
 	// PTS is cluster timecode plus block timecode, in ms.
 	PTS []int64
+	// Tags holds each VP8 block's corpus.TaggedFrame value, parallel to
+	// PTS, and TagOK whether the block has one. Both stay nil for other
+	// codecs.
+	Tags  []uint32
+	TagOK []bool
 	// DuplicatePTS lists every block whose PTS an earlier block of the track
 	// already used: three blocks at the same PTS add two entries.
 	DuplicatePTS []int64
@@ -71,13 +77,23 @@ func (t *Track) CheckMonotonic() error {
 	return nil
 }
 
-// SummarizeWebM parses the whole file. BlockGroups, which WebmRecorder never
-// writes, are taken after the SimpleBlocks of their cluster, as keyframes when
-// they carry no ReferenceBlock.
-func SummarizeWebM(path string) (*Summary, error) {
+// Block is one frame of a WebM block, with the block's track, PTS and flags.
+type Block struct {
+	Track uint64
+	PTS   int64 // ms
+	Key   bool  // the block's keyframe flag
+	Group bool  // from a BlockGroup
+	Data  []byte
+}
+
+// ReadBlocks parses the whole file and returns its tracks and its blocks:
+// each cluster's SimpleBlocks, then its BlockGroups.
+// WebmRecorder never writes BlockGroups. One with no ReferenceBlock is a
+// keyframe.
+func ReadBlocks(path string) ([]webm.TrackEntry, []Block, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close() //nolint:errcheck // read-only
 
@@ -86,15 +102,47 @@ func SummarizeWebM(path string) (*Summary, error) {
 		Segment webm.Segment    `ebml:"Segment"`
 	}
 	if err := ebml.Unmarshal(f, &doc); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if len(doc.Segment.Tracks.TrackEntry) == 0 {
+
+	scale := int64(doc.Segment.Info.TimecodeScale)
+	if scale == 0 {
+		scale = 1000000
+	}
+
+	var blocks []Block
+	add := func(b ebml.Block, key, group bool, cluster uint64) {
+		pts := (int64(cluster) + int64(b.Timecode)) * scale / 1000000
+		for _, data := range b.Data {
+			blocks = append(blocks, Block{Track: b.TrackNumber, PTS: pts, Key: key, Group: group, Data: data})
+		}
+	}
+
+	for _, c := range doc.Segment.Cluster {
+		for _, b := range c.SimpleBlock {
+			add(b, b.Keyframe, false, c.Timecode)
+		}
+		for _, g := range c.BlockGroup {
+			add(g.Block, g.ReferenceBlock == 0, true, c.Timecode)
+		}
+	}
+
+	return doc.Segment.Tracks.TrackEntry, blocks, nil
+}
+
+// SummarizeWebM parses the whole file, through ReadBlocks.
+func SummarizeWebM(path string) (*Summary, error) {
+	entries, blocks, err := ReadBlocks(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
 		return nil, fmt.Errorf("parse %s: no tracks", path)
 	}
 
 	s := &Summary{Tracks: make(map[string]*Track)}
 	byNumber := make(map[uint64]*Track)
-	for _, e := range doc.Segment.Tracks.TrackEntry {
+	for _, e := range entries {
 		if _, ok := s.Tracks[e.CodecID]; ok {
 			return nil, fmt.Errorf("parse %s: more than one %s track", path, e.CodecID)
 		}
@@ -106,42 +154,25 @@ func SummarizeWebM(path string) (*Summary, error) {
 		byNumber[e.TrackNumber] = t
 	}
 
-	scale := int64(doc.Segment.Info.TimecodeScale)
-	if scale == 0 {
-		scale = 1000000
-	}
-
-	add := func(b ebml.Block, key bool, cluster uint64) error {
-		t, ok := byNumber[b.TrackNumber]
+	for _, fr := range blocks {
+		t, ok := byNumber[fr.Track]
 		if !ok {
-			return fmt.Errorf("parse %s: block for unknown track %d", path, b.TrackNumber)
+			return nil, fmt.Errorf("parse %s: block for unknown track %d", path, fr.Track)
 		}
-		pts := (int64(cluster) + int64(b.Timecode)) * scale / 1000000
-		for _, frame := range b.Data {
-			t.Blocks++
-			if key {
-				t.KeyBlocks++
-			}
-			if t.Codec == CodecVP8 && len(frame) > 0 && frame[0]&0x01 == 0 {
+		t.Blocks++
+		if fr.Key {
+			t.KeyBlocks++
+		}
+		if t.Codec == CodecVP8 {
+			if len(fr.Data) > 0 && fr.Data[0]&0x01 == 0 {
 				t.VP8Keyframes++
 			}
-			t.PTS = append(t.PTS, pts)
-		}
 
-		return nil
-	}
-
-	for _, c := range doc.Segment.Cluster {
-		for _, b := range c.SimpleBlock {
-			if err := add(b, b.Keyframe, c.Timecode); err != nil {
-				return nil, err
-			}
+			tag, ok := corpus.TaggedFrame(fr.Data)
+			t.Tags = append(t.Tags, tag)
+			t.TagOK = append(t.TagOK, ok)
 		}
-		for _, g := range c.BlockGroup {
-			if err := add(g.Block, g.ReferenceBlock == 0, c.Timecode); err != nil {
-				return nil, err
-			}
-		}
+		t.PTS = append(t.PTS, fr.PTS)
 	}
 
 	for _, t := range s.Tracks {

@@ -33,6 +33,10 @@ type replayResult struct {
 	audioLag    *oracle.Lag
 	audioLagErr error
 	audioClock  *types.MediaClockStats
+	// Where the VP8 track's blocks play against their frames' reads, set
+	// when exactly one VP8 trace is replayed.
+	videoPlace    *oracle.Placement
+	videoPlaceErr error
 	// The recorder's media span once closed, and the fake clock's time at
 	// the traces' atUs 0.
 	span      types.MediaSpan

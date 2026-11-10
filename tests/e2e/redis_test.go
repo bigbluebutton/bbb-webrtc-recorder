@@ -53,7 +53,7 @@ func StartRedis(t *testing.T, dir string, srv *ServerNet) *Redis {
 		args := append([]string{"--port", strconv.Itoa(port), "--bind"}, srv.Addrs...)
 		args = append(args,
 			// Protected mode refuses clients off loopback, which is where the
-			// NACK scenario's are; the binds keep the server private.
+			// netem scenarios' clients are; the binds keep the server private.
 			"--protected-mode", "no",
 			"--save", "",
 			"--appendonly", "no",
@@ -309,6 +309,35 @@ type Recording struct {
 	From int
 }
 
+// record starts recording the track sid of room as bbb-webrtc-sfu does on
+// track_published, and waits until its media flows.
+func record(ctx context.Context, t *testing.T, s *Stack, room, sid string) *Recording {
+	t.Helper()
+
+	rec, err := s.Driver.StartRecording(ctx, room, sid)
+	require.NoError(t, err)
+	_, err = s.Driver.WaitRtpStatus(ctx, rec.From, rec.SessionID, "flowing")
+	require.NoError(t, err)
+
+	return rec
+}
+
+// unrecord stops rec as bbb-webrtc-sfu does on track_unpublished, and
+// returns its recordingStopped. The recorder may have stopped the session
+// already, when the unpublished track's reader ended. That stop counts too:
+// the wait starts at rec.From, and the recorder ignores a stop for a session
+// that has ended.
+func unrecord(ctx context.Context, t *testing.T, s *Stack, name string, rec *Recording) *events.RecordingStopped {
+	t.Helper()
+
+	require.NoError(t, s.Driver.Stop(rec.SessionID))
+	stop, err := s.Driver.WaitStopped(ctx, rec.From, rec.SessionID)
+	require.NoError(t, err, "%s: recordingStopped", name)
+	t.Logf("%s: stopped (%s)", name, stop.Reason)
+
+	return stop
+}
+
 // StartRecording starts one LiveKit recording session of trackIDs in room.
 func (d *Driver) StartRecording(ctx context.Context, room string, trackIDs ...string) (*Recording, error) {
 	return d.StartRecordingWith(ctx, StartSpec{Room: room, TrackIDs: trackIDs})
@@ -382,6 +411,19 @@ func (d *Driver) WaitStopped(ctx context.Context, from int, sessionID string) (*
 	return &s, nil
 }
 
+// WaitMediaStarted returns rec's recordingMediaStarted and its message
+// index. The recorder sends it before recordingStopped, so once the stop
+// has arrived a short wait is enough.
+func (d *Driver) WaitMediaStarted(ctx context.Context, rec *Recording) (events.RecordingMediaStarted, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var s events.RecordingMediaStarted
+	at, err := d.waitDecode(ctx, rec.From, events.RecordingMediaStartedKey, rec.SessionID, &s)
+
+	return s, at, err
+}
+
 // StopAndWait stops sessionID and waits for the recordingStopped that follows.
 func (d *Driver) StopAndWait(ctx context.Context, sessionID string) (*events.RecordingStopped, error) {
 	from := len(d.Messages())
@@ -396,15 +438,7 @@ func (d *Driver) StopAndWait(ctx context.Context, sessionID string) (*events.Rec
 // status ("flowing" or "not_flowing") at message index from or later,
 // received before or after the call; from is as for WaitStopped.
 func (d *Driver) WaitRtpStatus(ctx context.Context, from int, sessionID, status string) (*events.RecordingRtpStatusChanged, error) {
-	m, _, err := d.WaitMessage(ctx, from, func(m Message) bool {
-		if m.ID != events.RecordingRtpStatusChangedKey || m.SessionID != sessionID {
-			return false
-		}
-
-		var e events.RecordingRtpStatusChanged
-
-		return json.Unmarshal(m.Raw, &e) == nil && e.Status == status
-	})
+	m, _, err := d.WaitMessage(ctx, from, rtpStatusMatch(sessionID, status))
 	if err != nil {
 		return nil, fmt.Errorf("waiting for %s %s: %w", sessionID, status, err)
 	}
@@ -412,6 +446,18 @@ func (d *Driver) WaitRtpStatus(ctx context.Context, from int, sessionID, status 
 	var e events.RecordingRtpStatusChanged
 
 	return &e, json.Unmarshal(m.Raw, &e)
+}
+
+func rtpStatusMatch(sessionID, status string) func(Message) bool {
+	return func(m Message) bool {
+		if m.ID != events.RecordingRtpStatusChangedKey || m.SessionID != sessionID {
+			return false
+		}
+
+		var e events.RecordingRtpStatusChanged
+
+		return json.Unmarshal(m.Raw, &e) == nil && e.Status == status
+	}
 }
 
 func deref(s *string) string {

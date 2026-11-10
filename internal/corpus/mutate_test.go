@@ -237,3 +237,123 @@ func TestApplyOnGeneratedSchedule(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, tr.Validate())
 }
+
+func TestBlackout(t *testing.T) {
+	recs, err := Apply(schedule(), Retransmit(103, 15000))
+	require.NoError(t, err)
+	out, err := Apply(recs, Blackout(10000, 21000))
+	require.NoError(t, err)
+	require.NoError(t, validateRecords(out))
+
+	assert.Equal(t, []uint16{100, 101, 103, 105}, seqs(out), "the originals read in [10, 21) ms go; the rtx copy of 103 stays")
+	assert.Equal(t, []int64{0, 1000, 15000, 21000, 30000}, times(out))
+	assert.True(t, out[2].RTX)
+
+	for _, op := range []Op{Blackout(-1, 10), Blackout(10, 10)} {
+		_, err := Apply(schedule(), op)
+		assert.Error(t, err)
+	}
+}
+
+func TestStall(t *testing.T) {
+	out := apply(t, Stall(1000, 20000))
+	assert.Equal(t, seqs(schedule()), seqs(out), "the order is kept")
+	assert.Equal(t, []int64{0, 20000, 20000, 20000, 20000, 21000, 30000}, times(out))
+
+	for i, r := range out {
+		assert.Equal(t, schedule()[i].TS, r.TS, "record %d keeps its RTP timestamp", i)
+	}
+
+	for _, op := range []Op{Stall(-1, 10), Stall(10, 10)} {
+		_, err := Apply(schedule(), op)
+		assert.Error(t, err)
+	}
+}
+
+func picIDs(t *testing.T, recs []Record) []uint16 {
+	t.Helper()
+
+	var out []uint16
+	for _, r := range recs {
+		if r.T == RecordRTP {
+			id, bits := VP8PictureID(r.Pay)
+			require.Equal(t, 15, bits)
+			out = append(out, id)
+		}
+	}
+
+	return out
+}
+
+func TestPause(t *testing.T) {
+	// Six 2-packet frames 100 ms apart, across the sequence number and
+	// picture ID wraps; frames 2 and 3 are not sent.
+	tr, err := GenerateVP8(VP8Options{FPS: 10, Frames: 6, KeyPackets: 2, StartSeq: 65533, StartPictureID: 0x7FFE, StartTS: 1000})
+	require.NoError(t, err)
+	in := slices.Clone(tr.Records)
+
+	out, err := Apply(tr.Records, Pause(150000, 350000))
+	require.NoError(t, err)
+	require.NoError(t, validateRecords(out))
+	assert.Equal(t, in, tr.Records, "the input schedule is not modified")
+
+	assert.Equal(t, []uint16{65533, 65534, 65535, 0, 1, 2, 3, 4}, seqs(out), "seqs follow on across the wrap")
+	assert.Equal(t, []uint16{0x7FFE, 0x7FFE, 0x7FFF, 0x7FFF, 0, 0, 1, 1}, picIDs(t, out), "picture IDs follow on across the wrap")
+	assert.Equal(t, []int64{0, 0, 100000, 100000, 400000, 400000, 500000, 500000}, times(out))
+
+	var ts []uint32
+	for _, r := range out {
+		ts = append(ts, r.TS)
+	}
+	assert.Equal(t, []uint32{1000, 1000, 10000, 10000, 37000, 37000, 46000, 46000}, ts, "timestamps keep the sender's clock")
+	again, err := Apply(out, Pause(150000, 350000))
+	require.NoError(t, err)
+	assert.Equal(t, out, again, "nothing is sent in the span any more")
+
+	_, err = Apply(schedule(), Pause(0, 10))
+	assert.ErrorContains(t, err, "no 15-bit VP8 picture ID", "a payload with no picture ID")
+
+	opus, err := GenerateOpus(OpusOptions{Frames: 10})
+	require.NoError(t, err)
+	_, err = Apply(opus.Records, Pause(40000, 80000))
+	assert.Error(t, err, "an Opus trace")
+
+	_, err = Apply(tr.Records, Pause(10, 10))
+	assert.Error(t, err)
+}
+
+func TestPauseOpus(t *testing.T) {
+	// Six 20 ms frames across the sequence number wrap; frames 2 and 3 are
+	// not sent.
+	tr, err := GenerateOpus(OpusOptions{Frames: 6, StartSeq: 65534, StartTS: 1000})
+	require.NoError(t, err)
+
+	out, err := Apply(tr.Records, PauseOpus(40000, 80000))
+	require.NoError(t, err)
+	require.NoError(t, validateRecords(out))
+	assert.Equal(t, []uint16{65534, 65535, 0, 1}, seqs(out), "seqs follow on across the wrap")
+	assert.Equal(t, []int64{0, 20000, 80000, 100000}, times(out))
+
+	var ts []uint32
+	for _, r := range out {
+		ts = append(ts, r.TS)
+	}
+	assert.Equal(t, []uint32{1000, 1960, 4840, 5800}, ts, "timestamps keep the sender's clock")
+	assert.Equal(t, tr.Records[0].Pay, out[2].Pay, "payloads are kept")
+
+	_, err = Apply(tr.Records, PauseOpus(10, 10))
+	assert.Error(t, err)
+}
+
+func TestDelayFrames(t *testing.T) {
+	// Frame 0 waits 15 ms, frame 1 3 ms: frame 1's first packet queues
+	// behind frame 0's last.
+	out := apply(t, DelayFrames(map[uint32]int64{1000: 15000, 1900: 3000}))
+	assert.Equal(t, seqs(schedule()), seqs(out))
+	assert.Equal(t, []int64{15000, 16000, 16000, 16000, 20000, 21000, 30000}, times(out))
+
+	assert.Equal(t, schedule(), apply(t, DelayFrames(nil)), "frames not in the map are unchanged")
+
+	_, err := Apply(schedule(), DelayFrames(map[uint32]int64{1000: -1}))
+	assert.Error(t, err)
+}

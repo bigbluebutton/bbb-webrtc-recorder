@@ -1,0 +1,32 @@
+{
+  "v": 1,
+  "class": "15",
+  "intent": "A camera whose first key frame is 8x8, the size of LiveKit's blank frames. validateVP8Frame rejects it (dimensions < 16), and the writer asks for a key frame once. The rejected frame's timestamp still starts the writer's clock. So key frame 20, the first written, is floored from 666.667 ms to PTS 666. Each later block plays up to 0.333 ms either side of its RTP time since block 0. Every frame from key frame 20 on is written. RED: a writer that keeps hasKeyFrame after it rejects the key frame writes the 19 deltas after it, which no key frame decodes (written 119, videoDropped 1). One that does not request a key frame on the rejection asks first at 69.667 ms. A placement check that takes block 0's PTS for a whole ms of its RTP time fails this seed alone, at +0.333 ms on block 62.",
+  "traces": [
+    "c15-start-blank-key.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "firstRequestMinMs": 3,
+  "firstRequestMaxMs": 3,
+  "written": {
+    "min": 100,
+    "max": 100
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 5,
+    "videoDropped": {
+      "min": 20,
+      "max": 20
+    }
+  }
+}
