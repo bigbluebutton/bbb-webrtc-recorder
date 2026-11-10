@@ -108,10 +108,11 @@ func maxStepOf(kind corpus.Kind) time.Duration {
 }
 
 const (
-	// Loopback adds about a millisecond from the publisher's write to the
-	// recorder's read. LiveKit's forwarding and the read loop add a few
-	// more, most for a key frame's packets. PTS are whole ms.
-	framePlacementBound = 40 * time.Millisecond
+	// A file places all its blocks with one offset: mediaStart comes from
+	// the least delayed of its first frames, and each PTS from RTP time. On
+	// loopback that offset is the path's delay, about 1 ms, plus up to 2 ms
+	// of rounding to whole ms. 15 ms stays under one 20 ms Opus frame.
+	framePlacementBound = 15 * time.Millisecond
 	// Two tracks of one publisher take the same path: their placements may
 	// differ by that path's jitter only.
 	frameLipSyncBound = 15 * time.Millisecond
