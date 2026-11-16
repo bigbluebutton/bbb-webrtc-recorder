@@ -32,6 +32,23 @@ type Recorder struct {
 func RecorderConfig(t *testing.T, dir string, rd *Redis, toRecorder, fromRecorder string, lk *LiveKit) map[string]any {
 	t.Helper()
 
+	lkConfig := map[string]any{
+		"host":      lk.URL,
+		"apiKey":    lk.APIKey,
+		"apiSecret": lk.APISecret,
+		"traceCapture": map[string]any{
+			"enabled": true,
+			"payload": "header",
+		},
+		"healthCheck": map[string]any{"enable": false},
+	}
+	switch v := os.Getenv("E2E_AUDIO_CLOCK_SYNC"); v {
+	case "on", "off":
+		lkConfig["audioClockSync"] = v == "on"
+	default:
+		require.Empty(t, v, "E2E_AUDIO_CLOCK_SYNC must be on, off or unset")
+	}
+
 	return map[string]any{
 		"log": map[string]any{"level": envOr("E2E_RECORDER_LOG_LEVEL", "debug")},
 		"recorder": map[string]any{
@@ -53,16 +70,7 @@ func RecorderConfig(t *testing.T, dir string, rd *Redis, toRecorder, fromRecorde
 			"enable":        true,
 			"listenAddress": fmt.Sprintf("127.0.0.1:%d", FreePort(t, "tcp")),
 		},
-		"livekit": map[string]any{
-			"host":      lk.URL,
-			"apiKey":    lk.APIKey,
-			"apiSecret": lk.APISecret,
-			"traceCapture": map[string]any{
-				"enabled": true,
-				"payload": "header",
-			},
-			"healthCheck": map[string]any{"enable": false},
-		},
+		"livekit": lkConfig,
 	}
 }
 

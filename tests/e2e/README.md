@@ -176,6 +176,7 @@ Environment:
 | `REDIS_ADDR` | Use this Redis instead of starting one. Channel names get a suffix naming the run (stamp and PID) and the test, so concurrent runs and tests do not cross. The netem scenarios and their controls always start their own. |
 | `E2E_RECORDER_BIN` | Use this recorder binary instead of building one. |
 | `E2E_RECORDER_RACE=1` | Build the recorder with `-race`; a test fails when its recorder's log reports a data race. The race build needs a lot of cache space. |
+| `E2E_AUDIO_CLOCK_SYNC` | `on` or `off` sets the recorder's `livekit.audioClockSync`, except in the scenarios that set it themselves. Unset keeps the recorder's default. |
 | `E2E_ARTIFACTS` | Root directory for artifacts. When set, every test's artifacts are kept. |
 | `E2E_KEEP_ARTIFACTS=1` | Keep the artifacts of passing tests under the default root. |
 | `E2E_RECORDER_LOG_LEVEL`, `E2E_LIVEKIT_LOG_LEVEL` | Log levels. Defaults: `debug` and `info`. |
