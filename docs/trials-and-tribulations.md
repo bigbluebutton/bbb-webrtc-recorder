@@ -22,7 +22,7 @@ difference.
 
 The recorder measures each microphone's media clock against the packets'
 arrival and against the sender reports LiveKit forwards. With
-`livekit.audioClockSync: true` (off by default), it moves the timestamps
+`livekit.audioClockSync: true` (the default), it moves the timestamps
 forward by the media time lost. Each time the track falls 40 ms behind, it
 inserts one gap, a multiple of 120 ms long. Playback fills a gap that long
 with silence, without stretching the audio around it.

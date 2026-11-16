@@ -48,12 +48,14 @@ func TestTraceCaptureFromLoader(t *testing.T) {
 }
 
 func TestAudioClockSync(t *testing.T) {
+	assert.True(t, (&Config{}).GetDefaults().LiveKit.AudioClockSync, "on by default")
+
 	cfg := (&Config{}).GetDefaults()
 	require.NoError(t, file.Decode("../../config/bbb-webrtc-recorder.yml", cfg))
-	assert.False(t, cfg.LiveKit.AudioClockSync, "off by default, in the sample too")
+	assert.True(t, cfg.LiveKit.AudioClockSync, "the sample keeps it on")
 
-	t.Setenv("BBBRECORDER_LIVEKIT_AUDIOCLOCKSYNC", "true")
+	t.Setenv("BBBRECORDER_LIVEKIT_AUDIOCLOCKSYNC", "false")
 	cfg = (&Config{}).GetDefaults()
 	cfg.Load(App{Name: "bbb-webrtc-recorder"}, "../../config/bbb-webrtc-recorder.yml")
-	assert.True(t, cfg.LiveKit.AudioClockSync, "the variable the sample config names turns it on")
+	assert.False(t, cfg.LiveKit.AudioClockSync, "the variable the sample config names turns it off")
 }
