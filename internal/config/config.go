@@ -93,7 +93,7 @@ func (cfg *Config) SetDefaults() {
 			Payload:          TraceCapturePayloadHeader,
 			MaxBytesPerTrack: DefaultTraceCaptureMaxBytesPerTrack,
 		},
-		AudioClockSync: false,
+		AudioClockSync: true,
 	}
 	cfg.Constraints = Constraints{
 		DiskPressure: DiskPressure{

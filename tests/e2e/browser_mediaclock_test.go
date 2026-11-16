@@ -16,8 +16,8 @@ import (
 )
 
 // TestBrowserMicCaptureFreeze publishes Chromium's microphone, healthy or
-// under a CaptureFreeze. With livekit.audioClockSync off, the default, the
-// recording ends early by the time lost, and the stats, endWarning and
+// under a CaptureFreeze. With livekit.audioClockSync off, the recording
+// ends early by the time lost, and the stats, endWarning and
 // Chromium's sender reports show it. With it on, each frame plays near where
 // it arrived, and a healthy microphone gets no gap.
 func TestBrowserMicCaptureFreeze(t *testing.T) {

@@ -61,7 +61,7 @@ livekit:
   # The timestamps move forward by the time lost, which playback fills with
   # silence. When off, the drift is still measured and reported.
   # Environment variable: BBBRECORDER_LIVEKIT_AUDIOCLOCKSYNC.
-  audioClockSync: false
+  audioClockSync: true
   # Write a read trace (internal/corpus format v1) per recorded track, as
   # <recording>.<trackID>.trace.ndjson.gz: each packet read, read timeout,
   # keyframe request and sender report, timed from the session start. The

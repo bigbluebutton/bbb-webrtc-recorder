@@ -23,10 +23,11 @@ const (
 	// So a longer step between a microphone's frames settles its start.
 	MediaSpanAudioJumpStep = 120 * time.Millisecond
 	// The start moves back at most this far from the first frame's arrival.
-	// bbb-webrtc-sfu ignores a start more than PREVIOUS_FILE_TOLERANCE_MS
-	// (1 s) before its request, and the first frame arrives after that
-	// request: change both together. So a track whose first frames stall
-	// over 1 s starts late by the stall less 1 s.
+	// For a frame that moves the start back, the code cannot tell a backlog
+	// at the start from a PTS that ran ahead. In the second case, moving the
+	// start back plays the frames before the jump early, and the cap bounds
+	// that error. A track whose first frames stall over 1 s starts late by
+	// the stall less 1 s.
 	MediaSpanMaxBacklog = time.Second
 	// The step before the last frame stands for its duration, up to these.
 	// Opus packets are 120 ms at most.

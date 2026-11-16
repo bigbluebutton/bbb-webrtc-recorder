@@ -22,7 +22,7 @@ difference.
 
 The recorder measures each microphone's media clock against the packets'
 arrival and against the sender reports LiveKit forwards. With
-`livekit.audioClockSync: true` (off by default), it moves the timestamps
+`livekit.audioClockSync: true` (the default), it moves the timestamps
 forward by the media time lost. Each time the track falls 40 ms behind, it
 inserts one gap, a multiple of 120 ms long. Playback fills a gap that long
 with silence, without stretching the audio around it.
@@ -87,8 +87,9 @@ with silence, without stretching the audio around it.
   holds the correction, and the LiveKit read loop applies it before the
   jitter buffer. The replay corpus seeds `c18-slow-mic-clock` and
   `c18-delay-step` replay a slow microphone and a healthy one behind a delay
-  step. `TestSlowMicClockKeepsWallClock` (`tests/e2e`) covers a slow
-  microphone end to end.
+  step. `c18-mic-clock-gap-at-start` replays a correction in a microphone's
+  first 2 s, while its start can still move. `TestSlowMicClockKeepsWallClock`
+  (`tests/e2e`) covers a slow microphone end to end.
 
 ### Known limits
 

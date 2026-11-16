@@ -16,6 +16,9 @@
 //	                    $TMPDIR/bwr-e2e-* directory per run, kept only for
 //	                    failed tests unless E2E_KEEP_ARTIFACTS=1)
 //	E2E_RECORDER_LOG_LEVEL, E2E_LIVEKIT_LOG_LEVEL  (default: debug, info)
+//	E2E_AUDIO_CLOCK_SYNC  on or off sets the recorder's livekit.audioClockSync,
+//	                    except in scenarios that set it themselves (default:
+//	                    the recorder's own)
 //	E2E_BROWSER         run the browser scenarios (TestBrowser*) when set
 //	                    to 1; E2E_BROWSER_REQUIRED=1 fails them instead of
 //	                    skipping when they cannot run
