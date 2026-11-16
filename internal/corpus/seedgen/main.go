@@ -648,6 +648,22 @@ func seeds() []seed {
 		out = append(out, seed{name: "c24-mic-resume-4s", class: "24", tracks: []*corpus.Trace{t}})
 	}
 
+	// Class 18 with a gap in the start window. The reports come far more
+	// often than a browser sends them, so MediaClock corrects the slow clock
+	// within the microphone's first 2 s.
+	{
+		t := must(corpus.GenerateOpus(corpus.OpusOptions{Duration: 20e9, StartSeq: 1000, StartTS: 90000, SSRC: next()}))
+		t.Records = must(corpus.Apply(t.Records,
+			corpus.MediaClock(0, 20e6, 0.94),
+			corpus.SenderReports(400e3, 48000),
+		))
+		t.Records = must(corpus.Apply(t.Records, corpus.EOFAt(endAt(t.Records)+20000)))
+		synth(t, "corpus.GenerateOpus{Duration:20s}+MediaClock(0s,20s,0.94)+SenderReports(400ms,48kHz)+EOFAt", nil,
+			"c18-mic-clock-gap-at-start/microphone", "20 s of media read over 21.28 s: the media clock runs at 0.94 throughout. "+
+				"A sender report every 400 ms.")
+		out = append(out, seed{name: "c18-mic-clock-gap-at-start", class: "18", tracks: []*corpus.Trace{t}})
+	}
+
 	return out
 }
 

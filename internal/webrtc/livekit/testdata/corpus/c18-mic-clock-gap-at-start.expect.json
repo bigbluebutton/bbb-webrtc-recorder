@@ -1,0 +1,25 @@
+{
+  "v": 1,
+  "class": "18",
+  "intent": "A microphone whose media clock runs at 0.94, with a sender report every 400 ms, so that MediaClock inserts its first gap inside the 2 s start window: the gap ends at 1.7 s of media. A first gap later than the window lets the lag pass its 110 ms bound. That gap must settle the start, which stays at the first frame's read (the media span check), and every frame must play near where it was read. The largest step, a 120 ms gap plus a frame, must stay over MediaSpanAudioJumpStep (120 ms) for the gap to settle the start. The lag bounds are 10 ms over the measured -99.6 and -75.3 ms. RED: a MediaSpanAudioJumpStep of 150 ms lets the gap move the start back 19 ms (media span start). RED: a 100 ms mediaClockGap gives 120 ms steps (audioMaxGapMs). RED: with audioClockSync off, the last frame plays 1.28 s early (maxAudioLagMs).",
+  "audioClockSync": true,
+  "traces": [
+    "c18-mic-clock-gap-at-start.ndjson.gz"
+  ],
+  "written": {
+    "min": 1000,
+    "max": 1000
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minAudioFrames": 1000,
+    "maxAudioLagMs": 110,
+    "maxFinalAudioLagMs": 85,
+    "audioMaxGapMs": {
+      "min": 121,
+      "max": 140
+    }
+  }
+}
