@@ -298,12 +298,15 @@ func (s *SampleBuilder) Push(p *rtp.Packet) {
 			return
 		}
 		// make free space
-		for uint16(s.Len())+count+1 >= s.cap() {
-			dropped, _ := s.drop()
-			if !dropped {
-				// this shouldn't happen
-				return
-			}
+		for s.tail != s.head && uint16(s.Len())+count+1 >= s.cap() {
+			s.drop()
+		}
+		if s.tail == s.head {
+			// the drops emptied the buffer, which resets head
+			// and tail: p is now the first packet, not count
+			// slots after one
+			s.Push(p)
+			return
 		}
 		index := (s.head + count) % uint16(len(s.packets))
 		start := s.isStart(p)
