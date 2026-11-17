@@ -103,3 +103,5 @@ require (
 	google.golang.org/grpc v1.70.0 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
 )
+
+replace github.com/jech/samplebuilder => ./third_party/samplebuilder
