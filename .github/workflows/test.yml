@@ -40,6 +40,10 @@ jobs:
         working-directory: third_party/media-sdk
         run: go test -v -race ./...
 
+      - name: Run the samplebuilder copy's tests
+        working-directory: third_party/samplebuilder
+        run: go test -v -race ./...
+
       - name: Run tests with coverage
         run: |
           go test -v -race -covermode=atomic -coverprofile=coverage.out ./...
