@@ -25,10 +25,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -47,7 +47,7 @@ jobs:
       recorder: ${{ steps.diff.outputs.recorder }}
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
 
@@ -105,7 +105,7 @@ jobs:
       E2E_RECORDER_RACE: ${{ matrix.race }}
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up the environment
         run: |
@@ -113,14 +113,14 @@ jobs:
           echo "LIVEKIT_SERVER_BIN=$RUNNER_TEMP/livekit/livekit-server" >> "$GITHUB_ENV"
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
       # The release tarball is cached by its checksum, so a run does not
       # depend on GitHub's release download; it is checked either way.
       - name: Cache the livekit-server release
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/livekit-dl
           key: livekit-${{ env.LIVEKIT_VERSION }}-${{ env.LIVEKIT_SHA256 }}
@@ -148,7 +148,7 @@ jobs:
 
       - name: Set up Node
         if: matrix.browser == '1'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26'
           cache: npm
@@ -158,7 +158,7 @@ jobs:
       # lockfile, and built for the runner's image.
       - name: Cache Playwright's Chromium
         if: matrix.browser == '1'
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ matrix.image }}-${{ hashFiles('tests/e2e/browser/package-lock.json') }}
@@ -233,7 +233,7 @@ jobs:
 
       - name: Upload artifacts
         if: failure() || cancelled()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-artifacts-${{ matrix.browser == '1' && 'browser-' || matrix.race == '1' && 'race-' || '' }}${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/e2e-artifacts
