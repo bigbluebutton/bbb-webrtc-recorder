@@ -107,3 +107,5 @@ require (
 )
 
 replace github.com/livekit/media-sdk => ./third_party/media-sdk
+
+replace github.com/jech/samplebuilder => ./third_party/samplebuilder

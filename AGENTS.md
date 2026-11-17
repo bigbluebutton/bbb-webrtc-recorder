@@ -24,7 +24,7 @@ go build -o bbb-webrtc-recorder -gcflags=all="-N -l" ./cmd/bbb-webrtc-recorder
 ## Testing
 
 ```bash
-# Unit tests with -race, plus the vendored media-sdk jitter copy, which is its own
+# Unit tests with -race, plus the vendored copies in third_party/, each its own
 # module (go.mod `replace`) that ./... skips. CI runs the same, so a race fails the job.
 make test
 
@@ -83,7 +83,7 @@ golangci-lint runs from `tools/go.mod` through `go tool`, so no global install i
 - **`internal/webrtc/recorder/webm.go`** - WebM muxer: VP8 frames through a custom assembler (`recorder.useCustomSampler`, default on) or jech/samplebuilder, Opus through jech/samplebuilder
 - **`internal/webrtc/utils/mediaclock.go`** - per-track `MediaClock`: moves a LiveKit microphone's RTP timestamps forward by the media time its sender loses, by arrival times capped by the sender reports (`livekit.audioClockSync`), so the WebM keeps the wall clock. The read loop applies it before the jitter buffer; trace and RTP dump keep the sender's timestamps
 - **`internal/webrtc/livekit/trackbuffer.go`** - per-track jitter buffer around media-sdk's `jitter`: early keyframe request when a gap stays open, duplicate filtering, padding handling. `capture.go` is the opt-in `livekit.traceCapture`
-- **`third_party/media-sdk/`** - vendored media-sdk `jitter` with local fixes (`go.mod` `replace`; changes listed in `third_party/README.md`)
+- **`third_party/media-sdk/`**, **`third_party/samplebuilder/`** - vendored media-sdk `jitter` and jech/samplebuilder with local fixes (`go.mod` `replace`; changes listed in `third_party/README.md`)
 - **`internal/corpus/`** - trace format, generators and mutations, WebM oracle (`oracle/`), and `seedgen` for the replay corpus
 - **`internal/appstats/`** - Prometheus metrics and per-session stats file writing
 - **`internal/webrtc/interfaces/`** - Interface definitions used as seams and for mocking (e.g. KeyframeRequester, LiveKitWebRTCInterface)

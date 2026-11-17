@@ -23,16 +23,21 @@ jobs:
         with:
           go-version-file: go.mod
           # setup-go caches the module and build caches. This job tests
-          # both modules, so the key follows both modules' dependencies.
+          # every module, so the key follows each module's dependencies.
           cache-dependency-path: |
             go.sum
             third_party/media-sdk/go.sum
+            third_party/samplebuilder/go.sum
 
       - name: Get dependencies
         run: go mod tidy
 
       - name: Run the media-sdk copy's tests
         working-directory: third_party/media-sdk
+        run: go test -v -race ./...
+
+      - name: Run the samplebuilder copy's tests
+        working-directory: third_party/samplebuilder
         run: go test -v -race ./...
 
       - name: Run tests with coverage
