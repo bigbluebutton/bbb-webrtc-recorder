@@ -12,4 +12,9 @@ and `LICENCE`.
 Remove the copy and the `replace` directive once a samplebuilder release
 carries the local changes below.
 
-Local changes: none.
+Local changes:
+
+- `samplebuilder.go`, `Push`: when making room for a packet drops every
+  packet the builder holds, the packet goes in as the first one. Without
+  it, the packet lands `count` slots after the reset head, and the tail
+  stays on an empty slot.
