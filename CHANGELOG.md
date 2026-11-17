@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.19.0
+
+* feat(e2e): publish from a live browser
+* ci(e2e): run the browser scenarios
+* feat(recorder): time the written media by packet arrival
+* feat(livekit): report the media start from packet arrivals
+* feat(server): send the media start and end of LiveKit recordings
+* ci: run the browser netem scenario as root
+* feat(livekit): turn audio clock sync on by default
+* ci: bump GitHub Actions and pin them to commit SHAs
+* ci: drop the second Go cache from the test workflow
+
 ### v0.18.0
 
 * fix(app): shut down gracefully on SIGTERM too
