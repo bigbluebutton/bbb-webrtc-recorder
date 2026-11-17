@@ -326,17 +326,8 @@ func (r *WebmRecorder) close() time.Duration {
 	}
 	r.closed = true
 
-	// Write the audio frames still held in the samplebuilder, e.g. after a
-	// packet loss: no newer packets will come to release them.
 	if r.hasAudio {
-		for {
-			sample, ts := r.audioBuilder.ForcePopWithTimestamp()
-			if sample == nil {
-				break
-			}
-
-			r.writeAudioFrame(sample.Data, sample.Duration, ts)
-		}
+		r.flushAudio()
 	}
 
 	if r.audioWriter != nil {
@@ -370,6 +361,30 @@ func (r *WebmRecorder) close() time.Duration {
 	}
 
 	return r.videoTimestamp
+}
+
+// Locked. Writes the audio frames still held in the samplebuilder, e.g. after
+// a packet loss: no newer packets will come to release them.
+//
+// A panic in the flush must not stop close from closing the writers.
+func (r *WebmRecorder) flushAudio() {
+	defer func() {
+		if err := recover(); err != nil {
+			log.WithField("session", r.ctx.Value("session")).
+				WithField("error", err).
+				WithField("stack", string(debug.Stack())).
+				Error("Panic detected while flushing audio, dropping the frames still held")
+		}
+	}()
+
+	for {
+		sample, ts := r.audioBuilder.ForcePopWithTimestamp()
+		if sample == nil {
+			return
+		}
+
+		r.writeAudioFrame(sample.Data, sample.Duration, ts)
+	}
 }
 
 func (r *WebmRecorder) Close() time.Duration {
