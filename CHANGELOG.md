@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.14.1
+
+* build(recorder): build jech/samplebuilder from a local copy
+* fix(recorder): keep the samplebuilder valid when making room empties it
+* ci: keep a backport off the latest and 0 Docker tags
+
 ### v0.14.0
 
 * feat: add docker matrix build to support arm64
