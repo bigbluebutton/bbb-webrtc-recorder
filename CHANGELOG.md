@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.18.1
+
+* build(recorder): build jech/samplebuilder from a local copy
+* fix(recorder): keep the samplebuilder valid when making room empties it
+* fix(recorder): keep closing a recording whose audio flush panics
+* ci: keep a backport off the latest and 0 Docker tags
+
 ### v0.18.0
 
 * fix(app): shut down gracefully on SIGTERM too
