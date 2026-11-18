@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+### v0.19.1
+
+* build(recorder): build jech/samplebuilder from a local copy
+* fix(recorder): keep the samplebuilder valid when making room empties it
+* fix(recorder): keep closing a recording whose audio flush panics
+* ci: stop publishing the single-arch 0 Docker tag
+
 ### v0.19.0
 
 * feat(e2e): publish from a live browser
