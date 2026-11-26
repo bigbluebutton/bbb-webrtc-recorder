@@ -39,7 +39,7 @@ go test -v -run TestName ./internal/path/to/package/
 
 Write new tests with testify (`assert`, `require`), not `testing.T.Error/Fatal/Fail`; lint (`forbidigo`) flags those in new code. Older tests (appstats, pubsub/events, server, webrtc/utils) still use raw `testing.T` calls.
 
-- LiveKit adapter unit tests: `setupMockLK()` (`livekit_test.go`) builds an adapter without a room; an empty `&lksdk.RemoteTrackPublication{}` is enough for `GetStats` (lksdk has no public setter for TrackInfo).
+- LiveKit adapter unit tests: `setupMockLK()` (`livekit_test.go`) builds an adapter without a room; an empty `&lksdk.RemoteTrackPublication{}` is enough for `GetStats`. lksdk has no public setter for TrackInfo, so `remotePub` (`codecs_test.go`) makes a publication through `Room.OnParticipantUpdate`.
 - E2E suite (`tests/e2e/`, `e2e` build tag): the recorder binary against its own `livekit-server` and `redis-server` on loopback, no Docker. `tests/e2e/README.md` has "Adding a scenario".
   - Run: `LIVEKIT_SERVER_BIN=/usr/bin/livekit-server make test-e2e`
   - The ffmpeg checks of the H.264 scenarios need ffmpeg and ffprobe on PATH. They skip without them unless `E2E_FFMPEG_REQUIRED=1`, which CI sets.
