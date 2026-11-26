@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "class": "24",
+  "intent": "H.264 twin of c24-resume-4s: a camera paused for 4 s and resumed as LiveKit sends it. Sequence numbers follow on with no gap, and only the timestamp, re-based to the wall clock, carries the 4 s. The frames read in the 700 ms after the resume come 300 ms late. No loss path fires, and every frame is written at its RTP time. RED when the frame writer caps a frame step at 1 s: the rest of the file plays 3 s early (timeline).",
+  "traces": [
+    "h264-c24-resume-4s.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 240,
+    "max": 240
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 3,
+    "videoDropped": {
+      "min": 0,
+      "max": 0
+    }
+  }
+}

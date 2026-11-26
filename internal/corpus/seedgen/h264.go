@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"math/rand/v2"
+	"slices"
+	"sort"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 )
@@ -53,8 +55,8 @@ func h264Seeds(next func() uint32) []seed {
 		out = append(out, seed{name: "h264-layer-switch", class: "h264", tracks: []*corpus.Trace{t}})
 	}
 
-	// A simulcast start: LiveKit forwards the low layer's SPS and PPS, then
-	// switches to the high layer's key frame before the low one's IDR.
+	// A simulcast start, as LiveKit switches to the high layer right after
+	// the low layer's parameter sets, before the low IDR.
 	{
 		low := must(corpus.GenerateH264(corpus.H264Options{FPS: 30, Frames: 1, KeySlicePackets: 4, Width: 320, Height: 180,
 			StartSeq: 7000, StartTS: 450000, SSRC: next()}))
@@ -149,6 +151,129 @@ func h264Seeds(next func() uint32) []seed {
 			nil, "h264-padding-payload/camera",
 			"3 padding packets after the markers of frames 10, 25 and 40, each with the padding bit and 255 zero bytes, as LiveKit 1.13.5-1.13.9 sends them.")
 		out = append(out, seed{name: "h264-padding-payload", class: "h264", tracks: []*corpus.Trace{t}})
+	}
+
+	return append(out, h264Twins(next)...)
+}
+
+// h264Twins are the H.264 twins of VP8 seeds: the same schedule shape and
+// mutation, for the defect class the VP8 seed guards.
+func h264Twins(next func() uint32) []seed {
+	var out []seed
+	gen := func(o corpus.H264Options) string {
+		return fmt.Sprintf("corpus.GenerateH264{FPS:%v,Frames:%d,KeyInterval:%d,KeySlicePackets:%d,DeltaSlicePackets:%d,SpreadUs:%d}",
+			o.FPS, o.Frames, o.KeyInterval, o.KeySlicePackets, o.DeltaSlicePackets, o.SpreadUs)
+	}
+	// Frames have as many packets as in the VP8 seed. A key frame's STAP-A
+	// counts as one of them.
+	camera := func(frames, keyInterval, keyPackets, deltaPackets int, spreadUs int64) corpus.H264Options {
+		return corpus.H264Options{FPS: 30, Frames: frames, KeyInterval: keyInterval, KeySlicePackets: keyPackets - 1,
+			DeltaSlicePackets: deltaPackets, SpreadUs: spreadUs, StartSeq: 1000, StartTS: 90000, SSRC: next()}
+	}
+
+	// c03-d11-30fps: a packet in the middle of P frame 30 is lost and never
+	// repaired.
+	{
+		o := camera(150, 48, 8, 8, 7000)
+		t := must(corpus.GenerateH264(o))
+		lost, reveal := seqOf(t.Records, 30, 2), atOf(t.Records, 30, 3)
+		t.Records = must(corpus.Apply(t.Records, corpus.DropSeqs(lost), corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, gen(o)+fmt.Sprintf("+DropSeqs(%d)+EOFAt", lost), nil, "h264-c03-d11-30fps/camera",
+			fmt.Sprintf("FU-A fragment 3 of P frame 30 (seq %d) lost, never repaired; seq %d reveals it at %.3f ms.", lost, lost+1, ms(reveal)))
+		out = append(out, seed{name: "h264-c03-d11-30fps", class: "3", tracks: []*corpus.Trace{t}})
+	}
+
+	// c11-dups-30fps: a duplicate inside a frame still assembling, and one
+	// after its frame left the buffer.
+	{
+		o := camera(120, 60, 15, 4, 2000)
+		t := must(corpus.GenerateH264(o))
+		r := slices.Clone(t.Records)
+		f50 := frames(r)[50]
+		late := f50[2]
+		lateSeq := r[late].Seq
+		r[late].AtUs += 10000
+		sort.SliceStable(r, func(i, j int) bool { return r[i].AtUs < r[j].AtUs })
+		p1, dupIn := seqOf(r, 50, 1), atOf(r, 50, 1)+5000
+		p80, dupAfter := seqOf(r, 80, 1), atOf(r, 80, 1)+40000
+		t.Records = must(corpus.Apply(r, corpus.Duplicate(p1, dupIn), corpus.Duplicate(p80, dupAfter), corpus.EOFAt(endAt(r)+50000)))
+		synth(t, gen(o)+fmt.Sprintf("+late(%d,+10ms)+Duplicate(%d,%d)+Duplicate(%d,%d)+EOFAt", lateSeq, p1, dupIn, p80, dupAfter), nil,
+			"h264-c11-dups-30fps/camera", "As c11-dups-30fps: frame 50's packet 3 read 10 ms late with a copy of packet 2 in between, and a copy of frame 80's packet 2 40 ms later.")
+		out = append(out, seed{name: "h264-c11-dups-30fps", class: "11", tracks: []*corpus.Trace{t}})
+	}
+
+	// c12-lkprobe-rtxdup: LiveKit's RTX probe resends the last 6 packets,
+	// at a frame boundary and mid-frame in turn.
+	{
+		o := camera(120, 60, 15, 4, 2000)
+		t := must(corpus.GenerateH264(o))
+		r := t.Records
+		fr := frames(r)
+		var ops []corpus.Op
+		for i, f := 0, 15; f < 115; i, f = i+1, f+15 {
+			last := fr[f][len(fr[f])-1]
+			if i%2 == 1 {
+				last = fr[f][1]
+			}
+			at := r[last].AtUs + 200
+			for k := range 6 {
+				ops = append(ops, corpus.Retransmit(r[last].Seq-5+uint16(k), at+int64(k)*50))
+			}
+		}
+		ops = append(ops, corpus.EOFAt(endAt(r)+50000))
+		t.Records = must(corpus.Apply(r, ops...))
+		synth(t, gen(o)+"+Retransmit x6 every 15 frames+EOFAt", nil, "h264-c12-lkprobe-rtxdup/camera",
+			"As c12-lkprobe-rtxdup: probes at frames 15, 45, 75, 105 after the marker, and at 30, 60, 90 after the frame's second packet.")
+		out = append(out, seed{name: "h264-c12-lkprobe-rtxdup", class: "12", tracks: []*corpus.Trace{t}})
+	}
+
+	// c15-start-midframe: the subscription starts inside the first key frame.
+	{
+		o := camera(120, 60, 15, 4, 7000)
+		t := must(corpus.GenerateH264(o))
+		t.Records = must(corpus.Apply(t.Records, corpus.StartAt(3), corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, gen(o)+"+StartAt(3)+EOFAt", nil, "h264-c15-start-midframe/camera",
+			"The subscription starts at packet 4 of the 15-packet first key frame, past its STAP-A and first FU-A fragments; next key frame at frame 60 (2 s).")
+		out = append(out, seed{name: "h264-c15-start-midframe", class: "15", tracks: []*corpus.Trace{t}})
+	}
+
+	// c15-start-kfloss: the first key frame loses a packet.
+	{
+		o := camera(120, 60, 15, 4, 7000)
+		t := must(corpus.GenerateH264(o))
+		t.Records = must(corpus.Apply(t.Records, corpus.DropSeqs(1005), corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, gen(o)+"+DropSeqs(1005)+EOFAt", nil, "h264-c15-start-kfloss/camera",
+			"FU-A fragment 5 of the first key frame's IDR (seq 1005) lost, never repaired.")
+		out = append(out, seed{name: "h264-c15-start-kfloss", class: "15", tracks: []*corpus.Trace{t}})
+	}
+
+	// c17-eof-after-gap: eof right after a gap inside a P frame. The key frame
+	// and deltas behind it are still held, and no gap request is due yet.
+	{
+		o := camera(66, 61, 4, 3, 2000)
+		t := must(corpus.GenerateH264(o))
+		lost, reveal := seqOf(t.Records, 60, 1), atOf(t.Records, 60, 2)
+		eof := endAt(t.Records) + 10000
+		t.Records = must(corpus.Apply(t.Records, corpus.DropSeqs(lost), corpus.EOFAt(eof)))
+		synth(t, gen(o)+fmt.Sprintf("+DropSeqs(%d)+EOFAt(%d)", lost, eof), nil, "h264-c17-eof-after-gap/camera",
+			fmt.Sprintf("Reveal at %.3f ms, eof at %.3f ms (%.0f ms later, before the 200 ms gap request).", ms(reveal), ms(eof), ms(eof-reveal)))
+		out = append(out, seed{name: "h264-c17-eof-after-gap", class: "17", tracks: []*corpus.Trace{t}})
+	}
+
+	// c24-resume-4s: a camera paused for 4 s and resumed, as LiveKit sends
+	// it.
+	{
+		const lateUs, lateForUs = 300000, 700000
+		o := camera(360, 90, 8, 3, 3000)
+		t := must(corpus.GenerateH264(o))
+		n, end := len(t.Records), endAt(t.Records)
+		r := must(corpus.Apply(t.Records, corpus.PauseH264(5e6, 9e6)))
+		r = must(corpus.Apply(r, corpus.DelayFrames(lateFrames(r, 9e6, 9e6+lateForUs, lateUs))))
+		t.Records = must(corpus.Apply(r, corpus.EOFAt(end+50000)))
+		synth(t, gen(o)+"+PauseH264(5s,9s)+DelayFrames{read in [9s,9.7s):+300ms}+EOFAt", nil, "h264-c24-resume-4s/camera",
+			fmt.Sprintf("Frames 150-269 (%d packets) are not sent; the seqs after them follow on. Every frame read in the 700 ms after the resume is read 300 ms later. "+
+				"Key frame 270 is read at %.3f ms, its timestamp 4.033 s after frame 149's.", n-len(t.Records)+1, ms(atOf(t.Records, 150, 0))))
+		out = append(out, seed{name: "h264-c24-resume-4s", class: "24", tracks: []*corpus.Trace{t}})
 	}
 
 	return out

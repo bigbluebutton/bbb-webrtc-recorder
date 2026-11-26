@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "class": "15",
+  "intent": "H.264 twin of c15-start-midframe: the subscription starts inside the first key frame, past its STAP-A and first FU-A fragments. The orphan tail expires, and the writer waits for the frame-60 key frame. The track buffer's report at the 2 s expiry is the only request. The writer sees that it is still due and does not ask. That is the ideal; the VP8 seed pins one writer request. Frames from the key frame on are written. RED when the writer asks without consulting keyframeDue (1 writer request), or if the stream never starts.",
+  "traces": [
+    "h264-c15-start-midframe.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 60,
+    "max": 60
+  },
+  "packetsWritten": {
+    "min": 487,
+    "max": 487
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 1,
+    "videoDropped": {
+      "min": 60,
+      "max": 60
+    }
+  }
+}

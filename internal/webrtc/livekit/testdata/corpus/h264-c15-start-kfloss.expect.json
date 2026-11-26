@@ -1,0 +1,36 @@
+{
+  "v": 1,
+  "class": "15",
+  "intent": "H.264 twin of c15-start-kfloss: the first key frame loses an FU-A fragment of its IDR. The track buffer asks early, 200-240 ms after the reveal. The trace does not answer, so it asks again a second later. The expiry's report is coalesced into them, and frames from the frame-60 key frame on are written. Unlike the VP8 seed, the writer does not ask: the track buffer's request is still due. RED when the early gap request is removed (one request, at the 2 s expiry), or when the writer asks without consulting keyframeDue (1 writer request).",
+  "traces": [
+    "h264-c15-start-kfloss.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 2,
+    "max": 2
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "firstRequestMinMs": 203,
+  "firstRequestMaxMs": 243,
+  "written": {
+    "min": 60,
+    "max": 60
+  },
+  "packetsWritten": {
+    "min": 487,
+    "max": 487
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 1,
+    "videoDropped": {
+      "min": 60,
+      "max": 60
+    }
+  }
+}

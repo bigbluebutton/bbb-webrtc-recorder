@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "class": "17",
+  "intent": "H.264 twin of c17-eof-after-gap: at eof the read loop's flush must hand the writer the complete frames held behind the incomplete one, key frame 61 and deltas 62-65, as samples. Frame 60 is dropped without a request. RED without the eof flush: 60 frames written instead of 65.",
+  "traces": [
+    "h264-c17-eof-after-gap.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 65,
+    "max": 65
+  },
+  "packetsWritten": {
+    "min": 197,
+    "max": 197
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 1,
+      "max": 1
+    }
+  }
+}

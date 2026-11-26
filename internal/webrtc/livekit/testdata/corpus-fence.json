@@ -280,6 +280,69 @@
     "packetsLost": 0,
     "packetsDropped": 0
   },
+  "h264-c03-d11-30fps": {
+    "file": "f897ff15ab01e37c04d92f19573ecd2fb7db8f42fe164286cfc74ee2d2133be4",
+    "bufferRequestsUs": [
+      1203000
+    ],
+    "writerRequestsUs": [],
+    "packets": 1192,
+    "packetsLost": 1,
+    "packetsDropped": 7
+  },
+  "h264-c11-dups-30fps": {
+    "file": "4ee2b5c6b90d8aad54d83e52df21bed7812f37cd6390b1f3c9e3878cddc372c8",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 502,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
+  "h264-c12-lkprobe-rtxdup": {
+    "file": "4ee2b5c6b90d8aad54d83e52df21bed7812f37cd6390b1f3c9e3878cddc372c8",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 502,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
+  "h264-c15-start-kfloss": {
+    "file": "a73b62ae45c362ab9a3561b7e0a08e3a1642cd553db81bf43d00139944366718",
+    "bufferRequestsUs": [
+      204666,
+      1204666
+    ],
+    "writerRequestsUs": [],
+    "packets": 487,
+    "packetsLost": 0,
+    "packetsDropped": 14
+  },
+  "h264-c15-start-midframe": {
+    "file": "a73b62ae45c362ab9a3561b7e0a08e3a1642cd553db81bf43d00139944366718",
+    "bufferRequestsUs": [
+      2000000
+    ],
+    "writerRequestsUs": [],
+    "packets": 487,
+    "packetsLost": 0,
+    "packetsDropped": 12
+  },
+  "h264-c17-eof-after-gap": {
+    "file": "dd710b977cc0b5f9717a954ad1d1a7246574bd01690eaaef468a47f2372cdeaa",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 197,
+    "packetsLost": 1,
+    "packetsDropped": 2
+  },
+  "h264-c24-resume-4s": {
+    "file": "539c4a73557ac06d407f7e5c3076facf9fb60b7a125e503568f3c898de9b036b",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 735,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
   "h264-layer-switch": {
     "file": "fdb3b43d5faf11cc37a91e5fce6058df5c2555bf3b5798b862e2597480bd3404",
     "bufferRequestsUs": [],
