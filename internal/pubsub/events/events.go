@@ -189,7 +189,7 @@ startRecordingResponse (Recorder -> SFU)
 	error: undefined | <String>,
 	sdp: <String | undefined>, // answer
 	fileName: <String | undefined>, // full path to recording, with the extension the recorder picked
-	codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/vp8"]; see the README
+	codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/h264"]; see the README
 }
 ```
 */

@@ -48,6 +48,20 @@ func TestRecordingCodecsPickTheFormatFromTheBackupsToo(t *testing.T) {
 		codecs []string
 	}{
 		{
+			name: "VP8 with an H.264 backup",
+			info: &livekit.TrackInfo{MimeType: "video/VP8", Codecs: []*livekit.SimulcastCodecInfo{
+				{MimeType: "video/VP8"}, {MimeType: "video/H264"},
+			}},
+			format: recorder.FormatMKV, codecs: []string{"video/vp8"},
+		},
+		{
+			name: "H.264 with a VP8 backup",
+			info: &livekit.TrackInfo{MimeType: "video/H264", Codecs: []*livekit.SimulcastCodecInfo{
+				{MimeType: "video/H264"}, {MimeType: "video/VP8"},
+			}},
+			format: recorder.FormatMKV, codecs: []string{"video/h264"},
+		},
+		{
 			name: "VP8 with an H.265 backup",
 			info: &livekit.TrackInfo{MimeType: "video/VP8", Codecs: []*livekit.SimulcastCodecInfo{
 				{MimeType: "video/VP8"}, {MimeType: "video/H265"},
@@ -107,15 +121,14 @@ func subscribeHarness(t *testing.T, rec recorder.Recorder, trackIDs ...string) (
 // response.
 func TestSubscribeToTracksSetsTheFormatAndKeepsTheCodecs(t *testing.T) {
 	rec := recorder.NewWebmRecorder(filepath.Join(t.TempDir(), "camera.webm"), 0o600, 256, 32, true, false)
-	require.NoError(t, rec.SetFormat(recorder.FormatMKV))
 	h, subscribed := subscribeHarness(t, rec, "TR_camera")
 
 	_, err := h.w.subscribeToTracks([]string{"TR_camera"})
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"TR_camera"}, *subscribed)
-	assert.Equal(t, recorder.FormatWebM, rec.Format(), "WebM holds every codec the recorder writes")
-	assert.Equal(t, ".webm", filepath.Ext(rec.GetFilePath()))
+	assert.Equal(t, recorder.FormatMKV, rec.Format(), "a format that holds H.264")
+	assert.Equal(t, ".mkv", filepath.Ext(rec.GetFilePath()))
 	assert.Equal(t, []string{"video/h264"}, h.w.Codecs())
 }
 

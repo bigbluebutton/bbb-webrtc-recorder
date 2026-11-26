@@ -195,7 +195,7 @@ where to look and its known limits.
     error: undefined | <String>,
     sdp: <String | undefined>, // answer
     fileName: <String | undefined>, // full path to recording, with the extension the recorder picked
-    codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/vp8"]; see below
+    codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/h264"]; see below
     metadata: <Object | undefined>, // Opaque metadata from the original startRecording request
 }
 ```
@@ -208,6 +208,13 @@ For LiveKit, `codecs` lists each publication's primary codec, in the order of `t
 cannot write, such as VP9. A track that LiveKit sends in such a codec fails the session, which stops as `failed`.
 A requested track that the room does not have when the session starts, or whose publication lists no codec, gets
 no entry. The list is then shorter than `trackIds`.
+
+The stats file's per-track `mimeType` names the codec the recorder writes. The metrics' `mime` label stays the
+publication's MIME type, except on `recorder_active_tracks`, which names the codec sent. So a microphone
+published with RED reads `audio/opus` in the stats file and `audio/red` in the other metrics.
+
+A codec regression can make LiveKit send the backup codec instead. A session that starts after one records the
+backup, and the stats file names it.
 
 For mediasoup, `codecs` lists the codecs the SDP answer accepts: `video/vp8`, `audio/opus` or both.
 

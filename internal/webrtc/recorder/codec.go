@@ -59,7 +59,7 @@ var (
 		frames:          h264Frames,
 	}
 
-	registry = []*Codec{CodecVP8, CodecOpus}
+	registry = []*Codec{CodecVP8, CodecOpus, CodecH264}
 )
 
 // TakesSamples reports whether the codec's video goes to PushVideoSample,

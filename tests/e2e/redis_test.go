@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/gomodule/redigo/redis"
 	"github.com/google/uuid"
+	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -395,9 +397,8 @@ func (d *Driver) StartRecordingWith(ctx context.Context, s StartSpec) (*Recordin
 
 	rec.Path, rec.Codecs = deref(rec.Response.FileName), rec.Response.Codecs
 
-	// WebM holds every codec the recorder writes.
 	ext := filepath.Ext(rec.Path)
-	if want := ".webm"; ext != want {
+	if want := containerExt(rec.Codecs); ext != want {
 		return rec, fmt.Errorf("recording %s of %v: extension %q, want %q", rec.Path, rec.Codecs, ext, want)
 	}
 
@@ -411,6 +412,17 @@ func (d *Driver) StartRecordingWith(ctx context.Context, s StartSpec) (*Recordin
 	}
 
 	return rec, nil
+}
+
+// containerExt is the extension of a recording that holds codecs: .mkv when
+// one of them is H.264, and .webm otherwise. The response does not name an
+// H.264 backup codec, which also makes .mkv.
+func containerExt(codecs []string) string {
+	if slices.ContainsFunc(codecs, func(c string) bool { return strings.EqualFold(c, webrtc.MimeTypeH264) }) {
+		return ".mkv"
+	}
+
+	return ".webm"
 }
 
 // GetRecordings sends getRecordings and returns the recordings its response

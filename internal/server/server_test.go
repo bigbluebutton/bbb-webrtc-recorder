@@ -900,8 +900,8 @@ func TestStopRecordingStopsConstraintsBeforeStats(t *testing.T) {
 func TestStartResponseReportsTheFileNameAndCodecs(t *testing.T) {
 	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
 	server := NewServer(&config.Config{}, ps)
-	lk := &mockLiveKitWebRTC{closed: make(chan struct{}), codecs: []string{"video/vp8"}}
-	sess := NewSession("test-codecs", server, (*webrtc.WebRTC)(nil), lk, &mockRecorder{path: "/var/rec/camera.webm"})
+	lk := &mockLiveKitWebRTC{closed: make(chan struct{}), codecs: []string{"video/h264"}}
+	sess := NewSession("test-codecs", server, (*webrtc.WebRTC)(nil), lk, &mockRecorder{path: "/var/rec/camera.mkv"})
 	server.runSession(sess)
 	require.NoError(t, sess.StartRecording(&events.StartRecording{SessionId: "test-codecs", Adapter: "livekit"}, time.Time{}))
 
@@ -911,16 +911,16 @@ func TestStartResponseReportsTheFileNameAndCodecs(t *testing.T) {
 		require.NoError(t, json.Unmarshal(msg, &response))
 		assert.Equal(t, "ok", response.Status)
 		require.NotNil(t, response.FileName)
-		assert.Equal(t, "/var/rec/camera.webm", *response.FileName)
-		assert.Equal(t, []string{"video/vp8"}, response.Codecs)
+		assert.Equal(t, "/var/rec/camera.mkv", *response.FileName)
+		assert.Equal(t, []string{"video/h264"}, response.Codecs)
 	case <-time.After(time.Second):
 		require.Fail(t, "no startRecordingResponse")
 	}
 
 	info := sess.GetRecordingInfo()
 	require.NotNil(t, info)
-	assert.Equal(t, "/var/rec/camera.webm", info.FileName)
-	assert.Equal(t, []string{"video/vp8"}, info.Codecs)
+	assert.Equal(t, "/var/rec/camera.mkv", info.FileName)
+	assert.Equal(t, []string{"video/h264"}, info.Codecs)
 
 	require.NoError(t, sess.StopRecording(nil, events.StopReasonNormal, time.Time{}))
 	assert.True(t, within(time.Second, server.shutdownWg.Wait))

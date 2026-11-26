@@ -529,7 +529,7 @@ func UpdateCaptureMetrics(stats *CaptureStats) {
 		if trackStats.Adapter != nil {
 			PLIRequests.With(prometheus.Labels{
 				"source": trackStats.Source,
-				"mime":   trackStats.MimeType,
+				"mime":   trackStats.PubMimeType,
 			}).Add(float64(trackStats.Adapter.PLIRequests))
 		}
 
@@ -539,7 +539,7 @@ func UpdateCaptureMetrics(stats *CaptureStats) {
 				PacketLossBuffer.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   trackStats.TrackKind,
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Observe(packetLoss)
 			}
 
@@ -547,40 +547,40 @@ func UpdateCaptureMetrics(stats *CaptureStats) {
 				SampleDuration.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   trackStats.TrackKind,
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Observe(float64(trackStats.RecorderTrackStats.AvgSampleDurationMs))
 
 				FrameSize.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   trackStats.TrackKind,
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Observe(float64(trackStats.RecorderTrackStats.AvgFrameSizeBytes))
 
 				RTPDiscontinuities.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   trackStats.TrackKind,
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Add(float64(trackStats.RecorderTrackStats.RTPDiscontInfo.Count))
 
 				VP8PictureIDDiscontinuities.With(prometheus.Labels{
 					"source": trackStats.Source,
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Add(float64(trackStats.RecorderTrackStats.VP8PicIDDiscontInfo.Count))
 
 				KeyframeCount.With(prometheus.Labels{
 					"source": trackStats.Source,
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Add(float64(trackStats.RecorderTrackStats.KeyframeCount))
 
 				CorruptedFrames.With(prometheus.Labels{
 					"source": trackStats.Source,
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Add(float64(trackStats.RecorderTrackStats.CorruptedFrames))
 
 				WrittenSamples.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   "video",
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Add(float64(trackStats.RecorderTrackStats.WrittenSamples))
 			}
 
@@ -588,19 +588,19 @@ func UpdateCaptureMetrics(stats *CaptureStats) {
 				SampleDuration.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   "audio",
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Observe(float64(trackStats.RecorderTrackStats.AvgSampleDurationMs))
 
 				RTPDiscontinuities.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   "audio",
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Add(float64(trackStats.RecorderTrackStats.RTPDiscontInfo.Count))
 
 				WrittenSamples.With(prometheus.Labels{
 					"source": trackStats.Source,
 					"kind":   "audio",
-					"mime":   trackStats.MimeType,
+					"mime":   trackStats.PubMimeType,
 				}).Add(float64(trackStats.RecorderTrackStats.WrittenSamples))
 			}
 		}
@@ -608,7 +608,7 @@ func UpdateCaptureMetrics(stats *CaptureStats) {
 }
 
 func updateMediaClockMetrics(trackStats *TrackStats) {
-	labels := prometheus.Labels{"source": trackStats.Source, "kind": trackStats.TrackKind, "mime": trackStats.MimeType}
+	labels := prometheus.Labels{"source": trackStats.Source, "kind": trackStats.TrackKind, "mime": trackStats.PubMimeType}
 	mc := trackStats.MediaClock
 
 	MediaClockInsertedGaps.With(labels).Add(float64(mc.InsertedGaps))

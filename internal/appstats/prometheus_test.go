@@ -86,8 +86,9 @@ func TestUpdateCaptureMetricsMediaClock(t *testing.T) {
 	registry := useFreshRegistry(t)
 	RegisterMetrics()
 
+	// A RED microphone, as the LiveKit adapter reports it.
 	track := func(arrivalMs int64) *TrackStats {
-		return &TrackStats{Source: "MICROPHONE", TrackKind: "audio", MimeType: "audio/red",
+		return &TrackStats{Source: "MICROPHONE", TrackKind: "audio", MimeType: "audio/opus", PubMimeType: "audio/red",
 			MediaClock: &types.MediaClockStats{ArrivalDurationMs: arrivalMs, RateRatio: 0.978, InsertedGaps: 54, InsertedGapMs: 1340, LagMs: 30}}
 	}
 	UpdateCaptureMetrics(&CaptureStats{Tracks: map[string]*TrackStats{"MICROPHONE": track(60000)}})

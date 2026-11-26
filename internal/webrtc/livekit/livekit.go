@@ -24,6 +24,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/codecs/mime"
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/interceptor"
@@ -366,6 +367,8 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 		pliStats[k] = v
 	}
 
+	codecsByTrack := maps.Clone(w.trackCodecs)
+
 	trackStats := make(map[string]appstats.AdapterTrackStats, len(w.trackStats))
 	for k, vPtr := range w.trackStats {
 		if vPtr != nil {
@@ -403,7 +406,13 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 	}
 
 	for trackID, remoteTrackPub := range remoteTrackPubs {
-		mimeType := remoteTrackPub.MimeType()
+		// The publication's MIME type, unless the track carries another codec:
+		// a RED microphone, or a camera LiveKit sends in its backup codec.
+		pubMimeType := remoteTrackPub.MimeType()
+		mimeType := pubMimeType
+		if c, ok := codecsByTrack[trackID]; ok && !strings.EqualFold(c.MimeType, mimeType) {
+			mimeType = livekitMimeType(c.MimeType)
+		}
 
 		var bufferStatsData *jitter.BufferStats
 
@@ -438,9 +447,10 @@ func (w *LiveKitWebRTC) GetStats() *appstats.CaptureStats {
 				PaddingPushed:  bufferStatsData.PaddingPushed,
 				SamplesPopped:  bufferStatsData.SamplesPopped,
 			},
-			Adapter:   &currentTrackAdapterStats,
-			TrackKind: string(remoteTrackPub.Kind()),
-			MimeType:  mimeType,
+			Adapter:     &currentTrackAdapterStats,
+			TrackKind:   string(remoteTrackPub.Kind()),
+			MimeType:    mimeType,
+			PubMimeType: pubMimeType,
 		}
 
 		if clock := w.mediaClock(trackID); clock != nil {
@@ -583,6 +593,16 @@ func trackCodecs(info *livekit.TrackInfo) []string {
 	}
 
 	return codecs
+}
+
+// livekitMimeType spells a MIME type as LiveKit signals it ("video/VP8"), so
+// that a codec reads the same as in the publication.
+func livekitMimeType(mimeType string) string {
+	if m := mime.NormalizeMimeType(mimeType); m != mime.MimeTypeUnknown {
+		return m.String()
+	}
+
+	return mimeType
 }
 
 // recordingCodecs returns the format and the codecs the start response
@@ -1428,7 +1448,7 @@ type trackInfo struct {
 	source string
 	ssrc   uint32
 	// The publication's MIME type as LiveKit signals it ("video/VP8"), which
-	// the read-error metric and the stop logs carry.
+	// the read-error metric carries.
 	pubMime string
 }
 
@@ -1511,7 +1531,7 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 			if procErr := w.handleReadRTPError(err, info); procErr != nil {
 				if procErr == io.EOF {
 					log.WithField("session", w.ctx.Value("session")).
-						Infof("%s track=%s stopped", info.pubMime, info.id)
+						Infof("%s track=%s stopped", livekitMimeType(string(info.mime)), info.id)
 
 					// No later packet hands out what the jitter buffer holds.
 					if tail := buffer.flushSamples(); len(tail) > 0 {
@@ -1665,7 +1685,7 @@ func (w *LiveKitWebRTC) handleReadRTPError(err error, info trackInfo) error {
 
 	case err.Error() == "EOF" || err == io.EOF:
 		log.WithField("session", w.ctx.Value("session")).
-			Infof("%s track stopped", info.pubMime)
+			Infof("%s track stopped", livekitMimeType(string(info.mime)))
 		return err
 
 	default:

@@ -87,8 +87,8 @@ of the in-process replay corpus
 3. **Record as the SFU does,** one session per track:
    `s.Driver.StartRecording(ctx, room, track.SID)`, then
    `WaitRtpStatus(..., "flowing")`. Record for a fixed time, then `Stop`
-   and `WaitStopped`. `rec.Path` is the file, with the extension the
-   recorder picked.
+   and `WaitStopped`. `rec.Path` is the file: `.mkv` when LiveKit lists
+   H.264 for the track, even as a backup codec, else `.webm`.
 4. **Read what came out.** `ReadOutput(t, rec, trackID)` reads the WebM
    through `internal/corpus/oracle` and summarises the recorder's trace
    (see `Output`). `ScrapeMetrics` and `Delta` give the metrics, and
@@ -206,7 +206,7 @@ bbb-webrtc-recorder.{yml,log}  livekit-server.{yaml,log}  redis-server.log  lksd
 pubsub.ndjson                                    # every Redis message sent and received
 browser-<n>.log  browser-<n>-rpc.ndjson          # browser mode: each runner's log, its requests and replies
 publisher.<identity>.<trackSID>[.<rid>].{sent.ndjson.gz,summary.json}  # rid: a simulcast layer
-recorder/recordings/<room>/<trackSID>-<session>.webm
+recorder/recordings/<room>/<trackSID>-<session>.{webm,mkv}      # .mkv holds H.264
                           /<trackSID>-<session>.<trackSID>.trace.ndjson.gz
                           /<trackSID>-<session>-stats.json
                           /<trackSID>-<session>.summary.json

@@ -656,12 +656,6 @@ func TestSetFormatFailsOnceTheFileIsOpen(t *testing.T) {
 }
 
 func TestFormatFor(t *testing.T) {
-	// WebM holds every codec in the registry, so the test codec stands in
-	// for one it cannot hold.
-	saved := registry
-	registry = append([]*Codec{frameTestCodec}, saved...)
-	t.Cleanup(func() { registry = saved })
-
 	for _, c := range []struct {
 		mimeTypes []string
 		want      Format
@@ -672,8 +666,8 @@ func TestFormatFor(t *testing.T) {
 		{[]string{"video/vp9"}, FormatWebM},
 		{[]string{"video/av1"}, FormatWebM},
 		{[]string{"", "video/vp8"}, FormatWebM},
-		{[]string{"video/x-test"}, FormatMKV},
-		{[]string{"video/X-Test", "video/vp8"}, FormatMKV},
+		{[]string{"video/h264"}, FormatMKV},
+		{[]string{"video/H264", "video/vp8"}, FormatMKV},
 		// A codec the recorder does not write fails its track in either format.
 		{[]string{"video/vp8", "video/h265"}, FormatWebM},
 		{[]string{"video/h265"}, FormatWebM},

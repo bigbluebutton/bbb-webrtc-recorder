@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -19,6 +20,8 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -350,6 +353,30 @@ func TestReadTrackFlushesOnEOF(t *testing.T) {
 		assert.Equal(t, want[len(want)-1], h.w.trackStats[videoInfo.id].LastSeqNum, "the flush updates the track stats")
 		states, _ := h.reported()
 		assert.Equal(t, []utils.ConnectionState{utils.ConnectionStateClosed}, states)
+	})
+}
+
+// A camera published in H.264 that LiveKit sends in its VP8 backup logs its
+// end as VP8.
+func TestReadTrackEndLogsTheCodecTheTrackCarries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		info := videoInfo
+		info.pubMime = "video/H264"
+		h := newLoopHarness(newPushRecorder(), info.id)
+		src := newFakeTrack(readsAt(0, writerFrame(info.ssrc, 1000, 100, 0, true)...))
+
+		std := log.StandardLogger()
+		defer std.ReplaceHooks(std.ReplaceHooks(make(log.LevelHooks)))
+		hook := logtest.NewLocal(std)
+		h.run(src, info)
+
+		var stopped []string
+		for _, e := range hook.AllEntries() {
+			if strings.HasPrefix(e.Message, "video/") {
+				stopped = append(stopped, e.Message)
+			}
+		}
+		assert.Equal(t, []string{"video/VP8 track stopped", "video/VP8 track=video stopped"}, stopped)
 	})
 }
 
