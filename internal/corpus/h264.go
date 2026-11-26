@@ -270,6 +270,68 @@ func H264KeyFrameStart(payload []byte) bool {
 	return false
 }
 
+// H264SliceStart reports whether payload starts a slice NAL unit: a single
+// NAL unit of type 1 or 5, or the first FU-A fragment of one.
+func H264SliceStart(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+
+	switch t := payload[0] & 0x1f; t {
+	case 1, h264NALTypeIDR:
+		return true
+	case h264FUA:
+		return len(payload) > 1 && payload[1]&0x80 != 0 && h264IsSlice(payload[1])
+	}
+
+	return false
+}
+
+// H264PictureStart reports whether payload starts the first slice of a
+// picture: alone, in an FU-A or in a STAP-A. Its slice header has
+// first_mb_in_slice 0, whose exp-Golomb code is a single 1 bit.
+func H264PictureStart(payload []byte) bool {
+	_, ok := h264PictureSlice(payload)
+
+	return ok
+}
+
+// h264PictureSlice returns the part of payload that starts at the NAL unit
+// or FU-A header of a picture's first slice.
+func h264PictureSlice(payload []byte) ([]byte, bool) {
+	if len(payload) > 0 && payload[0]&0x1f == h264STAPA {
+		for rest := payload[1:]; len(rest) > 2; {
+			n := int(binary.BigEndian.Uint16(rest))
+			if n == 0 || 2+n > len(rest) {
+				return nil, false
+			}
+			if nal := rest[2 : 2+n]; h264IsSlice(nal[0]) && len(nal) > 1 && nal[1]&0x80 != 0 {
+				return nal, true
+			}
+			rest = rest[2+n:]
+		}
+
+		return nil, false
+	}
+
+	if !H264SliceStart(payload) {
+		return nil, false
+	}
+
+	at := 1
+	if payload[0]&0x1f == h264FUA {
+		at = 2
+	}
+
+	return payload, len(payload) > at && payload[at]&0x80 != 0
+}
+
+func h264IsSlice(header byte) bool {
+	t := header & 0x1f
+
+	return t == 1 || t == h264NALTypeIDR
+}
+
 // bitWriter writes an H.264 RBSP, most significant bit first.
 type bitWriter struct {
 	b []byte
