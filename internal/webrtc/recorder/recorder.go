@@ -29,8 +29,8 @@ type Recorder interface {
 	PushVideoAt(rtp *rtp.Packet, at time.Time)
 	PushAudioAt(rtp *rtp.Packet, at time.Time)
 	// PushVideoSample pushes the packets of whole frames that a jitter
-	// buffer released together. The video of a codec that TakesSamples
-	// goes only here.
+	// buffer released together. The video of a codec that TakesSamples,
+	// such as H.264, goes only here.
 	PushVideoSample(s VideoSample)
 	// SetVideoCodec and SetFormat set the video codec and the container.
 	// They give the file's track entry and extension, so a change fails

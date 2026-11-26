@@ -26,11 +26,18 @@ const (
 
 var (
 	errH264Forbidden = errors.New("forbidden_zero_bit set")
-	errH264FUOpen    = errors.New("NAL unit inside an open FU-A")
+	// errH264FUOpen is a cut. After a sequence gap, h264AccessUnits skips
+	// the rest of the unit, so a NAL unit inside an open FU-A means no
+	// packet was lost. When LiveKit closes a downtrack inside an FU-A, its
+	// first blank frame takes the cut frame's timestamp, so both are one
+	// access unit.
+	errH264FUOpen = fmt.Errorf("NAL unit inside an open FU-A: %w", errCutFrame)
 )
 
 // h264AccessUnit is one H.264 access unit: the NAL units of one RTP timestamp.
 type h264AccessUnit struct {
+	// lost marks a dropped unit (see h264AccessUnits). It holds nothing else.
+	lost      bool
 	timestamp uint32
 	// data holds every kept NAL unit with a 4-byte big-endian length prefix
 	// (AVCC), the form Matroska blocks take with avcC lengthSizeMinusOne 3.
@@ -45,59 +52,101 @@ type h264AccessUnit struct {
 }
 
 // h264AccessUnits splits packets, the packets of one jitter-buffer sample in
-// sequence order, at RTP timestamp changes and depacketizes each part. It
-// returns the well-formed units before the first malformed one, and an error
-// describing that one; units after it are not returned.
+// sequence order, at RTP timestamp changes and depacketizes each part. A
+// malformed unit, a cut unit or a sequence gap leaves a lost unit in its
+// place, and the units after it are still returned. The error describes the
+// first loss that is not a cut, or else the first cut.
 //
-// The jitter buffer starts a sample at any NAL unit start, so after a loss a
-// sample can hold a partial access unit. This catches the structurally broken
-// ones. pion's H264Packet is not used: it keeps FU-A state across calls and
-// ignores the start bit.
+// The jitter buffer starts a sample at any NAL unit start. At a simulcast
+// layer switch, LiveKit cuts the old layer's frame, and the new layer's key
+// frame follows in the same sample. pion's H264Packet is not used: it keeps
+// FU-A state across calls and ignores the start bit.
 func h264AccessUnits(packets []*rtp.Packet) ([]h264AccessUnit, error) {
 	var (
-		units []h264AccessUnit
-		b     h264UnitBuilder
-		open  bool
+		units    []h264AccessUnit
+		b        h264UnitBuilder
+		open     bool
+		firstErr error
+		// While skipping, the packets of skipTS belong to a lost unit.
+		skipping bool
+		skipTS   uint32
 	)
+	lose := func(err error) {
+		// Malformed input wins over a cut, which is only logged at Debug.
+		if firstErr == nil || errors.Is(firstErr, errCutFrame) && !errors.Is(err, errCutFrame) {
+			firstErr = err
+		}
+		if n := len(units); n == 0 || !units[n-1].lost {
+			units = append(units, h264AccessUnit{lost: true})
+		}
+		open = false
+	}
+	finish := func() {
+		u, err := b.finish()
+		open = false
+		if err != nil {
+			lose(err)
+			return
+		}
+		units = append(units, u)
+	}
 	for i, p := range packets {
 		if p == nil {
-			return units, fmt.Errorf("H.264 packet %d is nil", i)
+			lose(fmt.Errorf("H.264 packet %d is nil", i))
+			return units, firstErr
 		}
-		// A padding packet holds a sequence number, so it counts here. A gap
-		// may hide the end of the open unit, so that unit fails.
+		// A padding packet holds a sequence number, so it counts here.
 		if i > 0 && p.SequenceNumber != packets[i-1].SequenceNumber+1 {
-			return units, fmt.Errorf("H.264 sequence gap: %d follows %d",
-				p.SequenceNumber, packets[i-1].SequenceNumber)
+			gap := fmt.Errorf("H.264 sequence gap: %d follows %d", p.SequenceNumber, packets[i-1].SequenceNumber)
+			// A unit that got its marker, followed by another timestamp, is
+			// whole: the lost packets came after it. Any other open unit may
+			// be missing some.
+			if open && packets[i-1].Marker && !b.fuOpen && p.Timestamp != b.unit.timestamp {
+				finish()
+			} else if open {
+				skipping, skipTS = true, b.unit.timestamp
+			}
+			lose(gap)
 		}
 		if p.Padding {
 			continue
 		}
+		if skipping && p.Timestamp == skipTS {
+			continue
+		}
+		skipping = false
 		if open && p.Timestamp != b.unit.timestamp {
-			u, err := b.finish()
-			if err != nil {
-				return units, err
+			if err := b.cut(); err != nil {
+				lose(err)
+			} else {
+				finish()
 			}
-			units = append(units, u)
-			open = false
 		}
 		if !open {
 			b = h264UnitBuilder{unit: h264AccessUnit{timestamp: p.Timestamp, firstSeq: p.SequenceNumber}}
 			open = true
 		}
-		b.unit.lastSeq = p.SequenceNumber
+		b.unit.lastSeq, b.marker = p.SequenceNumber, p.Marker
 		if err := b.push(p.Payload); err != nil {
-			return units, fmt.Errorf("H.264 access unit at timestamp %d, sequence number %d: %w",
-				p.Timestamp, p.SequenceNumber, err)
+			lose(fmt.Errorf("H.264 access unit at timestamp %d, sequence number %d: %w",
+				p.Timestamp, p.SequenceNumber, err))
+			skipping, skipTS = true, p.Timestamp
+		}
+	}
+	// The jitter buffer ends a sample at a marker or at a packet with no
+	// payload, which it leaves out. LiveKit sends such padding after a frame
+	// it cuts at a pause. A frame over the MTU goes as FU-A, so that cut often
+	// falls inside one. An FU-A still open at the marker is not a cut: the
+	// sender ended the frame there, and finish reports it as malformed.
+	if open && (!b.fuOpen || !b.marker) {
+		if err := b.cut(); err != nil {
+			lose(err)
 		}
 	}
 	if open {
-		u, err := b.finish()
-		if err != nil {
-			return units, err
-		}
-		units = append(units, u)
+		finish()
 	}
-	return units, nil
+	return units, firstErr
 }
 
 // h264UnitBuilder depacketizes the payloads of one access unit.
@@ -109,6 +158,21 @@ type h264UnitBuilder struct {
 	fuType       byte
 	// fuStart is the offset of the open FU-A NAL unit's length prefix.
 	fuStart int
+	// marker is the marker bit of the last packet pushed.
+	marker bool
+}
+
+// cut returns errCutFrame when the unit ends inside an FU-A, or before the
+// marker of a unit that holds a slice. Parameter sets alone are no frame, so
+// they need no marker.
+func (b *h264UnitBuilder) cut() error {
+	switch {
+	case b.fuOpen:
+		return fmt.Errorf("H.264 access unit at timestamp %d: FU-A not ended: %w", b.unit.timestamp, errCutFrame)
+	case b.unit.slice && !b.marker:
+		return fmt.Errorf("H.264 access unit at timestamp %d: no marker: %w", b.unit.timestamp, errCutFrame)
+	}
+	return nil
 }
 
 func (b *h264UnitBuilder) push(payload []byte) error {
@@ -123,8 +187,7 @@ func (b *h264UnitBuilder) push(payload []byte) error {
 		if b.fuOpen {
 			return errH264FUOpen
 		}
-		b.appendNAL(payload)
-		return nil
+		return b.appendNAL(payload)
 	case t == h264STAPA:
 		if b.fuOpen {
 			return errH264FUOpen
@@ -158,7 +221,9 @@ func (b *h264UnitBuilder) pushSTAPA(rest []byte) error {
 		if err := h264CheckInnerHeader(rest[0], "STAP-A"); err != nil {
 			return err
 		}
-		b.appendNAL(rest[:n])
+		if err := b.appendNAL(rest[:n]); err != nil {
+			return err
+		}
 		rest = rest[n:]
 	}
 	return nil
@@ -218,15 +283,19 @@ func h264CheckInnerHeader(header byte, in string) error {
 
 // appendNAL adds a whole NAL unit to data. AUD and filler carry no picture
 // data, and Matroska blocks already delimit access units.
-func (b *h264UnitBuilder) appendNAL(nal []byte) {
+func (b *h264UnitBuilder) appendNAL(nal []byte) error {
 	t := nal[0] & h264NALTypeMask
 	if t == h264NALAUD || t == h264NALFiller {
-		return
+		return nil
+	}
+	if (t == h264NALSlice || t == h264NALIDR) && len(nal) < 2 {
+		return errors.New("slice NAL unit without a slice header")
 	}
 	at := len(b.unit.data)
 	b.unit.data = binary.BigEndian.AppendUint32(b.unit.data, uint32(len(nal)))
 	b.unit.data = append(b.unit.data, nal...)
 	b.note(t, at)
+	return nil
 }
 
 // note records a kept NAL unit of type t whose length prefix is at offset at.
@@ -264,29 +333,66 @@ func h264NALsAt(data []byte, offsets []int) [][]byte {
 	return nals
 }
 
-// h264KeyFrame reports whether u can start decoding: it holds an IDR slice,
-// an SPS and a PPS. Every SPS must decode to a size from 16x16 to
-// 8192x8192. It returns the first SPS's cropped size and the avcC
-// CodecPrivate built from u's own parameter sets.
-func h264KeyFrame(u h264AccessUnit) (width, height int, codecPrivate []byte, ok bool) {
+// h264KeyFrame returns an error unless u can start decoding: it holds an IDR
+// slice, an SPS and a PPS. Every SPS must decode to a size from 16x16 to
+// 8192x8192. It returns the size of the SPS the IDR slice uses, else the
+// first SPS's. It also returns the avcC CodecPrivate built from u's own
+// parameter sets.
+func h264KeyFrame(u h264AccessUnit) (width, height int, codecPrivate []byte, err error) {
 	if !u.idr || len(u.sps) == 0 || len(u.pps) == 0 {
-		return 0, 0, nil, false
+		return 0, 0, nil, errUnusableKeyFrame
 	}
+	active, ok := h264ActiveSPSID(u)
 	for i, nal := range u.sps {
 		sps, err := parseH264SPS(nal)
-		if err != nil || min(sps.width, sps.height) < h264MinKeyFrameSize ||
-			max(sps.width, sps.height) > h264MaxKeyFrameSize {
-			return 0, 0, nil, false
+		switch {
+		case err != nil:
+			return 0, 0, nil, fmt.Errorf("%w: %w", errUnreadableKeyFrame, err)
+		case max(sps.width, sps.height) > h264MaxKeyFrameSize:
+			return 0, 0, nil, fmt.Errorf("%w: %dx%d", errOversizedKeyFrame, sps.width, sps.height)
+		case min(sps.width, sps.height) < h264MinKeyFrameSize:
+			return 0, 0, nil, fmt.Errorf("%w: %dx%d", errUnusableKeyFrame, sps.width, sps.height)
 		}
-		if i == 0 {
+		if i == 0 || ok && sps.id == active {
 			width, height = sps.width, sps.height
 		}
 	}
-	codecPrivate, err := h264CodecPrivate(u.sps, u.pps)
+	codecPrivate, err = h264CodecPrivate(u.sps, u.pps)
 	if err != nil {
-		return 0, 0, nil, false
+		return 0, 0, nil, fmt.Errorf("%w: %w", errAvcCKeyFrame, err)
 	}
-	return width, height, codecPrivate, true
+	return width, height, codecPrivate, nil
+}
+
+// h264ActiveSPSID returns the seq_parameter_set_id that u's first IDR slice
+// uses: the slice names a PPS, and the PPS names an SPS. A later parameter
+// set replaces an earlier one with the same id. ok is false when the
+// slice's PPS is not in u, or an id cannot be read.
+func h264ActiveSPSID(u h264AccessUnit) (id uint32, ok bool) {
+	for data := u.data; len(data) > 0; {
+		end := 4 + int(binary.BigEndian.Uint32(data))
+		nal := data[4:end]
+		data = data[end:]
+		if nal[0]&h264NALTypeMask != h264NALIDR {
+			continue
+		}
+		// first_mb_in_slice, slice_type, pic_parameter_set_id
+		r := &h264BitReader{b: h264RBSP(nal[1:])}
+		r.ue()
+		r.ue()
+		ppsID := r.ue()
+		if r.err != nil {
+			return 0, false
+		}
+		for _, pps := range u.pps {
+			pr := &h264BitReader{b: h264RBSP(pps[1:])}
+			if pid, sid := pr.ue(), pr.ue(); pr.err == nil && pid == ppsID {
+				id, ok = sid, true
+			}
+		}
+		return id, ok
+	}
+	return 0, false
 }
 
 // isH264KeyFrameStart reports whether p starts a key frame the way LiveKit's
@@ -317,4 +423,42 @@ func isH264KeyFrameStart(p *rtp.Packet) bool {
 		return len(payload) >= 2 && payload[1]&0x80 != 0 && payload[1]&h264NALTypeMask == h264NALSPS
 	}
 	return false
+}
+
+// h264Frames is CodecH264's frames: a frame for each access unit that holds
+// a slice, and a lost one for each lost unit. Parameter sets alone, which
+// LiveKit forwards at a simulcast start, are no frame. An IDR unit that
+// cannot start decoding is lost too.
+func h264Frames(packets []*rtp.Packet) ([]videoFrame, error) {
+	units, err := h264AccessUnits(packets)
+
+	frames := make([]videoFrame, 0, len(units))
+	for _, u := range units {
+		switch {
+		case u.lost:
+			frames = append(frames, videoFrame{lost: true})
+		case !u.slice:
+		case u.idr:
+			width, height, codecPrivate, keyErr := h264KeyFrame(u)
+			if keyErr != nil {
+				frames = append(frames, videoFrame{lost: true})
+				// After a layer switch, the cut frame must not hide the
+				// new layer's refused key frame.
+				if err == nil || routineFrameError(err) && !routineFrameError(keyErr) {
+					err = fmt.Errorf("IDR at timestamp %d: %w", u.timestamp, keyErr)
+				}
+
+				continue
+			}
+
+			frames = append(frames, videoFrame{
+				data: u.data, timestamp: u.timestamp,
+				keyFrame: true, width: width, height: height, codecPrivate: codecPrivate,
+			})
+		default:
+			frames = append(frames, videoFrame{data: u.data, timestamp: u.timestamp})
+		}
+	}
+
+	return frames, err
 }

@@ -267,10 +267,10 @@ func TestH264AccessUnitsOrphanParameterSets(t *testing.T) {
 	assert.False(t, units[0].slice)
 	assert.Equal(t, wantUnit(3001, 11, s.seq-1, high), units[1])
 
-	_, _, _, ok := h264KeyFrame(units[0])
-	assert.False(t, ok)
-	width, height, cp, ok := h264KeyFrame(units[1])
-	require.True(t, ok)
+	_, _, _, err = h264KeyFrame(units[0])
+	assert.ErrorIs(t, err, errUnusableKeyFrame)
+	width, height, cp, err := h264KeyFrame(units[1])
+	require.NoError(t, err)
 	assert.Equal(t, 320, width)
 	assert.Equal(t, 180, height)
 	want, err := h264CodecPrivate([][]byte{high[1]}, [][]byte{high[2]})
@@ -396,30 +396,131 @@ func TestH264AccessUnitsMalformed(t *testing.T) {
 		{"FU-A end without a start", frag[len(frag)-1:], "without a start"},
 		{"FU-A type changes", [][]byte{frag[0], append([]byte{frag[1][0], frag[1][1]&0xe0 | 1}, frag[1][2:]...)}, "type changes"},
 		{"FU-A not ended", frag[:len(frag)-1], "not ended"},
-		{"single NAL unit inside an open FU-A", [][]byte{frag[0], p, frag[len(frag)-1]}, "open FU-A"},
-		{"STAP-A inside an open FU-A", [][]byte{frag[0], stapA(p, p), frag[len(frag)-1]}, "open FU-A"},
+		{"IDR slice without a slice header", [][]byte{{0x65}}, "slice header"},
+		{"P slice without a slice header inside a STAP-A", [][]byte{stapA(p, []byte{0x41})}, "slice header"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			good0, good1 := testAU(t, 0), testAU(t, 2)
 			s := (&h264TestSample{seq: 40}).add(1000, h264Packetize(good0, 300)...)
-			want := []h264AccessUnit{wantUnit(1000, 40, s.seq-1, good0)}
+			first := wantUnit(1000, 40, s.seq-1, good0)
 			s.add(4000, tt.payloads...)
+			after := s.seq
 			s.add(7000, h264Packetize(good1, 300)...)
 
+			// The units around the malformed one are still returned.
 			units, err := h264AccessUnits(s.packets)
 			require.Error(t, err)
 			assert.ErrorContains(t, err, tt.want)
-			assert.Equal(t, want, units)
+			assert.Equal(t, []h264AccessUnit{first, {lost: true}, wantUnit(7000, after, s.seq-1, good1)}, units)
 
-			// At the end of the sample, the same unit is rejected too.
+			// At the end of the sample, the same unit is lost too.
 			s = (&h264TestSample{seq: 40}).add(1000, h264Packetize(good0, 300)...)
 			s.add(4000, tt.payloads...)
 			units, err = h264AccessUnits(s.packets)
 			assert.ErrorContains(t, err, tt.want)
-			assert.Equal(t, want, units)
+			assert.Equal(t, []h264AccessUnit{first, {lost: true}}, units)
 		})
 	}
+}
+
+// The layer switch h264AccessUnits describes: the key frame follows the cut
+// frame with the next sequence number and timestamp.
+func TestH264AccessUnitsResumeAfterACutFrame(t *testing.T) {
+	cut := fuA(testAU(t, 2)[2], 100)[0]
+	s := (&h264TestSample{seq: 10}).add(1000, cut).unmark()
+	key := testAU(t, 0)
+	s.add(1001, h264Packetize(key, 1200)...)
+
+	units, err := h264AccessUnits(s.packets)
+	assert.ErrorContains(t, err, "FU-A not ended")
+	assert.ErrorIs(t, err, errCutFrame)
+	require.Len(t, units, 2)
+	assert.True(t, units[0].lost)
+	assert.Equal(t, wantUnit(1001, 11, s.seq-1, key), units[1])
+}
+
+// The same switch between two slices sent as single NAL units, as in
+// packetization mode 0: no FU-A is open, but the marker is missing.
+func TestH264AccessUnitsResumeAfterAFrameCutBetweenSlices(t *testing.T) {
+	// The AUD and the first of the frame's two P slices.
+	s := (&h264TestSample{seq: 10}).add(1000, testAU(t, 2)[:2]...).unmark()
+	first := s.seq
+	key := testAU(t, 0)
+	s.add(1001, key...)
+
+	units, err := h264AccessUnits(s.packets)
+	assert.ErrorIs(t, err, errCutFrame)
+	assert.Equal(t, []h264AccessUnit{{lost: true}, wantUnit(1001, first, s.seq-1, key)}, units)
+}
+
+// The sample ends inside a frame, as when LiveKit pauses a downtrack: after
+// the first of the frame's two slices, or inside an FU-A. An FU-A still open
+// at a packet with the marker is malformed instead. A sample that ends after
+// parameter sets alone keeps them.
+func TestH264AccessUnitsDropsAnUnmarkedUnitAtTheSampleEnd(t *testing.T) {
+	s := (&h264TestSample{seq: 10}).add(1000, testAU(t, 2)[:2]...).unmark()
+	units, err := h264AccessUnits(s.packets)
+	assert.ErrorIs(t, err, errCutFrame)
+	assert.Equal(t, []h264AccessUnit{{lost: true}}, units)
+
+	frag := fuA(testAU(t, 1)[2], 40)
+	require.Greater(t, len(frag), 2)
+	s = (&h264TestSample{seq: 10}).add(1000, frag[:2]...).unmark()
+	units, err = h264AccessUnits(s.packets)
+	assert.ErrorIs(t, err, errCutFrame)
+	assert.Equal(t, []h264AccessUnit{{lost: true}}, units)
+
+	s = (&h264TestSample{seq: 10}).add(1000, frag[:2]...)
+	units, err = h264AccessUnits(s.packets)
+	assert.ErrorContains(t, err, "FU-A not ended")
+	assert.NotErrorIs(t, err, errCutFrame)
+	assert.Equal(t, []h264AccessUnit{{lost: true}}, units)
+
+	ps := testAU(t, 0)[1:3]
+	s = (&h264TestSample{seq: 10}).add(1000, ps...).unmark()
+	units, err = h264AccessUnits(s.packets)
+	require.NoError(t, err)
+	assert.Equal(t, []h264AccessUnit{wantUnit(1000, 10, 11, ps)}, units)
+}
+
+// The downtrack close that errH264FUOpen describes. The blank frame has the
+// next sequence number.
+func TestH264AccessUnitsCutInsideAnFUA(t *testing.T) {
+	frag := fuA(testAU(t, 1)[2], 40)
+	require.Greater(t, len(frag), 2)
+	blank := stapA(h264Blank2x2SPS, h264Blank2x2PPS, h264Blank2x2IDR)
+	key := testAU(t, 0)
+
+	for name, next := range map[string][]byte{"STAP-A": blank, "single NAL unit": testAU(t, 1)[1]} {
+		s := (&h264TestSample{seq: 10}).add(1000, frag[:2]...).unmark()
+		s.add(1000, next)
+		first := s.seq
+		s.add(4000, h264Packetize(key, 1200)...)
+
+		units, err := h264AccessUnits(s.packets)
+		assert.ErrorContains(t, err, "open FU-A", name)
+		assert.ErrorIs(t, err, errCutFrame, name)
+		assert.Equal(t, []h264AccessUnit{{lost: true}, wantUnit(4000, first, s.seq-1, key)}, units, name)
+	}
+
+	// After a sequence gap, the lost packets may hold the end of the FU-A.
+	s := (&h264TestSample{seq: 10}).add(1000, frag[:2]...).unmark().skip(1)
+	s.add(1000, blank)
+	units, err := h264AccessUnits(s.packets)
+	assert.ErrorContains(t, err, "sequence gap")
+	assert.NotErrorIs(t, err, errCutFrame)
+	assert.Equal(t, []h264AccessUnit{{lost: true}}, units)
+}
+
+func TestH264AccessUnitsReportsMalformedInputAfterACut(t *testing.T) {
+	s := (&h264TestSample{seq: 10}).add(1000, testAU(t, 2)[:2]...).unmark()
+	s.add(1001, []byte{0x1e, 0x9a})
+
+	units, err := h264AccessUnits(s.packets)
+	assert.ErrorContains(t, err, "type 30")
+	assert.NotErrorIs(t, err, errCutFrame)
+	assert.Equal(t, []h264AccessUnit{{lost: true}}, units)
 }
 
 func TestH264AccessUnitsSequenceGap(t *testing.T) {
@@ -430,30 +531,56 @@ func TestH264AccessUnitsSequenceGap(t *testing.T) {
 		first := s.seq
 		pk := h264Packetize(au1, 40)
 		s.add(4000, pk[:1]...).skip(1).add(4000, pk[2:]...)
+		third := s.seq
 		s.add(7000, h264Packetize(au2, 300)...)
 
 		units, err := h264AccessUnits(s.packets)
 		assert.ErrorContains(t, err, "sequence gap")
-		assert.Equal(t, []h264AccessUnit{wantUnit(1000, 1, first-1, au0)}, units)
+		assert.Equal(t, []h264AccessUnit{
+			wantUnit(1000, 1, first-1, au0), {lost: true}, wantUnit(7000, third, s.seq-1, au2),
+		}, units)
 	})
 
-	t.Run("at a timestamp change", func(t *testing.T) {
-		// The lost packets may belong to either unit, so the one before the gap is rejected.
+	t.Run("after a unit's marker", func(t *testing.T) {
+		// The unit before the gap got its marker, so the lost packets came after it.
 		s := (&h264TestSample{seq: 1}).add(1000, h264Packetize(au0, 300)...)
 		first := s.seq
-		s.add(4000, h264Packetize(au1, 300)...).skip(2)
+		s.add(4000, h264Packetize(au1, 300)...)
+		second := s.seq
+		s.skip(2)
+		third := s.seq
 		s.add(7000, h264Packetize(au2, 300)...)
 
 		units, err := h264AccessUnits(s.packets)
 		assert.ErrorContains(t, err, "sequence gap")
-		assert.Equal(t, []h264AccessUnit{wantUnit(1000, 1, first-1, au0)}, units)
+		assert.Equal(t, []h264AccessUnit{
+			wantUnit(1000, 1, first-1, au0), wantUnit(4000, first, second-1, au1),
+			{lost: true}, wantUnit(7000, third, s.seq-1, au2),
+		}, units)
+	})
+
+	t.Run("at a timestamp change without a marker", func(t *testing.T) {
+		// The lost packets may belong to either unit, so the one before the gap is lost.
+		s := (&h264TestSample{seq: 1}).add(1000, h264Packetize(au0, 300)...)
+		first := s.seq
+		s.add(4000, h264Packetize(au1, 300)...).unmark().skip(2)
+		third := s.seq
+		s.add(7000, h264Packetize(au2, 300)...)
+
+		units, err := h264AccessUnits(s.packets)
+		assert.ErrorContains(t, err, "sequence gap")
+		assert.Equal(t, []h264AccessUnit{
+			wantUnit(1000, 1, first-1, au0), {lost: true}, wantUnit(7000, third, s.seq-1, au2),
+		}, units)
 	})
 
 	t.Run("after a padding packet", func(t *testing.T) {
-		s := (&h264TestSample{seq: 1}).padding(1000).skip(1).add(1000, h264Packetize(au0, 300)...)
+		s := (&h264TestSample{seq: 1}).padding(1000).skip(1)
+		first := s.seq
+		s.add(1000, h264Packetize(au0, 300)...)
 		units, err := h264AccessUnits(s.packets)
 		assert.ErrorContains(t, err, "sequence gap")
-		assert.Empty(t, units)
+		assert.Equal(t, []h264AccessUnit{{lost: true}, wantUnit(1000, first, s.seq-1, au0)}, units)
 	})
 
 	t.Run("wrap-around is no gap", func(t *testing.T) {
@@ -471,7 +598,7 @@ func TestH264AccessUnitsNilPacket(t *testing.T) {
 	assert.NotPanics(t, func() {
 		units, err := h264AccessUnits(packets)
 		assert.Error(t, err)
-		assert.Empty(t, units)
+		assert.Equal(t, []h264AccessUnit{{lost: true}}, units)
 	})
 }
 
@@ -497,16 +624,16 @@ func TestH264KeyFrame(t *testing.T) {
 		return units[0]
 	}
 
-	width, height, cp, ok := h264KeyFrame(unit(au0...))
-	require.True(t, ok)
+	width, height, cp, err := h264KeyFrame(unit(au0...))
+	require.NoError(t, err)
 	assert.Equal(t, 320, width)
 	assert.Equal(t, 180, height)
 	want, err := h264CodecPrivate([][]byte{sps}, [][]byte{pps})
 	require.NoError(t, err)
 	assert.Equal(t, want, cp)
 
-	width, height, _, ok = h264KeyFrame(unit(small(0, 0), pps, idr1))
-	assert.True(t, ok)
+	width, height, _, err = h264KeyFrame(unit(small(0, 0), pps, idr1))
+	assert.NoError(t, err)
 	assert.Equal(t, 16, width)
 	assert.Equal(t, 16, height)
 
@@ -515,35 +642,62 @@ func TestH264KeyFrame(t *testing.T) {
 		s := testSPS{profile: 66, constraints: 0xc0, level: 30, widthMBsMinus1: widthMBsMinus1, heightMUsMinus1: heightMUsMinus1}
 		return s.nal()
 	}
-	width, height, _, ok = h264KeyFrame(unit(large(511, 511), pps, idr1))
-	assert.True(t, ok)
+	width, height, _, err = h264KeyFrame(unit(large(511, 511), pps, idr1))
+	assert.NoError(t, err)
 	assert.Equal(t, 8192, width)
 	assert.Equal(t, 8192, height)
 
-	for name, nals := range map[string][][]byte{
-		"P frame":                       {p},
-		"IDR without SPS and PPS":       {idr1, idr2},
-		"IDR without PPS":               {sps, idr1, idr2},
-		"IDR without SPS":               {pps, idr1, idr2},
-		"SPS and PPS with a P slice":    {sps, pps, p},
-		"SPS and PPS only":              {sps, pps},
-		"LiveKit 2x2 blank key frame":   {blankSPS, blankPPS, blankIDR},
-		"14 wide":                       {small(1, 0), pps, idr1},
-		"14 high":                       {small(0, 1), pps, idr1},
-		"8208 wide":                     {large(512, 511), pps, idr1},
-		"8208 high":                     {large(511, 512), pps, idr1},
-		"16777232 wide and high":        {large(1<<20, 1<<20), pps, idr1},
-		"SPS that does not parse":       {sps[:6], pps, idr1},
-		"second SPS under 16x16":        {sps, blankSPS, pps, idr1},
-		"PPS that avcC cannot hold":     {sps, append([]byte{0x68}, make([]byte, 0x10000)...), idr1},
-		"high profile SPS bit depth 16": {(&testSPS{profile: 100, level: 30, chromaFormat: 1, lumaMinus8: 8, widthMBsMinus1: 19, heightMUsMinus1: 14}).nal(), pps, idr1},
+	// After a size change, Chrome's WebCodecs encoder lists every SPS used so
+	// far. SPS 0 is 640x360 and SPS 1 is 360x640. The IDR slice, cut after
+	// its header, names PPS 0.
+	sps0 := mustHex(t, "6742c01e8c680a02ff966e021a020f08846a")
+	sps1 := mustHex(t, "6742c01e431a05c147979b80868083c2211a80")
+	idr := mustHex(t, "65b8000608fffff8228bf1c0")
+	// PPS 0 of SPS 0, PPS 0 of SPS 1, and PPS 1 of SPS 1.
+	pps00, pps01, pps11 := mustHex(t, "68ce3c80"), mustHex(t, "68a38f20"), []byte{0x68, 0x4a}
+	for name, tt := range map[string]struct {
+		nals          [][]byte
+		width, height int
+	}{
+		"PPS 0 names SPS 1":                {[][]byte{sps0, sps1, pps01, idr}, 360, 640},
+		"PPS 0 names SPS 0":                {[][]byte{sps0, sps1, pps00, idr}, 640, 360},
+		"PPS 0 names SPS 0, listed second": {[][]byte{sps1, sps0, pps00, idr}, 640, 360},
+		"no PPS 0":                         {[][]byte{sps0, sps1, pps11, idr}, 640, 360},
+		"second PPS 0 names SPS 1":         {[][]byte{sps0, sps1, pps00, pps01, idr}, 360, 640},
+		"second SPS 0 is 16x16":            {[][]byte{sps0, small(0, 0), pps00, idr}, 16, 16},
 	} {
-		s := (&h264TestSample{seq: 1}).add(1000, nals...)
+		width, height, _, err = h264KeyFrame(unit(tt.nals...))
+		assert.NoError(t, err, name)
+		assert.Equal(t, [2]int{tt.width, tt.height}, [2]int{width, height}, name)
+	}
+
+	for name, tt := range map[string]struct {
+		nals [][]byte
+		want error
+	}{
+		"P frame":                       {[][]byte{p}, errUnusableKeyFrame},
+		"IDR without SPS and PPS":       {[][]byte{idr1, idr2}, errUnusableKeyFrame},
+		"IDR without PPS":               {[][]byte{sps, idr1, idr2}, errUnusableKeyFrame},
+		"IDR without SPS":               {[][]byte{pps, idr1, idr2}, errUnusableKeyFrame},
+		"SPS and PPS with a P slice":    {[][]byte{sps, pps, p}, errUnusableKeyFrame},
+		"SPS and PPS only":              {[][]byte{sps, pps}, errUnusableKeyFrame},
+		"LiveKit 2x2 blank key frame":   {[][]byte{blankSPS, blankPPS, blankIDR}, errUnusableKeyFrame},
+		"14 wide":                       {[][]byte{small(1, 0), pps, idr1}, errUnusableKeyFrame},
+		"14 high":                       {[][]byte{small(0, 1), pps, idr1}, errUnusableKeyFrame},
+		"8208 wide":                     {[][]byte{large(512, 511), pps, idr1}, errOversizedKeyFrame},
+		"8208 high":                     {[][]byte{large(511, 512), pps, idr1}, errOversizedKeyFrame},
+		"16777232 wide and high":        {[][]byte{large(1<<20, 1<<20), pps, idr1}, errOversizedKeyFrame},
+		"SPS that does not parse":       {[][]byte{sps[:6], pps, idr1}, errUnreadableKeyFrame},
+		"second SPS under 16x16":        {[][]byte{sps, blankSPS, pps, idr1}, errUnusableKeyFrame},
+		"PPS that avcC cannot hold":     {[][]byte{sps, append([]byte{0x68}, make([]byte, 0x10000)...), idr1}, errAvcCKeyFrame},
+		"high profile SPS bit depth 16": {[][]byte{(&testSPS{profile: 100, level: 30, chromaFormat: 1, lumaMinus8: 8, widthMBsMinus1: 19, heightMUsMinus1: 14}).nal(), pps, idr1}, errAvcCKeyFrame},
+	} {
+		s := (&h264TestSample{seq: 1}).add(1000, tt.nals...)
 		units, err := h264AccessUnits(s.packets)
 		require.NoError(t, err, name)
 		require.Len(t, units, 1, name)
-		_, _, _, ok := h264KeyFrame(units[0])
-		assert.False(t, ok, name)
+		_, _, _, err = h264KeyFrame(units[0])
+		assert.ErrorIs(t, err, tt.want, name)
 	}
 }
 
@@ -622,7 +776,7 @@ func checkH264Unit(t *testing.T, u h264AccessUnit) {
 	for _, s := range append(append([][]byte{}, u.sps...), u.pps...) {
 		assert.Equal(t, len(s), cap(s))
 	}
-	assert.NotPanics(t, func() { h264KeyFrame(u) })
+	assert.NotPanics(t, func() { _, _, _, _ = h264KeyFrame(u) })
 }
 
 // FuzzH264AccessUnits reads its input in one of two modes, picked by the low
@@ -635,17 +789,23 @@ func checkH264Unit(t *testing.T, u h264AccessUnit) {
 func FuzzH264AccessUnits(f *testing.F) {
 	for i := range h264TestAUs {
 		for _, mtu := range []int{1200, 100, 3} {
-			var in []byte
-			for j, p := range h264Packetize(testAU(f, i), mtu) {
-				p = p[:min(len(p), 255)]
-				flags := byte(0)
-				if j == 2 {
-					flags |= 2
+			packets := h264Packetize(testAU(f, i), mtu)
+			for _, marker := range []bool{false, true} {
+				var in []byte
+				for j, p := range packets {
+					p = p[:min(len(p), 255)]
+					flags := byte(0)
+					if j == 2 {
+						flags |= 2
+					}
+					if marker && j == len(packets)-1 {
+						flags |= 8
+					}
+					in = append(in, flags, byte(len(p)))
+					in = append(in, p...)
 				}
-				in = append(in, flags, byte(len(p)))
-				in = append(in, p...)
+				f.Add(append([]byte{0}, in...))
 			}
-			f.Add(append([]byte{0}, in...))
 		}
 		in := []byte{1, 40}
 		for _, n := range testAU(f, i) {
@@ -674,6 +834,7 @@ func FuzzH264AccessUnits(f *testing.F) {
 func fuzzH264Packets(t *testing.T, in []byte) {
 	s := &h264TestSample{seq: 65530}
 	ts := uint32(1 << 31)
+	gaps := false
 	for len(in) >= 2 {
 		flags, n := in[0], int(in[1])
 		in = in[2:]
@@ -686,6 +847,7 @@ func fuzzH264Packets(t *testing.T, in []byte) {
 		}
 		if flags&4 != 0 {
 			s.skip(1)
+			gaps = true
 		}
 		s.packets = append(s.packets, &rtp.Packet{
 			Header:  rtp.Header{SequenceNumber: s.seq, Timestamp: ts, Padding: flags&1 != 0, Marker: flags&8 != 0},
@@ -695,6 +857,7 @@ func fuzzH264Packets(t *testing.T, in []byte) {
 	}
 
 	var runs []h264AccessUnit
+	var marked []bool // whether each run's last packet has the marker
 	for _, p := range s.packets {
 		assert.NotPanics(t, func() { isH264KeyFrameStart(p) })
 		if p.Padding {
@@ -702,20 +865,48 @@ func fuzzH264Packets(t *testing.T, in []byte) {
 		}
 		if len(runs) == 0 || runs[len(runs)-1].timestamp != p.Timestamp {
 			runs = append(runs, h264AccessUnit{timestamp: p.Timestamp, firstSeq: p.SequenceNumber})
+			marked = append(marked, false)
 		}
 		runs[len(runs)-1].lastSeq = p.SequenceNumber
+		marked[len(marked)-1] = p.Marker
 	}
 
 	units, err := h264AccessUnits(s.packets)
-	require.LessOrEqual(t, len(units), len(runs))
+	// A lost unit comes only with an error, and an error with a lost unit.
+	// Lost units are never two in a row, and the others are some of the
+	// runs, in order.
+	next, lost := 0, false
+	for i, u := range units {
+		if u.lost {
+			require.Error(t, err)
+			lost = true
+			assert.Equal(t, h264AccessUnit{lost: true}, u)
+			assert.False(t, i > 0 && units[i-1].lost, "two lost units in a row")
+
+			continue
+		}
+		for next < len(runs) && runs[next].timestamp != u.timestamp {
+			next++
+		}
+		require.Less(t, next, len(runs), "a unit no run gives")
+		assert.Equal(t, runs[next].timestamp, u.timestamp)
+		assert.Equal(t, runs[next].lastSeq, u.lastSeq)
+		// The jitter buffer releases only samples with no gap. In one, a
+		// kept unit that holds a slice ends at a packet with the marker.
+		if !gaps && u.slice {
+			assert.True(t, marked[next], "a kept unit with a slice ends at sequence number %d, which has no marker", u.lastSeq)
+		}
+		checkH264Unit(t, u)
+		next++
+	}
+	if err != nil {
+		assert.True(t, lost, "an error with no lost unit: %v", err)
+	}
 	if err == nil {
 		require.Len(t, units, len(runs))
-	}
-	for i, u := range units {
-		assert.Equal(t, runs[i].timestamp, u.timestamp)
-		assert.Equal(t, runs[i].firstSeq, u.firstSeq)
-		assert.Equal(t, runs[i].lastSeq, u.lastSeq)
-		checkH264Unit(t, u)
+		for i, u := range units {
+			assert.Equal(t, runs[i].firstSeq, u.firstSeq)
+		}
 	}
 }
 
@@ -735,6 +926,10 @@ func fuzzH264RoundTrip(t *testing.T, in []byte) {
 		}
 		// A valid single NAL unit header: forbidden bit clear, type 1-23.
 		nal[0] = nal[0]&0x60 | (1 + nal[0]%23)
+		// A slice needs its slice header.
+		if t := nal[0] & 0x1f; (t == 1 || t == 5) && len(nal) < 2 {
+			nal = append(nal, 0x80)
+		}
 		nals = append(nals, nal)
 	}
 	if len(nals) == 0 {

@@ -18,6 +18,7 @@ var errH264ShortRead = errors.New("read past the end")
 // cropped display size.
 type h264SPS struct {
 	profileIDC, constraints, levelIDC             uint8
+	id                                            uint32 // seq_parameter_set_id
 	chromaFormatIDC, bitDepthLuma, bitDepthChroma int
 	width, height                                 int
 }
@@ -144,7 +145,7 @@ func parseH264SPS(nal []byte) (h264SPS, error) {
 		bitDepthLuma:    8,
 		bitDepthChroma:  8,
 	}
-	r.ue() // seq_parameter_set_id
+	s.id = r.ue()
 
 	separateColourPlanes := false
 	if h264HighProfile(s.profileIDC) {

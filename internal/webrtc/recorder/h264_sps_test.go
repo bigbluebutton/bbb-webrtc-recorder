@@ -29,6 +29,7 @@ var h264TestSPS = []struct {
 	profile     uint8
 	constraints uint8
 	level       uint8
+	id          uint32
 	chroma      int
 	depth       int
 	width       int
@@ -115,7 +116,7 @@ var h264TestSPS = []struct {
 	{
 		// LiveKit's blank key frame SPS (pkg/sfu/downtrack.go H264KeyFrame2x2SPS).
 		name: "livekit blank 2x2", nal: "6742c01f0fd91f888884000003000400000300c83c60c920",
-		profile: 66, constraints: 0xc0, level: 31, chroma: 1, depth: 8, width: 2, height: 2,
+		profile: 66, constraints: 0xc0, level: 31, id: 30, chroma: 1, depth: 8, width: 2, height: 2,
 		pps: "6887cb83cb20",
 	},
 }
@@ -136,6 +137,7 @@ func TestParseH264SPSRealStreams(t *testing.T) {
 				profileIDC:      v.profile,
 				constraints:     v.constraints,
 				levelIDC:        v.level,
+				id:              v.id,
 				chromaFormatIDC: v.chroma,
 				bitDepthLuma:    v.depth,
 				bitDepthChroma:  v.depth,
