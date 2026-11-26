@@ -18,13 +18,13 @@ import (
 )
 
 // TestStartResponseNamesTheCodec starts one session for each of a VP8
-// camera and a microphone. The camera asks for a .webm name, as
-// bbb-webrtc-sfu does.
+// camera, an H.264 camera and a microphone. The cameras ask for a .webm
+// name, as bbb-webrtc-sfu does.
 //
 // A requester must write the response's file name into the recording's
-// events, since the recorder picks the extension. So that name must have
-// the extension of the file written. The response must also name the
-// codec, and getRecordingsResponse must agree.
+// events, or processing looks for a .webm that does not exist. So that name
+// must have the extension of the file written. The response must also name
+// the codec, and getRecordingsResponse must agree.
 func TestStartResponseNamesTheCodec(t *testing.T) {
 	const recordFor = 3 * time.Second
 
@@ -46,6 +46,7 @@ func TestStartResponseNamesTheCodec(t *testing.T) {
 		codec  string
 	}{
 		{"vp8", pub.PublishVP8(TrackOptions{Name: "vp8", Schedule: vp8}), ".webm", []string{"video/vp8"}, ".webm", oracle.CodecVP8},
+		{"h264", pub.PublishH264(TrackOptions{Name: "h264", Schedule: h264Camera(t, 15, 30*time.Second)}), ".webm", []string{mimeH264}, ".mkv", oracle.CodecH264},
 		{"opus", pub.PublishOpus(TrackOptions{Name: "opus", Schedule: opus}), "", []string{"audio/opus"}, ".webm", oracle.CodecOpus},
 	}
 
