@@ -162,9 +162,10 @@ LiveKit adds cases of its own:
   publication lists H.264, primary or backup. The track's size and
   `CodecPrivate` come from the first key frame's own SPS and PPS. Every key
   frame keeps its SPS and PPS in band, so later sizes still decode.
-- **Codec changes.** A track subscribed again with another codec is not
-  recorded: the first reader's end ends the session. A codec change on the
-  same track ends its reader. The requester starts a new recording.
+- **Codec changes.** At a codec regression, LiveKit closes the recorder's
+  subscription and subscribes the track again in the new codec. The first
+  reader's end stops the session as `closed`; the new subscription is not
+  recorded. The README's protocol section says what a requester does next.
 - **Timestamps.** The presentation time counts the RTP ticks since the first
   key frame. A delta frame whose timestamp goes back is skipped, and so are
   the frames after it until a key frame. A key frame behind the last frame

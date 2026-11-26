@@ -245,7 +245,8 @@ publication's MIME type, except on `recorder_active_tracks`, which names the cod
 published with RED reads `audio/opus` in the stats file and `audio/red` in the other metrics.
 
 A codec regression can make LiveKit send the backup codec instead. A session that starts after one records the
-backup, and the stats file names it.
+backup, and the stats file names it. A regression mid-session ends the session, as `recordingStopped` below
+describes.
 
 For mediasoup, `codecs` lists the codecs the SDP answer accepts: `video/vp8`, `audio/opus` or both.
 
@@ -301,6 +302,10 @@ See [Media timestamps](#media-timestamps).
     mediaEndHR?: <Number>,
 }
 ```
+
+A LiveKit session stops as `closed` at a codec regression. With the Go SDK the recorder uses, LiveKit does not
+change a subscription's codec in place: it closes the subscription and subscribes again in the new codec. The
+publisher is still live, so a requester should start a new recording.
 
 `getRecorderStatus` (* -> Recorder)
 ```JSON5
