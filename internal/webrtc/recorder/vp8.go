@@ -294,7 +294,7 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet, at time.Time) {
 	// NEW FRAME!
 	if vp8Packet.S == 1 {
 		// OLD FRAME, but not complete. Discard it.
-		if r.currentFrame != nil && len(r.currentFrame) > 0 {
+		if len(r.currentFrame) > 0 {
 			var logMsgPkts = "none"
 
 			if r.currentFrameInfo != nil && len(r.currentFrameInfo.packets) > 0 {
@@ -607,7 +607,7 @@ func (r *WebmRecorder) pushVP8Custom(p *rtp.Packet, at time.Time) {
 			r.hasKeyFrame = false
 			r.RequestKeyframe()
 		} else {
-			var sSeq, eSeq, pktCount, stime, pictureID, timestamp int = 0, 0, 0, 0, 0, 0
+			var sSeq, eSeq, pktCount, stime, pictureID, timestamp = 0, 0, 0, 0, 0, 0
 
 			r.stats.Video.WrittenSamples++
 			r.span.wrote(p.Timestamp, time.Duration(newPts)*time.Millisecond, duration, videoSpan)
@@ -672,7 +672,10 @@ func (r *WebmRecorder) pushToIVFWriter(frame []byte, p *rtp.Packet) {
 			width := uint16(raw & 0x3FFF)
 			height := uint16((raw >> 16) & 0x3FFF)
 
-			r.ivfWriter.UpdateDimensions(width, height)
+			if err := r.ivfWriter.UpdateDimensions(width, height); err != nil {
+				log.WithField("session", r.ctx.Value("session")).
+					Warnf("Failed to update the IVF copy's dimensions: %v", err)
+			}
 		}
 
 		err := r.ivfWriter.WriteFrame(frame, p.Timestamp, isKeyFrame)
