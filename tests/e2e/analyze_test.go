@@ -46,7 +46,8 @@ func assertTraceEnded(t *testing.T, name string, out *Output) {
 
 // ReadOutput reads rec's WebM with the oracle and the trace the capture
 // wrote next to it for trackID, failing t if either is missing or invalid,
-// and saves a summary next to them.
+// and saves a summary next to them. The file's DocType must match its
+// extension.
 func ReadOutput(t *testing.T, rec *Recording, trackID string) *Output {
 	t.Helper()
 

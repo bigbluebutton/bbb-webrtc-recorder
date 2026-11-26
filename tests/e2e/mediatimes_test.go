@@ -43,13 +43,20 @@ func readBlocks(t *testing.T, path string) []oracle.Block {
 	return blocks
 }
 
-// readTaggedBlocks is readBlocks for a track of frames the publisher tagged.
+// readTaggedBlocks is readBlocks for tagged frames; the oracle reads H.264 tags.
 func readTaggedBlocks(t *testing.T, path string) []taggedBlock {
 	t.Helper()
 
+	sum, err := oracle.SummarizeWebM(path)
+	require.NoError(t, err)
+	h264 := sum.Track(oracle.CodecH264)
+
 	var blocks []taggedBlock
-	for _, b := range readBlocks(t, path) {
+	for i, b := range readBlocks(t, path) {
 		v, ok := corpus.TaggedFrame(b.Data)
+		if h264 != nil {
+			v, ok = h264.Tags[i], h264.TagOK[i]
+		}
 		require.True(t, ok, "block at %d ms has no frame tag", b.PTS)
 		blocks = append(blocks, taggedBlock{PTS: b.PTS, Frame: int(v)})
 	}

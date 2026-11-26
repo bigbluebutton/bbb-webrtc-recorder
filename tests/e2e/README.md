@@ -40,6 +40,7 @@ those frames had one.
 | Test | Scenario |
 |---|---|
 | `TestBaselineRecording` | **Baseline.** A camera and a microphone, one session per track, about 10 s on a clean path. It checks the frame counts against what was sent and the PTS (increasing, no duplicates, gaps bounded), that the trace and the metrics agree, and that the recorder asks for no key frames. |
+| `TestH264BaselineRecording` | **H.264 baseline.** A synthetic H.264 camera, two slices a frame sent as FU-A fragments, records for about 8 s on a clean path. The file must be `.mkv`, pass the oracle's H.264 checks and carry the SPS's size. Frame counts, PTS, trace and metrics are checked as in the baseline, and the recorder must request no key frame. Each block must land within 15 ms of when its frame was sent, and hold the frame after the previous block's. |
 | `TestStartResponseNamesTheCodec` | **Codec in the start response.** A VP8 camera started under a `.webm` name, and a microphone under none, one session each. `startRecordingResponse` and `getRecordingsResponse` must name the file on disk and list the track's codec. A requester must write that name into the recording's events: the recorder picks its extension. |
 | `TestUnrepairedLossRequestsKeyframe` | **Unrepaired loss.** One packet is withheld from the middle of a tagged camera frame, at 15 and at 5 fps. The trace must show exactly one unrepaired gap, at that packet. The recorder must request a key frame early, from the sequence gap (trace PLI reason `packet_drop`), within a bound that depends on the fps. The WebM must skip the lossy frame and at least one more, and go on from the key frame the publisher sends for the PLI. Every block must still land within 15 ms of when its frame was sent, so the PTS keep the gap where the skipped frames were. `recordingStopped` must repeat `mediaStart`, and its `mediaEnd` must add the file's media and its last frame. |
 | `TestPacedKeyframesNoLoop` | **Paced key frames.** A 3.4 fps camera whose key frames are paced over 664 ms, plus one lost packet. Key-frame requests must stay bounded (no keyframe loop) and frames must keep being written. |
@@ -91,8 +92,8 @@ of the in-process replay corpus
    and `WaitStopped`. `rec.Path` is the file: `.mkv` when LiveKit lists
    H.264 for the track, even as a backup codec, else `.webm`.
 4. **Read what came out.** `ReadOutput(t, rec, trackID)` reads the WebM
-   through `internal/corpus/oracle` and summarises the recorder's trace
-   (see `Output`). `ScrapeMetrics` and `Delta` give the metrics, and
+   through `internal/corpus/oracle`, checks that its DocType matches its
+   extension, and summarises the recorder's trace (see `Output`). `ScrapeMetrics` and `Delta` give the metrics, and
    `SentBetween` what the publisher sent.
 5. **Assert bounds derived from the mechanism,** not tuned to a run. Name
    each constant and say where it comes from, as the existing scenarios do
