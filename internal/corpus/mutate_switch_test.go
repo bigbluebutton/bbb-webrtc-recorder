@@ -73,6 +73,24 @@ func TestH264BlankClose(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestH264BlankCloseInsideAFrame(t *testing.T) {
+	// The last frame is cut after its first packet, seq 104.
+	out, err := Apply(schedule(), DropSeqs(105), H264BlankClose(2))
+	require.NoError(t, err)
+	require.NoError(t, validateRecords(out))
+	assert.Equal(t, []uint16{100, 101, 102, 103, 104, 105, 106, 107}, seqs(out))
+
+	end := out[5]
+	assert.Equal(t, uint32(1000+2*900), end.TS, "a blank packet ends the cut frame, at its timestamp")
+	assert.True(t, end.M)
+	assert.Equal(t, H264BlankFrame(), end.Pay)
+	assert.Equal(t, out[6].AtUs, end.AtUs, "read with the first blank frame")
+	for k, r := range out[6:] {
+		assert.Equal(t, uint32(1000+2*900+3000*(k+1)), r.TS)
+		assert.Equal(t, int64(20000+[]int{33333, 66667}[k]), r.AtUs, "30 fps after the last read")
+	}
+}
+
 func TestPauseH264(t *testing.T) {
 	tr, err := GenerateH264(H264Options{FPS: 25, Frames: 6, KeyInterval: 3, KeySlicePackets: 2, StartSeq: 65530})
 	require.NoError(t, err)

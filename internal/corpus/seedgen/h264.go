@@ -153,7 +153,24 @@ func h264Seeds(next func() uint32) []seed {
 		out = append(out, seed{name: "h264-padding-payload", class: "h264", tracks: []*corpus.Trace{t}})
 	}
 
-	return append(out, h264Twins(next)...)
+	out = append(out, h264Twins(next)...)
+
+	// Seeds appended after the twins keep every earlier seed's SSRC.
+
+	// LiveKit closes a downtrack inside the FU-A of P frame 59. Its first
+	// blank packet carries that frame's timestamp and ends the frame.
+	{
+		t := must(corpus.GenerateH264(h264Camera(60, 30, next())))
+		cut, seq := atOf(t.Records, 59, 0), seqOf(t.Records, 59, 0)
+		r := must(corpus.Apply(t.Records, corpus.EOFAt(cut), corpus.H264BlankClose(6)))
+		t.Records = must(corpus.Apply(r, corpus.EOFAt(endAt(r)+20000)))
+		synth(t, h264Gen(60, 30, fmt.Sprintf("+EOFAt(%d)+H264BlankClose(6)+EOFAt", cut)), nil, "h264-blank-close-midframe/camera",
+			fmt.Sprintf("2 s of camera, cut after the first FU-A fragment of P frame 59 (seq %d). LiveKit's close sends a blank STAP-A "+
+				"at that frame's timestamp, then 6 blank frames at 30 fps: each a STAP-A of a 2x2 SPS, PPS and IDR.", seq))
+		out = append(out, seed{name: "h264-blank-close-midframe", class: "h264", tracks: []*corpus.Trace{t}})
+	}
+
+	return out
 }
 
 // h264Twins are the H.264 twins of VP8 seeds: the same schedule shape and

@@ -109,10 +109,12 @@ func H264BlankFrame() []byte {
 	return out
 }
 
-// H264BlankClose appends the blank frames LiveKit sends as an H.264
-// downtrack closes, 6 over its 200 ms. Each frame is one H264BlankFrame
-// packet with the marker, at 30 fps after the last original packet, with the
-// next sequence numbers. The eofs are dropped: apply EOFAt after.
+// H264BlankClose appends the given number of blank frames, as LiveKit sends
+// them when an H.264 downtrack closes: 6 over 200 ms. Each frame is one
+// H264BlankFrame packet with the marker, at 30 fps after the last original
+// packet, with the next sequence numbers. When the last frame is cut, one
+// more blank packet ends it, at its timestamp. The eofs are dropped: apply
+// EOFAt after.
 func H264BlankClose(frames int) Op {
 	return func(recs []Record) ([]Record, error) {
 		if frames < 1 {
@@ -132,11 +134,20 @@ func H264BlankClose(frames int) Op {
 		out := slices.DeleteFunc(slices.Clone(recs), func(r Record) bool { return r.T == RecordEOF })
 		at := recs[last]
 		pay := H264BlankFrame()
+		blank := func(k int, seq uint16, ts uint32) Record {
+			return Record{
+				T: RecordRTP, AtUs: at.AtUs + int64(math.Round(float64(k)*1e6/30)), Seq: seq,
+				TS: ts, M: true, PT: at.PT, PLen: len(pay), Pay: slices.Clone(pay),
+			}
+		}
+
+		seq := at.Seq
+		if !at.M {
+			seq++
+			out = append(out, blank(1, seq, at.TS))
+		}
 		for k := 1; k <= frames; k++ {
-			out = append(out, Record{
-				T: RecordRTP, AtUs: at.AtUs + int64(math.Round(float64(k)*1e6/30)), Seq: at.Seq + uint16(k),
-				TS: at.TS + uint32(k)*h264ClockRate/30, M: true, PT: at.PT, PLen: len(pay), Pay: slices.Clone(pay),
-			})
+			out = append(out, blank(k, seq+uint16(k), at.TS+uint32(k)*h264ClockRate/30))
 		}
 
 		return out, nil

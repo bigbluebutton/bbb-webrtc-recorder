@@ -79,6 +79,7 @@ The class groups the seeds that guard one defect, or a few related ones, named i
 | `h264-layer-switch` | h264 | synthetic | LiveKit's simulcast switch (`Switch`) | A cut frame ahead of the next layer's key frame in one sample: the parse must go on past the lost unit |
 | `h264-simulcast-orphan-sps` | h264 | synthetic | LiveKit's simulcast start (`Switch`) | The low layer's orphan SPS and PPS ahead of the high layer's key frame: size and CodecPrivate come from the key frame's own SPS |
 | `h264-blank-close` | h264 | synthetic | LiveKit's downtrack close (`H264BlankClose`) | 2x2 blank key frames at the end, which the 16 px rule rejects |
+| `h264-blank-close-midframe` | h264 | synthetic | LiveKit's downtrack close inside a frame (`H264BlankClose`) | A frame cut inside its FU-A and ended by a blank STAP-A at its timestamp: one access unit, dropped whole, then the blank frames |
 | `h264-lost-stapa` | h264 | synthetic | generators | An IDR whose STAP-A of SPS and PPS is lost is no key frame |
 | `h264-lost-first-slice` | h264 | synthetic | generators | A P frame released without its first slice, in a sample that does not follow |
 | `h264-lost-fua-end` | h264 | synthetic | generators | A key frame that loses its last FU-A fragment: the requests end at the next key frame's SPS |

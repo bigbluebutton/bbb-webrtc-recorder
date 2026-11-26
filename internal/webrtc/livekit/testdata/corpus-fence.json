@@ -280,6 +280,16 @@
     "packetsLost": 0,
     "packetsDropped": 0
   },
+  "h264-blank-close-midframe": {
+    "file": "a307b70249cfc83423bd80dc899cc332aa0a487693657cdc774738654574d4dc",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [
+      2000000
+    ],
+    "packets": 136,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
   "h264-c01-paced-6x45": {
     "file": "ec1d8c7365069d30fe66eb208da027811f2cbd9f7befcb177ee9c6d779d85331",
     "bufferRequestsUs": [],
