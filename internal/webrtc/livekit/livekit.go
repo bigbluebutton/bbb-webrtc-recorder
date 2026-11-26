@@ -243,6 +243,18 @@ func (w *LiveKitWebRTC) SetConnectionStateCallback(callback func(state utils.Con
 	w.connStateCallback = callback
 }
 
+// notifyConnState calls the connection state callback, which a stopping
+// session replaces from its own goroutine.
+func (w *LiveKitWebRTC) notifyConnState(state utils.ConnectionState) {
+	w.m.Lock()
+	callback := w.connStateCallback
+	w.m.Unlock()
+
+	if callback != nil {
+		callback(state)
+	}
+}
+
 func (w *LiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
 	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
 	w.m.Lock()
@@ -1053,7 +1065,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	if !ok {
 		log.WithField("session", w.ctx.Value("session")).
 			Errorf("Unsupported codec: %s", mimeType)
-		w.connStateCallback(utils.ConnectionStateFailed)
+		w.notifyConnState(utils.ConnectionStateFailed)
 
 		return
 	}
@@ -1397,9 +1409,9 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 				WithField("stack", string(debug.Stack())).
 				Error("Panic detected in LiveKit packet processing, emit failed state")
 
-			w.connStateCallback(utils.ConnectionStateFailed)
+			w.notifyConnState(utils.ConnectionStateFailed)
 		} else {
-			w.connStateCallback(utils.ConnectionStateClosed)
+			w.notifyConnState(utils.ConnectionStateClosed)
 		}
 	}()
 
@@ -1655,7 +1667,7 @@ func (w *LiveKitWebRTC) onTrackSubscriptionFailed(
 		return
 	}
 
-	w.connStateCallback(utils.ConnectionStateFailed)
+	w.notifyConnState(utils.ConnectionStateFailed)
 
 	log.WithField("session", w.ctx.Value("session")).
 		WithField("room", w.roomId).
@@ -1728,15 +1740,7 @@ func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 		Infof("Disconnected from LiveKit room reason=%v", reason)
 
 	state := utils.NormalizeLiveKitDisconnectReason(reason)
-
-	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
-	w.m.Lock()
-	callback := w.connStateCallback
-	w.m.Unlock()
-
-	if callback != nil {
-		callback(state)
-	}
+	w.notifyConnState(state)
 
 	// If this is a terminal state, also notify via flow callback, after the
 	// transitions already queued.

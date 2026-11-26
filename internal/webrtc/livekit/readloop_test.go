@@ -389,6 +389,31 @@ func TestReadErrorReadsFlowStateUnderLock(t *testing.T) {
 	wg.Wait()
 }
 
+// Run with -race: a stopping session replaces the connection state callback
+// while the adapter reports a failed subscription or a track's end.
+func TestConnectionStateCallbackReadUnderLock(t *testing.T) {
+	h := newLoopHarness(newPushRecorder(), audioInfo.id)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				h.w.SetConnectionStateCallback(func(utils.ConnectionState) {})
+			}
+		}
+	})
+	for range 100 {
+		h.w.onTrackSubscriptionFailed(audioInfo.id, nil)
+		h.w.readTrack(newFakeTrack(), audioInfo, h.newBuffer(audioInfo, nil))
+	}
+	close(stop)
+	wg.Wait()
+}
+
 // Reads keep coming while they carry only padding, such as LiveKit's probes
 // and mute padding: only the flow check sees no media arrive.
 func TestReadTrackFlowCheckMarksStall(t *testing.T) {
