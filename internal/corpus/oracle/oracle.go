@@ -44,6 +44,9 @@ type Track struct {
 	// then its blocks in file order (see CheckH264). It stays nil for other
 	// codecs.
 	H264Errors []string
+	// H264Data holds each H.264 block's bytes, parallel to PTS, for
+	// CheckH264Blocks. It stays nil for other codecs.
+	H264Data [][]byte
 	// PTS is cluster timecode plus block timecode, in ms.
 	PTS []int64
 	// Tags holds each video block's corpus.TaggedFrame value, parallel to
@@ -216,6 +219,7 @@ func SummarizeWebM(path string) (*Summary, error) {
 			t.Tags = append(t.Tags, tag)
 			t.TagOK = append(t.TagOK, ok)
 			t.Keyframes = append(t.Keyframes, b.idr)
+			t.H264Data = append(t.H264Data, fr.Data)
 		}
 		t.PTS = append(t.PTS, fr.PTS)
 	}

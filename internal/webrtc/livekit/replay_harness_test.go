@@ -41,6 +41,8 @@ type replayResult struct {
 	// is replayed.
 	videoPlace    *oracle.Placement
 	videoPlaceErr error
+	// oracle.CheckH264Blocks's result, set when that trace is H.264.
+	h264BlocksErr error
 	// The recorder's media span once closed, and the fake clock's time at
 	// the traces' atUs 0.
 	span      types.MediaSpan

@@ -2,9 +2,11 @@ package oracle
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
@@ -18,6 +20,11 @@ const (
 	// The only NAL units of one byte: they have no payload.
 	h264NALEndOfSeq    = 10
 	h264NALEndOfStream = 11
+
+	h264NALAUD    = 9
+	h264NALFiller = 12
+	h264STAPA     = 24
+	h264FUA       = 28
 )
 
 // h264Block is what the H.264 checks read from a block.
@@ -236,6 +243,178 @@ func (t *Track) CheckH264() error {
 	shown := t.H264Errors[:min(len(t.H264Errors), 5)]
 
 	return fmt.Errorf("%s track %d: %d H.264 problems: %s", t.Codec, t.Number, len(t.H264Errors), strings.Join(shown, "; "))
+}
+
+// CheckH264Blocks compares each tagged block of t, an H.264 track, with the
+// NAL units of the frame its tag names. It rebuilds them from the packets
+// read in tr, whose records must give each payload as it was read. A block
+// of a frame that was not read whole fails too.
+func CheckH264Blocks(t *Track, tr *corpus.Trace) error {
+	if len(t.H264Data) != t.Blocks || len(t.TagOK) != t.Blocks {
+		return fmt.Errorf("%d blocks, %d with data and %d with tags read", t.Blocks, len(t.H264Data), len(t.TagOK))
+	}
+
+	frames := h264FramesRead(tr)
+	var problems []string
+	for k, data := range t.H264Data {
+		// VideoPlacement fails a block with no tag, or a tag no frame has.
+		f, ok := frames[t.Tags[k]]
+		if !t.TagOK[k] || !ok {
+			continue
+		}
+
+		at := fmt.Sprintf("block %d (PTS %d ms)", k, t.PTS[k])
+		switch {
+		case f.err != nil:
+			problems = append(problems, fmt.Sprintf("%s: frame %d was not read whole: %v", at, t.Tags[k], f.err))
+		case !bytes.Equal(data, f.data):
+			i := 0
+			for i < min(len(data), len(f.data)) && data[i] == f.data[i] {
+				i++
+			}
+			problems = append(problems, fmt.Sprintf("%s: %d bytes, but the NAL units of frame %d are %d, first different at byte %d",
+				at, len(data), t.Tags[k], len(f.data), i))
+		}
+	}
+
+	if len(problems) == 0 {
+		return nil
+	}
+
+	shown := problems[:min(len(problems), 5)]
+
+	return fmt.Errorf("%s track %d: %d blocks unlike their frames: %s", t.Codec, t.Number, len(problems), strings.Join(shown, "; "))
+}
+
+// h264Frame is one RTP timestamp's NAL units, as the recorder writes an
+// access unit: AVCC, without AUD and filler. err says why the frame was not
+// read whole.
+type h264Frame struct {
+	data []byte
+	err  error
+}
+
+// h264Packet is a packet read, with its sequence number unwrapped in read
+// order.
+type h264Packet struct {
+	seq int64
+	r   corpus.Record
+}
+
+// h264FramesRead depacketizes the frames read in tr, keyed by RTP
+// timestamp. A packet read again, such as an RTX copy, counts once.
+func h264FramesRead(tr *corpus.Trace) map[uint32]*h264Frame {
+	byTS := map[uint32][]h264Packet{}
+	seen := map[int64]bool{}
+	var (
+		seq     int64
+		prev    uint16
+		started bool
+	)
+	for _, r := range tr.Records {
+		if r.T != corpus.RecordRTP {
+			continue
+		}
+
+		if started {
+			seq += int64(int16(r.Seq - prev))
+		} else {
+			seq, started = int64(r.Seq), true
+		}
+		prev = r.Seq
+
+		if r.Pad || max(r.PLen, len(r.Pay)) == 0 || seen[seq] {
+			continue
+		}
+		seen[seq] = true
+		byTS[r.TS] = append(byTS[r.TS], h264Packet{seq: seq, r: r})
+	}
+
+	frames := make(map[uint32]*h264Frame, len(byTS))
+	for ts, packets := range byTS {
+		slices.SortFunc(packets, func(a, b h264Packet) int { return cmp.Compare(a.seq, b.seq) })
+		f := &h264Frame{}
+		f.err = f.depacketize(packets)
+		frames[ts] = f
+	}
+
+	return frames
+}
+
+// depacketize adds the NAL units of one frame's packets, in sequence order,
+// as RFC 6184 packs them: single NAL units, STAP-A and FU-A. The frame is
+// whole when its sequence numbers follow on, every FU-A ends, and its last
+// packet has the marker.
+func (f *h264Frame) depacketize(packets []h264Packet) error {
+	fua := -1 // the open FU-A's offset in data
+	for i, p := range packets {
+		if i > 0 && p.seq != packets[i-1].seq+1 {
+			return fmt.Errorf("sequence numbers %d-%d not read", uint16(packets[i-1].seq+1), uint16(p.seq-1))
+		}
+
+		pay := p.r.Packet().Payload
+		switch t := pay[0] & 0x1f; {
+		case fua >= 0 && t != h264FUA:
+			return fmt.Errorf("sequence number %d: NAL unit type %d inside an FU-A", p.r.Seq, t)
+		case t >= 1 && t <= 23:
+			f.add(pay)
+		case t == h264STAPA:
+			for rest := pay[1:]; len(rest) > 0; {
+				n := 0
+				if len(rest) >= 2 {
+					n = int(binary.BigEndian.Uint16(rest))
+				}
+				if n == 0 || n > len(rest)-2 {
+					return fmt.Errorf("sequence number %d: a STAP-A NAL unit size of %d in the %d bytes left", p.r.Seq, n, len(rest))
+				}
+				f.add(rest[2 : 2+n])
+				rest = rest[2+n:]
+			}
+		case t == h264FUA:
+			if len(pay) < 3 {
+				return fmt.Errorf("sequence number %d: an FU-A without data", p.r.Seq)
+			}
+
+			start, end := pay[1]&0x80 != 0, pay[1]&0x40 != 0
+			switch {
+			case start && fua >= 0:
+				return fmt.Errorf("sequence number %d: an FU-A start inside another FU-A", p.r.Seq)
+			case !start && fua < 0:
+				return fmt.Errorf("sequence number %d: an FU-A continuation without a start", p.r.Seq)
+			case start:
+				fua = len(f.data)
+				f.data = append(f.data, 0, 0, 0, 0, pay[0]&0xe0|pay[1]&0x1f)
+			}
+			f.data = append(f.data, pay[2:]...)
+			if end {
+				binary.BigEndian.PutUint32(f.data[fua:], uint32(len(f.data)-fua-4))
+				if t := f.data[fua+4] & 0x1f; t == h264NALAUD || t == h264NALFiller {
+					f.data = f.data[:fua]
+				}
+				fua = -1
+			}
+		default:
+			return fmt.Errorf("sequence number %d: packetization type %d", p.r.Seq, t)
+		}
+	}
+
+	switch {
+	case fua >= 0:
+		return errors.New("an FU-A not ended")
+	case !packets[len(packets)-1].r.M:
+		return errors.New("no marker")
+	}
+
+	return nil
+}
+
+func (f *h264Frame) add(nal []byte) {
+	if t := nal[0] & 0x1f; t == h264NALAUD || t == h264NALFiller {
+		return
+	}
+
+	f.data = binary.BigEndian.AppendUint32(f.data, uint32(len(nal)))
+	f.data = append(f.data, nal...)
 }
 
 // h264FrameTag reads the corpus.TagH264Frame tag in a block's first slice.

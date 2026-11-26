@@ -2,7 +2,9 @@ package oracle_test
 
 import (
 	"encoding/binary"
+	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -113,6 +115,85 @@ func TestSummarizeWebMH264Recorded(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 10, p.Placed)
 	assert.Zero(t, p.Dropped)
+}
+
+// h264AsRead is an H.264 trace whose payloads are whole and tagged, as replay
+// reads them.
+func h264AsRead(t *testing.T) *corpus.Trace {
+	tr, err := corpus.GenerateH264(corpus.H264Options{
+		FPS: 25, Frames: 10, KeyInterval: 5, Slices: 2, KeySlicePackets: 3, StartTS: 90000, SSRC: 1,
+	})
+	require.NoError(t, err)
+
+	for i, r := range tr.Records {
+		p := r.Packet().Payload
+		for k := len(r.Pay); k < len(p); k++ {
+			p[k] = 0x80 | byte(i+k)
+		}
+		if corpus.H264PictureStart(p) {
+			require.True(t, corpus.TagH264Frame(p, r.TS))
+		}
+		tr.Records[i].Pay, tr.Records[i].PLen = p, len(p)
+	}
+
+	return tr
+}
+
+func TestCheckH264BlocksAgainstTheFramesRead(t *testing.T) {
+	tr := h264AsRead(t)
+	file := filepath.Join(t.TempDir(), "out.mkv")
+	rec := recorder.NewWebmRecorder(file, 0o600, 256, 32, true, false)
+	rec.SetHasVideo(true)
+	require.NoError(t, rec.SetVideoCodec(recorder.CodecH264))
+	sample := recorder.VideoSample{}
+	for i, r := range tr.Records {
+		sample.Packets = append(sample.Packets, recorder.ArrivedPacket{Packet: r.Packet(), At: time.Now()})
+		if i == len(tr.Records)-1 || tr.Records[i+1].TS != r.TS {
+			rec.PushVideoSample(sample)
+			sample = recorder.VideoSample{Follows: true}
+		}
+	}
+	rec.Close()
+
+	s, err := oracle.SummarizeWebM(rec.GetFilePath())
+	require.NoError(t, err)
+	vt := s.Track(oracle.CodecH264)
+	require.NotNil(t, vt)
+	require.Equal(t, 10, vt.Blocks)
+	require.NoError(t, oracle.CheckH264Blocks(vt, tr))
+
+	entries, blocks, err := oracle.ReadBlocks(rec.GetFilePath())
+	require.NoError(t, err)
+	for _, c := range []struct {
+		name   string
+		damage func([]byte) []byte
+	}{
+		{"its second slice dropped", func(d []byte) []byte { return d[:4+binary.BigEndian.Uint32(d)] }},
+		{"its slices written twice", func(d []byte) []byte { return append(d, d...) }},
+		{"its last byte zeroed", func(d []byte) []byte { d[len(d)-1] = 0; return d }},
+	} {
+		var damaged []h264Block
+		for k, b := range blocks {
+			data := slices.Clone(b.Data)
+			if k == 3 {
+				data = c.damage(data)
+			}
+			damaged = append(damaged, h264Block{b.Key, data})
+		}
+
+		s, err := oracle.SummarizeWebM(writeH264(t, entries[0].CodecPrivate, damaged...))
+		require.NoError(t, err)
+		err = oracle.CheckH264Blocks(s.Track(oracle.CodecH264), tr)
+		assert.ErrorContains(t, err, "block 3 (PTS 120 ms): ", c.name)
+		assert.ErrorContains(t, err, "the NAL units of frame 100800", c.name)
+	}
+
+	// A fragment in the middle of key frame 5's first IDR slice is lost.
+	i := slices.IndexFunc(tr.Records, func(r corpus.Record) bool { return r.TS == 90000+5*3600 }) + 2
+	lost := &corpus.Trace{Header: tr.Header, Records: slices.Delete(slices.Clone(tr.Records), i, i+1)}
+	err = oracle.CheckH264Blocks(vt, lost)
+	assert.ErrorContains(t, err, fmt.Sprintf("block 5 (PTS 200 ms): frame 108000 was not read whole: sequence numbers %d-%d not read",
+		tr.Records[i].Seq, tr.Records[i].Seq))
 }
 
 func TestSummarizeWebMH264Checks(t *testing.T) {

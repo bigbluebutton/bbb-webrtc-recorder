@@ -295,8 +295,8 @@ func videoPlaceViolations(r replayResult) []string {
 
 // fileViolations checks what every replayed file must hold. The writer's
 // count and the file must agree, or a frame the writer counts can go missing
-// from the recording unseen. An H.264 track must pass oracle.CheckH264, in
-// a Matroska file, since WebM cannot hold H.264.
+// from the recording unseen. An H.264 track must pass oracle.CheckH264 and
+// oracle.CheckH264Blocks, in a Matroska file, since WebM cannot hold H.264.
 func fileViolations(r replayResult, traces []*corpus.Trace) []string {
 	if r.webm == nil {
 		return nil
@@ -328,6 +328,9 @@ func fileViolations(r replayResult, traces []*corpus.Trace) []string {
 		if err := tr.CheckH264(); err != nil {
 			v = append(v, err.Error())
 		}
+	}
+	if r.h264BlocksErr != nil {
+		v = append(v, r.h264BlocksErr.Error())
 	}
 
 	return v
@@ -423,6 +426,26 @@ func fillH264Payloads(tr *corpus.Trace, reads []trackRead) {
 	}
 }
 
+// asRead is tr with each payload as reads hold it, filled and tagged, for
+// oracle.CheckH264Blocks.
+func asRead(tr *corpus.Trace, reads []trackRead) *corpus.Trace {
+	out := &corpus.Trace{Header: tr.Header}
+	i := 0
+	for _, rec := range tr.Records {
+		if rec.IsEvent() {
+			continue
+		}
+
+		if p := reads[i].pkt; p != nil {
+			rec.Pay, rec.PLen = slices.Clone(p.Payload), len(p.Payload)
+		}
+		out.Records = append(out.Records, rec)
+		i++
+	}
+
+	return out
+}
+
 // tagVP8Frames tags the first packet of each VP8 frame in reads, and every
 // copy of it, with its RTP timestamp. oracle.VideoPlacement reads it back
 // from each block. Each read holds a packet of its own, so the trace is
@@ -500,6 +523,7 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 	srcs := make([]trackSource, 0, len(traces))
 	fakes := make([]*fakeTrack, 0, len(traces))
 	var audio, video []int
+	var h264Read *corpus.Trace
 	for i, tr := range traces {
 		reads, _ := traceReads(tr)
 		switch tr.Header.Codec {
@@ -509,6 +533,7 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 		case corpus.CodecH264:
 			fillH264Payloads(tr, reads)
 			tagH264Frames(reads)
+			h264Read = asRead(tr, reads)
 			video = append(video, i)
 		case corpus.CodecOpus:
 			audio = append(audio, i)
@@ -542,6 +567,9 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 		if tr := r.webm.Track(videoCodecOf(traces)); tr != nil {
 			p, err := oracle.VideoPlacement(tr, traces[video[0]])
 			r.videoPlace, r.videoPlaceErr = &p, err
+			if h264Read != nil {
+				r.h264BlocksErr = oracle.CheckH264Blocks(tr, h264Read)
+			}
 		}
 	}
 
