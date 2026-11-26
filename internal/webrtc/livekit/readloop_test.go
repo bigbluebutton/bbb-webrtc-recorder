@@ -19,6 +19,7 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v4"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
@@ -68,6 +69,10 @@ type fakeTrack struct {
 	staleDeadline bool
 	// onRTCP gets the sender reports, as lksdk's RTCP callback would.
 	onRTCP func(rtcp.Packet)
+	// codecs maps a payload type to the MIME type Codec reports once a
+	// packet of that type is read: pion's track takes each packet's codec.
+	codecs      map[uint8]string
+	payloadType uint8 // the last packet's
 }
 
 func newFakeTrack(reads ...[]trackRead) *fakeTrack {
@@ -117,12 +122,23 @@ func (t *fakeTrack) ReadRTP() (*rtp.Packet, interceptor.Attributes, error) {
 		t.reads = t.reads[1:]
 
 		if next.sr == nil {
+			if next.pkt != nil {
+				t.payloadType = next.pkt.PayloadType
+			}
+
 			return next.pkt, nil, next.err
 		}
 
 		if t.onRTCP != nil {
 			t.onRTCP(next.sr)
 		}
+	}
+}
+
+func (t *fakeTrack) Codec() webrtc.RTPCodecParameters {
+	return webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: t.codecs[t.payloadType]},
+		PayloadType:        webrtc.PayloadType(t.payloadType),
 	}
 }
 

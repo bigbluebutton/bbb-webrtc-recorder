@@ -163,8 +163,8 @@ LiveKit adds cases of its own:
   `CodecPrivate` come from the first key frame's own SPS and PPS. Every key
   frame keeps its SPS and PPS in band, so later sizes still decode.
 - **Codec changes.** A track subscribed again with another codec is not
-  recorded. The first track reader's end then ends the session, and the
-  requester starts a new recording.
+  recorded: the first reader's end ends the session. A codec change on the
+  same track ends its reader. The requester starts a new recording.
 - **Timestamps.** The presentation time counts the RTP ticks since the first
   key frame. A delta frame whose timestamp goes back is skipped, and so are
   the frames after it until a key frame. A key frame behind the last frame
@@ -184,7 +184,8 @@ LiveKit adds cases of its own:
   level once per kind per recording. Later ones are at debug level.
 - **Codec changes:** at a regression, the reader logs `video/H264 track=...
   stopped` and LiveKit logs `renegotiate new codec`. `Not recording track ...
-  subscribed again with ...` marks a new subscription in another codec.
+  subscribed again with ...` marks a new subscription in another codec, and
+  `Track ... changed codec from ... to ...` a change in place.
 - **Stats file:** the camera's `mimeType` names the codec written,
   `keyframeCount` the key frames seen and `pliRequests` the key-frame
   requests sent. For H.264, `totalSamples` counts every frame, written or

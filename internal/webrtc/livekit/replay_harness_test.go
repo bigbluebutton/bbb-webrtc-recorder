@@ -16,6 +16,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -302,6 +303,10 @@ func (c *pacedCamera) SetReadDeadline(deadline time.Time) error {
 	c.deadline = deadline
 
 	return nil
+}
+
+func (c *pacedCamera) Codec() webrtc.RTPCodecParameters {
+	return webrtc.RTPCodecParameters{RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, PayloadType: 96}
 }
 
 // sleepUntil waits for offset at, or until the read deadline if that comes

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/at-wat/ebml-go"
 	"github.com/at-wat/ebml-go/webm"
@@ -13,7 +14,10 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
+	"github.com/livekit/protocol/livekit"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -153,6 +157,88 @@ func TestReadTrackDropsAnH264FrameCutAtAPause(t *testing.T) {
 	})
 }
 
+// h264Codecs maps the payload types of the codec change tests to codecs.
+var h264Codecs = map[uint8]string{102: "video/H264", 108: "video/H264", 96: "video/VP8"}
+
+// switchedToVP8 plays the H.264 reads, then n VP8 packets on the same SSRC
+// from the next frame on.
+func switchedToVP8(t *testing.T, reads []trackRead) (src *fakeTrack, n int) {
+	t.Helper()
+
+	last := reads[len(reads)-1]
+	vp8, err := corpus.GenerateVP8(corpus.VP8Options{
+		FPS: 15, Frames: 30, StartSeq: last.pkt.SequenceNumber + 1, StartTS: last.pkt.Timestamp + 6000, SSRC: h264Info.ssrc,
+	})
+	require.NoError(t, err)
+	vp8Reads, _ := traceReads(vp8)
+	for i := range vp8Reads {
+		vp8Reads[i].at += last.at + time.Second/15
+	}
+
+	src = newFakeTrack(reads, vp8Reads)
+	src.codecs = h264Codecs
+
+	return src, len(vp8Reads)
+}
+
+// The track ends at the first packet whose payload type is another codec's.
+func TestReadTrackEndsAtACodecChangeInPlace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h, rec := newH264LoopHarness(t)
+		src, vp8Reads := switchedToVP8(t, h264Reads(t, corpus.H264Options{FPS: 15, Frames: 30, KeyInterval: 15}))
+		h.run(src, h264Info)
+		rec.Close()
+
+		keys, _ := h264Blocks(t, rec.GetFilePath())
+		assert.Len(t, keys, 30, "the H.264 frames")
+		assert.Len(t, src.reads, vp8Reads-1, "the loop stops at the first VP8 packet")
+		states, _ := h.reported()
+		assert.Equal(t, []utils.ConnectionState{utils.ConnectionStateClosed}, states)
+	})
+}
+
+// The frames the jitter buffer holds when the codec changes still reach the
+// recorder.
+func TestReadTrackFlushesTheHeldFramesAtACodecChange(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h, rec := newH264LoopHarness(t)
+		// Seq 0-1 are key frame 0, seq 14 is frame 13 and seq 16-17 key frame
+		// 15. The loss of frame 13 holds the frames behind it for the video
+		// latency, past the codec change.
+		src, _ := switchedToVP8(t, h264Reads(t, corpus.H264Options{FPS: 15, Frames: 30, KeyInterval: 15}, corpus.DropSeqs(14)))
+		h.run(src, h264Info)
+		rec.Close()
+
+		states, _ := h.reported()
+		assert.Equal(t, []utils.ConnectionState{utils.ConnectionStateClosed}, states)
+		keys, _ := h264Blocks(t, rec.GetFilePath())
+		require.Len(t, keys, 13+15, "frames 0-12, then key frame 15 to frame 29")
+		assert.True(t, keys[13], "key frame 15")
+	})
+}
+
+// Another payload type of the same codec does not change the codec.
+func TestReadTrackKeepsTheCodecAcrossItsPayloadTypes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h, rec := newH264LoopHarness(t)
+		reads := h264Reads(t, corpus.H264Options{FPS: 15, Frames: 30, KeyInterval: 15})
+		for _, r := range reads[len(reads)/2:] {
+			r.pkt.PayloadType = 108
+		}
+
+		src := newFakeTrack(reads)
+		src.codecs = h264Codecs
+		h.run(src, h264Info)
+		rec.Close()
+
+		keys, _ := h264Blocks(t, rec.GetFilePath())
+		assert.Len(t, keys, 30)
+		assert.Empty(t, src.reads)
+		states, _ := h.reported()
+		assert.Equal(t, []utils.ConnectionState{utils.ConnectionStateClosed}, states)
+	})
+}
+
 func TestAcceptCodecRefusesAResubscriptionWithAnotherCodec(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h, rec := newH264LoopHarness(t)
@@ -176,6 +262,61 @@ func TestAcceptCodecFailsACodecTheFormatCannotHold(t *testing.T) {
 		states, _ := h.reported()
 		assert.Equal(t, []utils.ConnectionState{utils.ConnectionStateFailed}, states)
 	})
+}
+
+// negotiatedTrack is a fakeTrack as lksdk hands one to onTrackSubscribed:
+// it has its negotiated codec before any packet is read.
+type negotiatedTrack struct {
+	*fakeTrack
+	codec webrtc.RTPCodecParameters
+}
+
+func (t *negotiatedTrack) Codec() webrtc.RTPCodecParameters { return t.codec }
+func (t *negotiatedTrack) SSRC() webrtc.SSRC                { return webrtc.SSRC(h264Info.ssrc) }
+
+// onTrackSubscribed records an H.264 camera into a file that can hold it,
+// and fails the connection for one that cannot.
+func TestTrackSubscribedSetsTheVideoCodec(t *testing.T) {
+	for _, c := range []struct {
+		file   string
+		blocks int
+		state  utils.ConnectionState
+	}{
+		{"camera.mkv", 30, utils.ConnectionStateClosed},
+		{"camera.webm", 0, utils.ConnectionStateFailed},
+	} {
+		t.Run(c.file, func(t *testing.T) {
+			// Outside the bubble: the room's goroutines outlive the test.
+			rp := publisherRoom().GetParticipantByIdentity("publisher")
+			require.NotNil(t, rp)
+			pub, ok := rp.GetTrackPublication(livekit.TrackSource_CAMERA).(*lksdk.RemoteTrackPublication)
+			require.True(t, ok)
+
+			synctest.Test(t, func(t *testing.T) {
+				rec := recorder.NewWebmRecorder(filepath.Join(t.TempDir(), c.file), 0o600, 256, 32, true, false)
+				rec.SetHasVideo(true)
+				h := newLoopHarness(rec, pub.SID())
+				src := &negotiatedTrack{
+					fakeTrack: newFakeTrack(h264Reads(t, corpus.H264Options{FPS: 15, Frames: 30, KeyInterval: 15})),
+					codec:     webrtc.RTPCodecParameters{RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: "video/H264", ClockRate: 90000}},
+				}
+
+				h.w.onTrackSubscribed(src, pub, rp)
+				h.w.readers.Wait()
+				states, _ := h.reported()
+				rec.Close()
+
+				assert.Equal(t, []utils.ConnectionState{c.state}, states)
+				if c.blocks == 0 {
+					assert.NoFileExists(t, rec.GetFilePath())
+
+					return
+				}
+				keys, _ := h264Blocks(t, rec.GetFilePath())
+				assert.Len(t, keys, c.blocks)
+			})
+		})
+	}
 }
 
 func TestCodecForFindsH264(t *testing.T) {

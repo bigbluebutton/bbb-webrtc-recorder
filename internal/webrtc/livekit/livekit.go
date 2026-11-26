@@ -1068,7 +1068,7 @@ func (w *LiveKitWebRTC) registerTrackBuffer(trackID string, isVideo bool, ssrcFo
 }
 
 func (w *LiveKitWebRTC) onTrackSubscribed(
-	track *webrtc.TrackRemote,
+	track subscribedTrack,
 	pub *lksdk.RemoteTrackPublication,
 	rp *lksdk.RemoteParticipant,
 ) {
@@ -1439,6 +1439,15 @@ func (w *LiveKitWebRTC) logTrackStopped(info trackInfo) {
 type trackSource interface {
 	ReadRTP() (*rtp.Packet, interceptor.Attributes, error)
 	SetReadDeadline(time.Time) error
+	// Codec is the codec of the last packet's payload type: pion changes it
+	// when a packet comes with another payload type.
+	Codec() webrtc.RTPCodecParameters
+}
+
+// subscribedTrack is the part of *webrtc.TrackRemote onTrackSubscribed uses.
+type subscribedTrack interface {
+	trackSource
+	SSRC() webrtc.SSRC
 }
 
 type trackInfo struct {
@@ -1515,7 +1524,16 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 		w.processPacketStats(info.id, packetsOf(packetsIn(released)))
 	}
 
+	// No later packet will release the frames the jitter buffer still holds.
+	flush := func() {
+		if tail := buffer.flushSamples(); len(tail) > 0 {
+			writePackets(tail)
+		}
+	}
+
 	push := w.packetPusher(info.id, buffer)
+	var payloadType uint8
+	started := false
 
 	for {
 		readDeadline := time.Now().Add(w.cfg.PacketReadTimeout)
@@ -1533,11 +1551,7 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 				if procErr == io.EOF {
 					log.WithField("session", w.ctx.Value("session")).
 						Infof("%s track=%s stopped", livekitMimeType(string(info.mime)), info.id)
-
-					// No later packet hands out what the jitter buffer holds.
-					if tail := buffer.flushSamples(); len(tail) > 0 {
-						writePackets(tail)
-					}
+					flush()
 				} else {
 					log.WithField("session", w.ctx.Value("session")).
 						Errorf("Unexpected error handling RTP packet from track %s: %v", info.id, procErr)
@@ -1551,6 +1565,23 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 		if packet == nil {
 			continue
 		}
+
+		// This check is a defence: LiveKit ends a Go SDK subscriber's track
+		// rather than change its codec in place. The recording cannot change
+		// codec, so the track ends here and the requester starts a new
+		// recording. pion gives RTX packets the media payload type.
+		if started && packet.PayloadType != payloadType {
+			mimeType := src.Codec().MimeType
+			if !strings.EqualFold(mimeType, string(info.mime)) {
+				log.WithField("session", w.ctx.Value("session")).
+					WithField("trackID", info.id).
+					Warnf("Track %s changed codec from %s to %s: not recording it further", info.id, info.mime, mimeType)
+				flush()
+
+				return
+			}
+		}
+		payloadType, started = packet.PayloadType, true
 
 		if rtpWriterExists {
 			if err := rtpWriter.WriteRTP(packet); err != nil {
@@ -1906,7 +1937,9 @@ func (w *LiveKitWebRTC) connectToRoom() error {
 	room, err := lksdk.ConnectToRoomWithToken(w.cfg.Host, token,
 		&lksdk.RoomCallback{
 			ParticipantCallback: lksdk.ParticipantCallback{
-				OnTrackSubscribed:         w.onTrackSubscribed,
+				OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+					w.onTrackSubscribed(track, pub, rp)
+				},
 				OnTrackUnsubscribed:       w.onTrackUnsubscribed,
 				OnTrackUnpublished:        w.onTrackUnpublished,
 				OnTrackUnmuted:            w.onTrackUnmuted,
