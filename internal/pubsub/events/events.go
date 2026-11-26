@@ -328,7 +328,7 @@ recordingStopped (Recorder -> SFU)
 	recordingSessionId: <String>, // file name
 	reason: <String>,
 	timestampUTC: <String>, // when the event was built, RFC 3339
-	timestampHR?: <Number>, // the WebM's video duration, ms; absent without video
+	timestampHR?: <Number>, // the file's video duration, ms; absent without video
 	// LiveKit sessions that wrote a frame; see recordingMediaStarted
 	mediaStartUTC?: <Number>,
 	mediaStartHR?: <Number>,
