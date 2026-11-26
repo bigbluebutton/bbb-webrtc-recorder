@@ -206,8 +206,9 @@ LiveKit adds cases of its own:
 - **E2E:** `TestH264UnrepairedLossRequestsKeyframe`, `TestH264ClipDecodes`
   (an x264 clip decoded by ffmpeg) and `TestBrowserH264Camera` in
   `tests/e2e`.
-- **E2E by case:** `TestBrowserVP8CameraWithH264Backup` records a VP8
-  camera with an H.264 backup.
+- **E2E by case:** `TestH264UnpublishWritesNoBlankFrames` covers blank
+  frames. `TestBrowserVP8CameraWithH264Backup` records a VP8 camera with an
+  H.264 backup.
 - **Code:** `h264.go`, `h264_sps.go` and `frames.go` in
   `internal/webrtc/recorder`, and `trackbuffer.go` in
   `internal/webrtc/livekit`.
