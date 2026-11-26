@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/stretchr/testify/assert"
 )
@@ -24,68 +26,78 @@ const reasonPacketDrop = "packet_drop"
 // frame. The file skips each frame up to that key frame. Its PTS keep the
 // gap, so every frame still plays where it was sent.
 func TestUnrepairedLossRequestsKeyframe(t *testing.T) {
-	for _, sc := range []lossScenario{
+	for _, sc := range unrepairedLossScenarios("") {
+		t.Run(fmt.Sprintf("%gfps", sc.fps), func(t *testing.T) { checkUnrepairedLoss(t, sc) })
+	}
+}
+
+// unrepairedLossScenarios are TestUnrepairedLossRequestsKeyframe's
+// scenarios, for a camera of codec.
+func unrepairedLossScenarios(codec corpus.Codec) []lossScenario {
+	return []lossScenario{
 		{
-			name: "s2-15fps", fps: 15, lossAfter: 3 * time.Second, lossToStop: 5 * time.Second,
+			name: "s2-15fps", fps: 15, codec: codec, lossAfter: 3 * time.Second, lossToStop: 5 * time.Second,
 			request: [2]time.Duration{200 * time.Millisecond, 240 * time.Millisecond},
 		},
 		{
-			name: "s2-5fps", fps: 5, lossAfter: 3 * time.Second, lossToStop: 6 * time.Second,
+			name: "s2-5fps", fps: 5, codec: codec, lossAfter: 3 * time.Second, lossToStop: 6 * time.Second,
 			request: [2]time.Duration{390 * time.Millisecond, 430 * time.Millisecond},
 		},
-	} {
-		t.Run(fmt.Sprintf("%gfps", sc.fps), func(t *testing.T) {
-			r := runLoss(t, sc)
-			webm, l := r.WebM, r.Trace
-			gap := r.lossGap(t)
-
-			assert.Equal(t, len(l.PLIs), len(l.requestsSince(gap.RevealUs, "")), "keyframe requests before the loss")
-
-			var delay time.Duration
-			reqs := l.requestsSince(gap.RevealUs, reasonPacketDrop)
-
-			if assert.NotEmpty(t, reqs, "buffer request after the loss") {
-				delay = time.Duration(reqs[0].AtUs-gap.RevealUs) * time.Microsecond
-				assert.GreaterOrEqual(t, delay, gapRequestDelay, "request after the reveal")
-				assert.Less(t, delay, sc.requestBound(), "request after the reveal")
-			}
-
-			assert.LessOrEqual(t, len(l.requestsSince(gap.RevealUs, "")), 2, "keyframe requests after the loss")
-
-			pubPLIs := plisSince(r.Cam, r.Dropped.At)
-			assert.GreaterOrEqual(t, pubPLIs, 1, "publisher PLIs after the loss")
-			assert.GreaterOrEqual(t, pliKeysSince(r.Cam, r.Dropped.At), 1, "key frames sent for a PLI after the loss")
-
-			assertResponseKey(t, r, gap)
-
-			// With no WebM, skip the file's checks: they would stop the test
-			// before the log below, whose key-frame requests show whether
-			// the recorder looped. runLoss already reports the missing file.
-			var (
-				p          placement
-				outage     int
-				outageStep int64
-			)
-			if webm.Blocks > 0 {
-				p, _ = checkPlacement(t.Context(), t, r.Stack.Driver, "camera", r.Rec, frameSends(r.Cam), r.Stopped, recorder.MaxVideoStep)
-				outage, outageStep = assertLossOutage(t, r, p)
-			}
-
-			lossPTS := l.ptsOf(webm, gap.TS)
-			after := framesAfter(webm, lossPTS)
-			minAfter := sc.minFrames(r.StopSent.Sub(r.DropAt) - sc.lossOutage())
-			assert.GreaterOrEqual(t, after, minAfter, "frames written after the loss")
-			assert.NoError(t, webm.CheckMonotonic())
-			assert.NoError(t, webm.CheckNoDuplicatePTS())
-
-			t.Logf("closedloop %s: requestAfterRevealMs=%.1f bound=[%.0f,%.0f) requests=%v "+
-				"publisherPLIsAfterLoss=%d framesAfterLoss=%d min=%d blocks=%d vp8Keyframes=%d maxGapMs=%d "+
-				"outageFrames=%d outageStepMs=%d placement=%.1fms median, %v worst wakeLag=%v",
-				sc.name, ms(delay), ms(gapRequestDelay), ms(sc.requestBound()), pliReasons(l),
-				pubPLIs, after, minAfter, webm.Blocks, webm.VP8Keyframes, webm.MaxGapMs,
-				outage, outageStep, p.Median, p.Worst, maxWakeLag(r.Cam))
-		})
 	}
+}
+
+// checkUnrepairedLoss runs sc and checks what TestUnrepairedLossRequestsKeyframe
+// says.
+func checkUnrepairedLoss(t *testing.T, sc lossScenario) {
+	r := runLoss(t, sc)
+	webm, l := r.WebM, r.Trace
+	gap := r.lossGap(t)
+
+	assert.Equal(t, len(l.PLIs), len(l.requestsSince(gap.RevealUs, "")), "keyframe requests before the loss")
+
+	var delay time.Duration
+	reqs := l.requestsSince(gap.RevealUs, reasonPacketDrop)
+
+	if assert.NotEmpty(t, reqs, "buffer request after the loss") {
+		delay = time.Duration(reqs[0].AtUs-gap.RevealUs) * time.Microsecond
+		assert.GreaterOrEqual(t, delay, gapRequestDelay, "request after the reveal")
+		assert.Less(t, delay, sc.requestBound(), "request after the reveal")
+	}
+
+	assert.LessOrEqual(t, len(l.requestsSince(gap.RevealUs, "")), 2, "keyframe requests after the loss")
+
+	pubPLIs := plisSince(r.Cam, r.Dropped.At)
+	assert.GreaterOrEqual(t, pubPLIs, 1, "publisher PLIs after the loss")
+	assert.GreaterOrEqual(t, pliKeysSince(r.Cam, r.Dropped.At), 1, "key frames sent for a PLI after the loss")
+
+	assertResponseKey(t, r, gap)
+
+	// With no WebM, skip the file's checks: they would stop the test
+	// before the log below, whose key-frame requests show whether
+	// the recorder looped. runLoss already reports the missing file.
+	var (
+		p          placement
+		outage     int
+		outageStep int64
+	)
+	if webm.Blocks > 0 {
+		p, _ = checkPlacement(t.Context(), t, r.Stack.Driver, "camera", r.Rec, frameSends(r.Cam), r.Stopped, recorder.MaxVideoStep)
+		outage, outageStep = assertLossOutage(t, r, p)
+	}
+
+	lossPTS := l.ptsOf(webm, gap.TS)
+	after := framesAfter(webm, lossPTS)
+	minAfter := sc.minFrames(r.StopSent.Sub(r.DropAt) - sc.lossOutage())
+	assert.GreaterOrEqual(t, after, minAfter, "frames written after the loss")
+	assert.NoError(t, webm.CheckMonotonic())
+	assert.NoError(t, webm.CheckNoDuplicatePTS())
+
+	t.Logf("closedloop %s: requestAfterRevealMs=%.1f bound=[%.0f,%.0f) requests=%v "+
+		"publisherPLIsAfterLoss=%d framesAfterLoss=%d min=%d blocks=%d keyFrames=%d maxGapMs=%d "+
+		"outageFrames=%d outageStepMs=%d placement=%.1fms median, %v worst wakeLag=%v",
+		sc.name, ms(delay), ms(gapRequestDelay), ms(sc.requestBound()), pliReasons(l),
+		pubPLIs, after, minAfter, webm.Blocks, codecKeyFrames(webm), webm.MaxGapMs,
+		outage, outageStep, p.Median, p.Worst, maxWakeLag(r.Cam))
 }
 
 // TestPacedKeyframesNoLoop runs a camera at the fake device's mixed-flow rate
@@ -141,7 +153,7 @@ func assertResponseKey(t *testing.T, r *lossRun, gap traceGap) {
 
 	webm, l := r.WebM, r.Trace
 
-	assert.GreaterOrEqual(t, webm.VP8Keyframes, 2, "VP8 key frames: the first and the loss's")
+	assert.GreaterOrEqual(t, codecKeyFrames(webm), 2, "%s key frames: the first and the loss's", webm.Codec)
 
 	key, ok := l.keyAfter(gap.RevealUs)
 	if !assert.True(t, ok, "no key frame read after the loss") {
@@ -186,6 +198,16 @@ func assertLossOutage(t *testing.T, r *lossRun, p placement) (int, int64) {
 		r.Dropped.Frame, key.Frame-1)
 
 	return lost, p.Blocks[i].PTS - p.Blocks[i-1].PTS
+}
+
+// codecKeyFrames counts the key frames the oracle found by the codec's own
+// header, VP8 or H.264.
+func codecKeyFrames(tr *oracle.Track) int {
+	if tr.Codec == oracle.CodecH264 {
+		return tr.H264Keyframes
+	}
+
+	return tr.VP8Keyframes
 }
 
 func pliReasons(l *traceLoss) []string {

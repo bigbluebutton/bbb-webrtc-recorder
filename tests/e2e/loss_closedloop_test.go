@@ -48,6 +48,8 @@ const (
 type lossScenario struct {
 	name string
 	fps  float64
+	// codec is the camera's, VP8 when empty.
+	codec corpus.Codec
 	// keyPackets and keySpread shape the publisher's PLI key frames.
 	keyPackets int
 	keySpread  time.Duration
@@ -121,16 +123,26 @@ func runLoss(t *testing.T, sc lossScenario) *lossRun {
 	room := "e2e-" + sc.name + "-" + uuid.NewString()[:8]
 	pub := s.NewPublisher(room, "e2e-publisher")
 
-	sched, err := corpus.GenerateVP8(corpus.VP8Options{
-		FPS: sc.fps, Duration: lossScheduleLen, KeyPackets: sc.keyPackets,
-		DeltaPackets: lossDeltaPackets, SpreadUs: lossDeltaSpreadUs,
-	})
+	drop := &midFrameDrop{index: lossDropIndex}
+	opts := TrackOptions{Name: "camera", KeyframeSpread: sc.keySpread, Drop: drop.drop, TagFrames: true}
+	publish, codec := pub.PublishVP8, oracle.CodecVP8
+
+	var err error
+	if sc.codec == corpus.CodecH264 {
+		publish, codec = pub.PublishH264, oracle.CodecH264
+		opts.Schedule, err = corpus.GenerateH264(corpus.H264Options{
+			FPS: sc.fps, Duration: lossScheduleLen, KeySlicePackets: sc.keyPackets,
+			DeltaSlicePackets: lossDeltaPackets, SpreadUs: lossDeltaSpreadUs,
+		})
+	} else {
+		opts.Schedule, err = corpus.GenerateVP8(corpus.VP8Options{
+			FPS: sc.fps, Duration: lossScheduleLen, KeyPackets: sc.keyPackets,
+			DeltaPackets: lossDeltaPackets, SpreadUs: lossDeltaSpreadUs,
+		})
+	}
 	require.NoError(t, err)
 
-	drop := &midFrameDrop{index: lossDropIndex}
-	cam := pub.PublishVP8(TrackOptions{
-		Name: "camera", Schedule: sched, KeyframeSpread: sc.keySpread, Drop: drop.drop, TagFrames: true,
-	})
+	cam := publish(opts)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -173,13 +185,13 @@ func runLoss(t *testing.T, sc lossScenario) *lossRun {
 		trace, err := corpus.ReadFile(TracePath(r.Rec.Path, cam.SID))
 		require.NoError(t, err, "trace capture")
 
-		r.WebM, r.Trace = &oracle.Track{Codec: oracle.CodecVP8, Monotonic: true}, readTraceLoss(trace)
+		r.WebM, r.Trace = &oracle.Track{Codec: codec, Monotonic: true}, readTraceLoss(trace)
 
 		return r
 	}
 
 	out := ReadOutput(t, r.Rec, cam.SID)
-	require.Equal(t, oracle.CodecVP8, out.WebM.Codec)
+	require.Equal(t, codec, out.WebM.Codec)
 	r.WebM, r.Trace = out.WebM, readTraceLoss(out.Trace)
 
 	return r
@@ -259,6 +271,7 @@ type traceKey struct {
 
 func readTraceLoss(tr *corpus.Trace) *traceLoss {
 	out := &traceLoss{}
+	keyStart := keyFrameStart(tr.Header.Codec)
 
 	var (
 		started    bool
@@ -287,7 +300,7 @@ func readTraceLoss(tr *corpus.Trace) *traceLoss {
 
 			started, head, frameStart, lastTS = true, int64(r.Seq), int64(r.Seq), r.TS
 
-			if !r.Pad && isVP8KeyFrameStart(r.Pay) {
+			if !r.Pad && keyStart(r.Pay) {
 				out.Keys = append(out.Keys, traceKey{AtUs: r.AtUs, TS: r.TS})
 			}
 
@@ -336,7 +349,7 @@ func readTraceLoss(tr *corpus.Trace) *traceLoss {
 			frameStart, lastTS = ext, r.TS
 		}
 
-		if isVP8KeyFrameStart(r.Pay) {
+		if keyStart(r.Pay) {
 			out.Keys = append(out.Keys, traceKey{AtUs: r.AtUs, TS: r.TS})
 		}
 	}
@@ -457,7 +470,7 @@ func traceFrames(t *testing.T, trace *corpus.Trace, tr *PubTrack) map[uint32]int
 	}
 
 	for _, r := range trace.Records {
-		if r.T == corpus.RecordRTP && !r.Pad && isVP8KeyFrameStart(r.Pay) {
+		if r.T == corpus.RecordRTP && !r.Pad && keyFrameStart(trace.Header.Codec)(r.Pay) {
 			f, ok := frames[r.TS]
 			assert.True(t, ok && keys[f], "the key frame read at %.1f ms maps to frame %d, not a key frame sent",
 				float64(r.AtUs)/1000, f)
