@@ -352,7 +352,7 @@ func traceInfo(t *testing.T, i int, tr *corpus.Trace) (trackInfo, uint32) {
 	case corpus.CodecOpus:
 		info.kind, info.mime, info.source, info.pubMime = TrackKindAudio, MimeTypeOpus, "microphone", "audio/opus"
 	case corpus.CodecH264:
-		info.kind, info.mime, info.source, info.pubMime = TrackKindVideo, "video/h264", "camera", "video/H264"
+		info.kind, info.mime, info.source, info.pubMime = TrackKindVideo, MimeTypeH264, "camera", "video/H264"
 	default:
 		require.Failf(t, "unsupported codec", "%q", tr.Header.Codec)
 	}

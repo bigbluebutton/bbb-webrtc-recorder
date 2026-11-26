@@ -10,7 +10,8 @@ Read traces for the in-process replay of the LiveKit path (read loop, `trackBuff
   - **`epochUnixUs`** in the header is the wall-clock time of `atUs` 0. Each recording session has its own clock, so the traces of one meeting align only through it.
 - **No trace carries media.** Every payload is a header prefix that replay zero-pads to `plen`:
   - a VP8 descriptor and frame header in the `corpus.GenerateVP8` layout;
-  - an Opus TOC byte.
+  - an Opus TOC byte;
+  - for H.264, the SPS and PPS whole, the STAP-A sizes and NAL unit headers, and the first 8 bytes of each slice past its NAL unit or FU-A header. `corpus.GenerateH264` writes a slice header that fits in them. A capture zeroes the media between the fields it keeps in a STAP-A.
 - **Provenance:**
   - `synthetic`: built with the `corpus` generators and mutations. The header's `generator` field records the exact call chain.
   - `pcap-extract`: per-packet read schedules taken from header-only SRTP captures of live test runs. The header `note` says what was synthesized.

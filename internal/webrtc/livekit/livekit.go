@@ -37,6 +37,7 @@ import (
 const (
 	MimeTypeVP8  MimeType = "video/vp8"
 	MimeTypeOpus MimeType = "audio/opus"
+	MimeTypeH264 MimeType = "video/h264"
 
 	mimeTypeRED = "audio/red"
 )

@@ -71,8 +71,10 @@ livekit:
   # BBBRECORDER_LIVEKIT_TRACECAPTURE_ENABLED, _PAYLOAD, _MAXBYTESPERTRACK.
   traceCapture:
     enabled: false
-    # header: VP8 descriptor and frame header, or Opus TOC byte (whole
-    # payloads of up to 3 bytes, such as DTX frames), no media.
+    # header: no media. VP8: descriptor and frame header; Opus: TOC byte
+    # (whole payloads of up to 3 bytes, such as DTX frames). H.264: NAL unit
+    # headers, STAP-A sizes, SPS, PPS, and 8 bytes of each slice past its NAL
+    # unit or FU-A header.
     # full: whole payloads, so the trace carries the media.
     payload: header
     # Compressed size cap per trace, in bytes; past it, the trace ends with
