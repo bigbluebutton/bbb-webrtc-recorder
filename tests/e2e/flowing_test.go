@@ -15,6 +15,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	flowingCameraFPS = 15
+	// Longer than LiveKit takes to send two padding packets (100 ms
+	// after the downtrack binds, then every 100 ms), so its padding
+	// reaches the recorder before the first key frame.
+	flowingKeyframeDelay = 400 * time.Millisecond
+	flowingRecordFor     = 3 * time.Second
+)
+
 // TestFlowingFollowsFirstMedia records a camera whose publisher answers the
 // recorder's keyframe request late, so LiveKit sends the recorder padding
 // before the first key frame. bbb-webrtc-sfu stamps the recording's start on
@@ -22,22 +31,33 @@ import (
 // packet the recorder read. Only LiveKit 1.13.5 to 1.13.9 give that padding a
 // payload, so only they fail this on a recorder that takes a payload for media.
 func TestFlowingFollowsFirstMedia(t *testing.T) {
-	const (
-		cameraFPS = 15
-		// Longer than LiveKit takes to send two padding packets (100 ms
-		// after the downtrack binds, then every 100 ms), so its padding
-		// reaches the recorder before the first key frame.
-		keyframeDelay = 400 * time.Millisecond
-		recordFor     = 3 * time.Second
-	)
+	video, err := corpus.GenerateVP8(corpus.VP8Options{FPS: flowingCameraFPS, Duration: 30 * time.Second, SpreadUs: 2000})
+	require.NoError(t, err)
+
+	runFlowing(t, func(pub *Publisher) *PubTrack {
+		return pub.PublishVP8(TrackOptions{Name: "camera", Schedule: video, KeyframeDelay: flowingKeyframeDelay})
+	})
+}
+
+// flowingRun is what runFlowing recorded and read back.
+type flowingRun struct {
+	Stack   *Stack
+	Cam     *PubTrack
+	Rec     *Recording
+	Stopped *events.RecordingStopped
+	Out     *Output
+}
+
+// runFlowing records the camera that publish returns, which must answer a
+// keyframe request after flowingKeyframeDelay. It checks what
+// TestFlowingFollowsFirstMedia says.
+func runFlowing(t *testing.T, publish func(*Publisher) *PubTrack) *flowingRun {
+	t.Helper()
 
 	s := NewStack(t, StackOptions{})
 	room := "e2e-flowing-" + uuid.NewString()[:8]
 	pub := s.NewPublisher(room, "e2e-publisher")
-
-	video, err := corpus.GenerateVP8(corpus.VP8Options{FPS: cameraFPS, Duration: 30 * time.Second, SpreadUs: 2000})
-	require.NoError(t, err)
-	cam := pub.PublishVP8(TrackOptions{Name: "camera", Schedule: video, KeyframeDelay: keyframeDelay})
+	cam := publish(pub)
 
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
@@ -48,8 +68,8 @@ func TestFlowingFollowsFirstMedia(t *testing.T) {
 	require.NoError(t, err)
 	_, err = s.Driver.WaitRtpStatus(ctx, rec.From, rec.SessionID, "flowing")
 	require.NoError(t, err)
-	time.Sleep(recordFor)
-	_, err = s.Driver.StopAndWait(ctx, rec.SessionID)
+	time.Sleep(flowingRecordFor)
+	stopped, err := s.Driver.StopAndWait(ctx, rec.SessionID)
 	require.NoError(t, err)
 
 	var flowingAt time.Time
@@ -88,4 +108,6 @@ func TestFlowingFollowsFirstMedia(t *testing.T) {
 	// Without padding first, the scenario cannot tell padding from media.
 	require.Positive(t, padBefore, "no padding before the first media read")
 	assert.False(t, flowingAt.Before(firstMedia), "flowing %v before the first media read", firstMedia.Sub(flowingAt))
+
+	return &flowingRun{Stack: s, Cam: cam, Rec: rec, Stopped: stopped, Out: out}
 }
