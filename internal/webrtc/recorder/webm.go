@@ -8,9 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/at-wat/ebml-go/mkvcore"
 	"github.com/at-wat/ebml-go/webm"
-	"github.com/bigbluebutton/bbb-webrtc-recorder/internal"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/jech/samplebuilder"
@@ -1236,19 +1234,7 @@ func (r *WebmRecorder) initWriter(width, height int) {
 		return
 	}
 
-	log.WithField("file", r.file).WithField("fileMode", r.fileMode).Debug("Opening file for writing")
-	w, err := os.OpenFile(r.file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, r.fileMode)
-	if err != nil {
-		panic(err)
-	}
-
-	info := &webm.Info{
-		TimecodeScale: 1000000, // 1ms
-		MuxingApp:     internal.AppName,
-		WritingApp:    internal.AppName,
-	}
-
-	var tracks []webm.TrackEntry
+	var tracks []trackConfig
 
 	if r.hasVideo {
 		// TODO: the webm writer should NOT have uneeded tracks if they are not necessary.
@@ -1260,50 +1246,16 @@ func (r *WebmRecorder) initWriter(width, height int) {
 				Debug("Using default video dimensions for audio-only initialization")
 		}
 
-		tracks = append(tracks, webm.TrackEntry{
-			Name:        "Video",
-			TrackNumber: 1,
-			TrackUID:    12345,
-			CodecID:     "V_VP8",
-			TrackType:   1,
-			Video: &webm.Video{
-				PixelWidth:  uint64(width),
-				PixelHeight: uint64(height),
-			},
-		})
+		tracks = append(tracks, trackConfig{codec: CodecVP8, width: width, height: height})
 	}
 
 	// Audio track is optional
 	if r.hasAudio {
-		tracks = append(tracks, webm.TrackEntry{
-			Name:        "Audio",
-			TrackNumber: uint64(len(tracks) + 1),
-			TrackUID:    54321,
-			CodecID:     "A_OPUS",
-			TrackType:   2,
-			Audio: &webm.Audio{
-				SamplingFrequency: 48000.0,
-				Channels:          2,
-			},
-		})
+		tracks = append(tracks, trackConfig{codec: CodecOpus})
 	}
 
-	interceptor, err := mkvcore.NewMultiTrackBlockSorter(
-		mkvcore.WithMaxDelayedPackets(r.sorterPacketQueueSize),
-		mkvcore.WithSortRule(mkvcore.BlockSorterWriteOutdated),
-	)
-
-	if err != nil {
-		// TODO review - panic is not the best choice here.
-		panic(err)
-	}
-
-	writers, err := webm.NewSimpleBlockWriter(
-		w,
-		tracks,
-		mkvcore.WithSegmentInfo(info),
-		mkvcore.WithBlockInterceptor(interceptor),
-	)
+	log.WithField("file", r.file).WithField("fileMode", r.fileMode).Debug("Opening file for writing")
+	writers, err := openContainer(r.file, r.fileMode, FormatWebM, tracks, r.sorterPacketQueueSize)
 
 	if err != nil {
 		// TODO review - panic is not the best choice here.
