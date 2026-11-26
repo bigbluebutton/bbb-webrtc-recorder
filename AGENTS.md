@@ -26,7 +26,8 @@ go build -o bbb-webrtc-recorder -gcflags=all="-N -l" ./cmd/bbb-webrtc-recorder
 ```bash
 # Unit tests with -race, plus the vendored media-sdk jitter copy, which is its own
 # module (go.mod `replace`) that ./... skips. CI runs the same, so a race fails the job.
-# The H.264 decode test needs ffmpeg and ffprobe on PATH. It skips without them.
+# The H.264 decode test needs ffmpeg and ffprobe on PATH. It skips without them
+# unless FFMPEG_REQUIRED=1, which CI sets.
 make test
 
 # A single test

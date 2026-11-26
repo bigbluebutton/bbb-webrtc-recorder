@@ -83,12 +83,16 @@ func avccOf(nals [][]byte) string {
 }
 
 // ffmpegDecode decodes file with ffmpeg and returns the errors ffmpeg
-// printed and the frames it decoded. It skips t on a host without ffmpeg.
+// printed and the frames it decoded. It skips t on a host without ffmpeg,
+// or fails it with FFMPEG_REQUIRED=1, as CI sets.
 func ffmpegDecode(t *testing.T, file string) (errs string, frames int) {
 	t.Helper()
 
 	for _, bin := range []string{"ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(bin); err != nil {
+			if os.Getenv("FFMPEG_REQUIRED") == "1" {
+				require.FailNow(t, bin+" is not on PATH, and FFMPEG_REQUIRED=1")
+			}
 			t.Skipf("no %s on PATH", bin)
 		}
 	}
