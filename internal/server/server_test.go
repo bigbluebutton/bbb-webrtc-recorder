@@ -79,6 +79,10 @@ func (r *mockRecorder) MediaSpan() (types.MediaSpan, bool) {
 	return *r.span, true
 }
 
+func (r *mockRecorder) PushVideoSample(recorder.VideoSample) {}
+func (r *mockRecorder) SetVideoCodec(*recorder.Codec) error  { return nil }
+func (r *mockRecorder) SetFormat(recorder.Format) error      { return nil }
+
 var _ recorder.Recorder = (*mockRecorder)(nil)
 
 // Mock LiveKitWebRTC

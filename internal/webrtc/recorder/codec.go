@@ -22,6 +22,11 @@ type Codec struct {
 	NewDepacketizer func() rtp.Depacketizer
 	// KeyFrameStart reports whether a packet is the first of a key frame.
 	KeyFrameStart func(p *rtp.Packet) bool
+
+	// frames splits the packets of a jitter-buffer sample into frames. A
+	// malformed frame becomes a lost one in its place, and the error
+	// describes it.
+	frames func(packets []*rtp.Packet) ([]videoFrame, error)
 }
 
 var (
@@ -46,6 +51,12 @@ var (
 
 	registry = []*Codec{CodecVP8, CodecOpus}
 )
+
+// TakesSamples reports whether the codec's video goes to PushVideoSample,
+// whole jitter-buffer samples, instead of one packet at a time.
+func (c *Codec) TakesSamples() bool {
+	return c.frames != nil
+}
 
 // CodecFor returns the codec of mimeType, matched case-insensitively, or
 // false when the recorder cannot write it.

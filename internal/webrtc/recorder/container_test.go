@@ -1,15 +1,13 @@
 package recorder
 
 import (
-	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/at-wat/ebml-go"
-	"github.com/at-wat/ebml-go/mkvcore"
 	"github.com/at-wat/ebml-go/webm"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,36 +29,18 @@ func readContainer(t *testing.T, file string) containerDoc {
 }
 
 func readBlocks(t *testing.T, file string) [][]int64 {
-	f, err := os.Open(file)
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-
-	readers, err := mkvcore.NewSimpleBlockReader(f)
+	entries, blocks, err := oracle.ReadBlocks(file)
 	require.NoError(t, err)
 
-	// One goroutine feeds every reader, so they are read together.
-	tracks := make([][]int64, len(readers))
-	errs := make([]error, len(readers))
-	var wg sync.WaitGroup
-	for i, r := range readers {
-		wg.Go(func() {
-			for {
-				_, _, ts, err := r.Read()
-				if err != nil {
-					if err != io.EOF {
-						errs[i] = err
-					}
-
-					return
-				}
-				tracks[i] = append(tracks[i], ts)
-			}
-		})
+	index := make(map[uint64]int, len(entries))
+	for i, e := range entries {
+		index[e.TrackNumber] = i
 	}
-	wg.Wait()
-
-	for _, err := range errs {
-		require.NoError(t, err)
+	tracks := make([][]int64, len(entries))
+	for _, b := range blocks {
+		i, ok := index[b.Track]
+		require.True(t, ok, "a block of track %d, which has no TrackEntry", b.Track)
+		tracks[i] = append(tracks[i], b.PTS)
 	}
 
 	return tracks

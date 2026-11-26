@@ -44,6 +44,12 @@ type WebmRecorder struct {
 	useCustomSampler      bool
 	writeIVFCopy          bool
 
+	// The video track's codec, the container, and the file name without
+	// the extension that the container sets.
+	videoCodec *Codec
+	format     Format
+	base       string
+
 	// State tracking
 	hasAudio      bool
 	hasVideo      bool
@@ -55,6 +61,10 @@ type WebmRecorder struct {
 	// Synchronization
 	m   sync.Mutex
 	ctx context.Context
+	// fileMu guards file for GetFilePath, which cannot take m: the LiveKit
+	// adapter calls it holding its own lock, and m is taken before that
+	// lock. SetFormat writes file under both.
+	fileMu sync.Mutex
 
 	// Writers and builders
 	audioWriter, videoWriter       webm.BlockWriteCloser
@@ -75,6 +85,18 @@ type WebmRecorder struct {
 	currentFrameInfo *VP8FrameInfo // Again, more debugging than anything else
 	packetTimestamp  uint32
 	pts              int64 // Last PTS (presentation timestamp) *written* to the WebM file
+
+	// For codecs that take samples: the timestamp of the last frame, written
+	// or not, and whether packets pushed one at a time were warned about.
+	framesSeen      bool
+	lastFrameTS     uint32
+	warnedPerPacket bool
+	// The kinds of message already logged at Warn; see logLevel.
+	warned []any
+	// The RTP ticks from the first key frame to the last frame written.
+	videoTicks uint64
+	// When the last frame written arrived.
+	lastWrittenAt time.Time
 
 	// Sequence tracking
 	lastPictureID    uint16 // Last PictureID received in any VP8 packet, not necessarily written
@@ -110,9 +132,13 @@ func NewWebmRecorder(
 	useCustomSampler bool,
 	writeIVFCopy bool,
 ) *WebmRecorder {
+	format, base := formatOf(file)
 	r := &WebmRecorder{
 		ctx:                   context.Background(),
 		file:                  file,
+		videoCodec:            CodecVP8,
+		format:                format,
+		base:                  base,
 		fileMode:              fileMode,
 		videoPacketQueueSize:  videoPacketQueueSize,
 		sorterPacketQueueSize: int(videoPacketQueueSize) + 16,
@@ -139,6 +165,9 @@ func NewWebmRecorder(
 }
 
 func (r *WebmRecorder) GetFilePath() string {
+	r.fileMu.Lock()
+	defer r.fileMu.Unlock()
+
 	return r.file
 }
 
@@ -238,6 +267,21 @@ func (r *WebmRecorder) PushVideoAt(p *rtp.Packet, at time.Time) {
 		return
 	}
 
+	r.m.Lock()
+	codec := r.videoCodec
+	warn := codec.frames != nil && !r.warnedPerPacket
+	r.warnedPerPacket = r.warnedPerPacket || warn
+	r.m.Unlock()
+
+	if warn {
+		log.WithField("session", r.ctx.Value("session")).
+			Warnf("Dropping %s packets pushed one at a time: the codec takes samples", codec.MimeType)
+	}
+
+	if codec.frames != nil {
+		return
+	}
+
 	if !r.useCustomSampler {
 		r.pushVP8Builtin(p, at)
 	} else {
@@ -331,10 +375,10 @@ func (r *WebmRecorder) close() time.Duration {
 	}
 	if r.started {
 		log.WithField("session", r.ctx.Value("session")).
-			Infof("webm writer closed: %s", r.file)
+			Infof("%s writer closed: %s", r.format, r.file)
 	} else {
 		log.WithField("session", r.ctx.Value("session")).
-			Info("webm writer closed without starting")
+			Infof("%s writer closed without starting", r.format)
 	}
 
 	if r.ivfWriter != nil {
@@ -554,6 +598,14 @@ func (r *WebmRecorder) keyframeDue(ssrc uint32) bool {
 }
 
 func (r *WebmRecorder) initWriter(width, height int) {
+	r.openWriter(width, height, nil)
+}
+
+// openWriter creates the file with a track for each kind of media r has.
+// The video track is in r's video codec and carries codecPrivate. It is
+// sized width x height, or 640x480 when either is 0. The audio track is
+// Opus.
+func (r *WebmRecorder) openWriter(width, height int, codecPrivate []byte) {
 	if !r.hasAudio && !r.hasVideo {
 		log.WithField("session", r.ctx.Value("session")).
 			Error("Cannot initialize writer: neither audio nor video tracks are present")
@@ -572,7 +624,7 @@ func (r *WebmRecorder) initWriter(width, height int) {
 				Debug("Using default video dimensions for audio-only initialization")
 		}
 
-		tracks = append(tracks, trackConfig{codec: CodecVP8, width: width, height: height})
+		tracks = append(tracks, trackConfig{codec: r.videoCodec, width: width, height: height, codecPrivate: codecPrivate})
 	}
 
 	// Audio track is optional
@@ -581,7 +633,7 @@ func (r *WebmRecorder) initWriter(width, height int) {
 	}
 
 	log.WithField("file", r.file).WithField("fileMode", r.fileMode).Debug("Opening file for writing")
-	writers, err := openContainer(r.file, r.fileMode, FormatWebM, tracks, r.sorterPacketQueueSize)
+	writers, err := openContainer(r.file, r.fileMode, r.format, tracks, r.sorterPacketQueueSize)
 
 	if err != nil {
 		// TODO review - panic is not the best choice here.
@@ -589,7 +641,7 @@ func (r *WebmRecorder) initWriter(width, height int) {
 	}
 
 	log.WithField("session", r.ctx.Value("session")).
-		Infof("webm writers started with video=%t, audio=%t : %s", r.hasVideo, r.hasAudio, r.file)
+		Infof("%s writers started with video=%t, audio=%t : %s", r.format, r.hasVideo, r.hasAudio, r.file)
 
 	writerIndex := 0
 
@@ -604,7 +656,10 @@ func (r *WebmRecorder) initWriter(width, height int) {
 
 	r.started = true
 
-	if r.writeIVFCopy && r.hasVideo {
+	if r.writeIVFCopy && r.hasVideo && r.videoCodec != CodecVP8 {
+		log.WithField("session", r.ctx.Value("session")).
+			Infof("No IVF copy: it holds VP8 only, not %s", r.videoCodec.MimeType)
+	} else if r.writeIVFCopy && r.hasVideo {
 		if err := r.startIVFWriter(); err != nil {
 			log.WithField("session", r.ctx.Value("session")).
 				Warnf("Error starting RTP ivf: %v", err)
