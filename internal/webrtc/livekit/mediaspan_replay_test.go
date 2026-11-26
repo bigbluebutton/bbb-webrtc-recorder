@@ -16,7 +16,7 @@ const mediaSpanTolerance = time.Millisecond
 // one trace. The span must last the file's media and its capped last frame,
 // and start at startUs when set.
 //
-// Otherwise a VP8 span starts at oracle.Placement's IdealStartUs. An Opus
+// Otherwise a video span starts at oracle.Placement's IdealStartUs. An Opus
 // span starts at the first frame's read, less the lag oracle's backlog. A
 // track its oracle cannot place fails.
 func mediaSpanViolations(r replayResult, traces []*corpus.Trace, startUs *float64) []string {
@@ -64,7 +64,7 @@ func mediaSpanViolations(r replayResult, traces []*corpus.Trace, startUs *float6
 		}
 
 		firstUs = r.audioLag.StartAtUs
-	case track.Codec == oracle.CodecVP8:
+	case track.Codec == oracle.CodecVP8, track.Codec == oracle.CodecH264:
 		if r.videoPlace == nil || r.videoPlaceErr != nil {
 			return append(v, fmt.Sprintf("no video placement: %v", r.videoPlaceErr))
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
+	"github.com/stretchr/testify/require"
 )
 
 // replayResult is what one replay measured.
@@ -35,8 +36,8 @@ type replayResult struct {
 	audioLag    *oracle.Lag
 	audioLagErr error
 	audioClock  *types.MediaClockStats
-	// Where the VP8 track's blocks play against their frames' reads, set
-	// when exactly one VP8 trace is replayed.
+	// The video track's oracle.Placement, set when exactly one video trace
+	// is replayed.
 	videoPlace    *oracle.Placement
 	videoPlaceErr error
 	// The recorder's media span once closed, and the fake clock's time at
@@ -58,20 +59,25 @@ type countingRecorder struct {
 	pushed int
 }
 
-func (r *countingRecorder) count() {
+func (r *countingRecorder) count(n int) {
 	r.mu.Lock()
-	r.pushed++
+	r.pushed += n
 	r.mu.Unlock()
 }
 
 func (r *countingRecorder) PushVideoAt(p *rtp.Packet, at time.Time) {
-	r.count()
+	r.count(1)
 	r.WebmRecorder.PushVideoAt(p, at)
 }
 
 func (r *countingRecorder) PushAudioAt(p *rtp.Packet, at time.Time) {
-	r.count()
+	r.count(1)
 	r.WebmRecorder.PushAudioAt(p, at)
+}
+
+func (r *countingRecorder) PushVideoSample(s recorder.VideoSample) {
+	r.count(len(s.Packets))
+	r.WebmRecorder.PushVideoSample(s)
 }
 
 // replayHarness runs tracks through readTrack, a production trackBuffer and
@@ -92,21 +98,28 @@ type replayHarness struct {
 
 func newReplayHarness(t *testing.T, infos ...trackInfo) *replayHarness {
 	cfg := (&config.Config{}).GetDefaults().Recorder
-	file := filepath.Join(t.TempDir(), "replay.webm")
 	rec := &countingRecorder{WebmRecorder: recorder.NewWebmRecorder(
-		file, 0o600, cfg.VideoPacketQueueSize, cfg.AudioPacketQueueSize, cfg.UseCustomSampler, cfg.WriteIVFCopy)}
+		filepath.Join(t.TempDir(), "replay.webm"), 0o600, cfg.VideoPacketQueueSize, cfg.AudioPacketQueueSize, cfg.UseCustomSampler, cfg.WriteIVFCopy)}
 
 	ids := make([]string, 0, len(infos))
+	mimeTypes := make([]string, 0, len(infos))
 	for _, info := range infos {
 		ids = append(ids, info.id)
+		mimeTypes = append(mimeTypes, string(info.mime))
 	}
+	// As Init picks it, from the publications' codecs.
+	require.NoError(t, rec.SetFormat(recorder.FormatFor(mimeTypes)))
 
-	h := &replayHarness{loopHarness: newLoopHarness(rec, ids...), rec: rec, file: file, start: time.Now(), infos: infos}
+	h := &replayHarness{loopHarness: newLoopHarness(rec, ids...), rec: rec, file: rec.GetFilePath(), start: time.Now(), infos: infos}
 	for _, info := range infos {
 		if info.kind == TrackKindVideo {
 			rec.SetHasVideo(true)
 		} else {
 			rec.SetHasAudio(true)
+		}
+
+		if info.codec != nil {
+			require.True(t, h.w.acceptCodec(info.id, info.kind, info.codec), info.id)
 		}
 
 		h.buffers = append(h.buffers, h.newBuffer(info, func() { h.record(&h.bufferRequests) }))
