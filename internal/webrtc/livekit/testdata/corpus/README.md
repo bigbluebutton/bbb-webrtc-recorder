@@ -85,6 +85,7 @@ The class groups the seeds that guard one defect, or a few related ones, named i
 | `h264-lost-fua-end` | h264 | synthetic | generators | A key frame that loses its last FU-A fragment: the requests end at the next key frame's SPS |
 | `h264-mode0-slices` | h264 | synthetic | generators, packetization mode 0 | Key frames that start with a lone SPS: the track buffer's key frame hint must see it |
 | `h264-padding-payload` | h264 | synthetic | LiveKit 1.13.5-1.13.9 (`Padding`) | Padding with a 255-byte payload between frames counts as padding by its bit, so the next frame follows |
+| `h264-padding-empty` | h264 | synthetic | LiveKit outside 1.13.5-1.13.9 (`Padding`) | Padding with no payload between frames is a sample of its own, which the jitter buffer releases, so the next frame follows |
 | `h264-c01-paced-6x45` | 1 | synthetic | `c01-paced-6x45` for H.264 | Same defect: at 200 ms, each key frame's STAP-A expires and the writer rejects its IDR |
 | `h264-c01-trickle-11x50` | 1 | synthetic | `c01-trickle-11x50` for H.264 | Same defect |
 | `h264-c03-d11-30fps` | 3 | synthetic | `c03-d11-30fps` for H.264 | Same defect, through the H.264 frames path |

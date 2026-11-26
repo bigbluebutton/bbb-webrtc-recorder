@@ -189,6 +189,28 @@ func h264Seeds(next func() uint32) []seed {
 		out = append(out, seed{name: "h264-wrap-seq-ts", class: "wrap", tracks: []*corpus.Trace{t}})
 	}
 
+	// Padding as LiveKit sends it outside 1.13.5-1.13.9: the padding bit and
+	// no payload, at frame boundaries.
+	{
+		t := must(corpus.GenerateH264(h264Camera(90, 60, next())))
+		var ops []corpus.Op
+		var after []uint16
+		for _, f := range []int{10, 25, 40} {
+			fr := frames(t.Records)[f]
+			last := t.Records[fr[len(fr)-1]].Seq
+			// Each insert moves the later frames up by 3.
+			last += uint16(3 * len(after))
+			after = append(after, last)
+			ops = append(ops, corpus.Padding(last, 3, 0))
+		}
+		ops = append(ops, corpus.EOFAt(endAt(t.Records)+50000))
+		t.Records = must(corpus.Apply(t.Records, ops...))
+		synth(t, h264Gen(90, 60, fmt.Sprintf("+Padding(%d,3,0)+Padding(%d,3,0)+Padding(%d,3,0)+EOFAt", after[0], after[1], after[2])),
+			nil, "h264-padding-empty/camera",
+			"3 padding packets after the markers of frames 10, 25 and 40, each with the padding bit and no payload, as LiveKit sends them outside 1.13.5-1.13.9.")
+		out = append(out, seed{name: "h264-padding-empty", class: "h264", tracks: []*corpus.Trace{t}})
+	}
+
 	return out
 }
 

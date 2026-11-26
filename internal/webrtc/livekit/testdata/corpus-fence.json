@@ -460,6 +460,14 @@
     "packetsLost": 1,
     "packetsDropped": 2
   },
+  "h264-padding-empty": {
+    "file": "6e138a4e19f5cf13872d4558588b500a4c2cab5db17d77e906236bedbdc94d81",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 190,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
   "h264-padding-payload": {
     "file": "6e138a4e19f5cf13872d4558588b500a4c2cab5db17d77e906236bedbdc94d81",
     "bufferRequestsUs": [],

@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "Padding as LiveKit sends it outside 1.13.5-1.13.9: after the marker of each of frames 10, 25 and 40, 3 packets with the padding bit and no payload. The track buffer releases each as a sample of its own, and counts its sequence number as padding, so the frame after it still follows. 0 requests, 0 lost, every frame written. RED when the track buffer's depacketizer leaves an empty payload to the H.264 one: the jitter buffer drops the 9 padding packets. The track buffer then asks for a key frame at 2336 ms. h264-padding-payload passes that RED.",
+  "traces": [
+    "h264-padding-empty.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 90,
+    "max": 90
+  },
+  "packetsWritten": {
+    "min": 190,
+    "max": 190
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 0,
+      "max": 0
+    }
+  }
+}
