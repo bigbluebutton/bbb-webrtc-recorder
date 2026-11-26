@@ -1,0 +1,35 @@
+{
+  "v": 1,
+  "class": "1",
+  "intent": "H.264 twin of c01-paced-6x45: 12 frames at 3.4 fps, each paced over 225 ms (6 x 45 ms), in order, no loss. Must be written whole at the production videoJitterLatency (2 s). RED at videoJitterLatency = 200 ms: 0 written and 57 packets dropped. Each key frame's STAP-A expires, and its IDR reaches the writer alone, which rejects it.",
+  "traces": [
+    "h264-c01-paced-6x45.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 12,
+    "max": 12
+  },
+  "packetsWritten": {
+    "min": 72,
+    "max": 72
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 12,
+    "minKeyframes": 3,
+    "videoDropped": {
+      "min": 0,
+      "max": 0
+    }
+  }
+}

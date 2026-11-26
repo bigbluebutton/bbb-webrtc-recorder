@@ -1,0 +1,33 @@
+{
+  "v": 1,
+  "class": "15",
+  "intent": "H.264 twin of c15-start-blank-key: key frame 0's SPS is 8x8, under the 16 px rule. The writer rejects frame 0 and asks for a key frame once, as it completes at 3 ms. It drops deltas 1-19, and key frame 20 is the first written. Unlike the VP8 writer, the frame writer starts its clock there, at PTS 0. The file stays 640x360. RED when the 16 px rule is disabled: frame 0 is written, 120 frames with no request, and the file is 8x8. RED when the writer does not ask on the rejection: the first request comes at 36.333 ms, from delta 1. The VP8 seed's RED that keeps hasKeyFrame after the rejection cannot show for H.264: no key frame is written before frame 0.",
+  "traces": [
+    "h264-c15-start-blank-key.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "firstRequestMinMs": 3,
+  "firstRequestMaxMs": 3,
+  "written": {
+    "min": 100,
+    "max": 100
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 5,
+    "videoDropped": {
+      "min": 20,
+      "max": 20
+    },
+    "videoSize": [640, 360]
+  }
+}

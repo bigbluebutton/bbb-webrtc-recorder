@@ -84,13 +84,19 @@ The class groups the seeds that guard one defect, or a few related ones, named i
 | `h264-lost-fua-end` | h264 | synthetic | generators | A key frame that loses its last FU-A fragment: the requests end at the next key frame's SPS |
 | `h264-mode0-slices` | h264 | synthetic | generators, packetization mode 0 | Key frames that start with a lone SPS: the track buffer's key frame hint must see it |
 | `h264-padding-payload` | h264 | synthetic | LiveKit 1.13.5-1.13.9 (`Padding`) | Padding with a 255-byte payload between frames counts as padding by its bit, so the next frame follows |
+| `h264-c01-paced-6x45` | 1 | synthetic | `c01-paced-6x45` for H.264 | Same defect: at 200 ms, each key frame's STAP-A expires and the writer rejects its IDR |
+| `h264-c01-trickle-11x50` | 1 | synthetic | `c01-trickle-11x50` for H.264 | Same defect |
 | `h264-c03-d11-30fps` | 3 | synthetic | `c03-d11-30fps` for H.264 | Same defect, through the H.264 frames path |
 | `h264-c11-dups-30fps` | 11 | synthetic | `c11-dups-30fps` for H.264 | Same defect |
 | `h264-c12-lkprobe-rtxdup` | 12 | synthetic | `c12-lkprobe-rtxdup` for H.264 | Same defect |
 | `h264-c15-start-midframe` | 15 | synthetic | `c15-start-midframe` for H.264 | Same defect; the writer asks for no key frame the track buffer's request already covers |
 | `h264-c15-start-kfloss` | 15 | synthetic | `c15-start-kfloss` for H.264 | Same defect, with the same writer rule |
+| `h264-c15-start-blank-key` | 15 | synthetic | `c15-start-blank-key` for H.264 | A first key frame of 8x8, which the 16 px rule rejects: the file stays 640x360 |
 | `h264-c17-eof-after-gap` | 17 | synthetic | `c17-eof-after-gap` for H.264 | Same defect: the flush at EOF passes the held frames on as samples |
+| `h264-c24-blackout-9s-seq2160` | 24 | synthetic | `c24-blackout-9s-seq2160` for H.264 | Same defect: the sample after the gap does not follow, and the PTS keeps the 9.6 s gap |
+| `h264-c24-blackout-9s-seq3240` | 24 | synthetic | `c24-blackout-9s-seq3240` for H.264 | The jitter buffer's new-stream path with no picture ID: only the track buffer's follows flag shows the writer the gap |
 | `h264-c24-resume-4s` | 24 | synthetic | `c24-resume-4s` for H.264 (`PauseH264`) | Same defect: the frame writer must keep the 4 s step |
+| `h264-c24-start-stall-2500ms` | 24 | synthetic | `c24-start-stall-2500ms` for H.264 | Same defect |
 
 ## Expect v1
 

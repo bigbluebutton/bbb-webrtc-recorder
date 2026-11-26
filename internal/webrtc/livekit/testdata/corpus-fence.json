@@ -280,6 +280,22 @@
     "packetsLost": 0,
     "packetsDropped": 0
   },
+  "h264-c01-paced-6x45": {
+    "file": "14cc6b67eb0418b4f1f9eb862c92301f892750f2d80ba7160ee39a109b365436",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 72,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
+  "h264-c01-trickle-11x50": {
+    "file": "ca2c759e290510eaabaebaf3cb75a480ce3f85c2d0eef262b67969dcb2aad7bb",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 88,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
   "h264-c03-d11-30fps": {
     "file": "f897ff15ab01e37c04d92f19573ecd2fb7db8f42fe164286cfc74ee2d2133be4",
     "bufferRequestsUs": [
@@ -303,6 +319,16 @@
     "bufferRequestsUs": [],
     "writerRequestsUs": [],
     "packets": 502,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
+  "h264-c15-start-blank-key": {
+    "file": "919311cb84ed4b3a30226bcdf4cd420f0679d91c241077912562eb09b2cff3c4",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [
+      3000
+    ],
+    "packets": 390,
     "packetsLost": 0,
     "packetsDropped": 0
   },
@@ -335,11 +361,39 @@
     "packetsLost": 1,
     "packetsDropped": 2
   },
+  "h264-c24-blackout-9s-seq2160": {
+    "file": "15d816c3c5c94c45b2e1909a9c4e519e2dd36b3100f5357d4991c931c94fef48",
+    "bufferRequestsUs": [
+      12500000
+    ],
+    "writerRequestsUs": [],
+    "packets": 1680,
+    "packetsLost": 2160,
+    "packetsDropped": 0
+  },
+  "h264-c24-blackout-9s-seq3240": {
+    "file": "d488eb61e59b7ce5387cf7cfa8c87d6bb2bfac37b6858075cbe7675e4133ed17",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [
+      12303000
+    ],
+    "packets": 2520,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
   "h264-c24-resume-4s": {
     "file": "539c4a73557ac06d407f7e5c3076facf9fb60b7a125e503568f3c898de9b036b",
     "bufferRequestsUs": [],
     "writerRequestsUs": [],
     "packets": 735,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
+  "h264-c24-start-stall-2500ms": {
+    "file": "b9122978bdb50cd95b00c5e10f8bb2f3d68055453595c68800d35eb407867e95",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 740,
     "packetsLost": 0,
     "packetsDropped": 0
   },

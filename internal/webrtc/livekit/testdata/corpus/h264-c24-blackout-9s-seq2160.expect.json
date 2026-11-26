@@ -1,0 +1,33 @@
+{
+  "v": 1,
+  "class": "24",
+  "intent": "H.264 twin of c24-blackout-9s-seq2160: a 9 s mid-file blackout of a 30 fps camera, 2160 sequence numbers, under the jitter buffer's 3000. The frames read in the 700 ms after it come 300 ms late. The buffer holds delta 360 for 2 s and counts the 2160 lost; the early gap request comes 200 ms after it arrives. The sample after the gap does not follow, so the writer drops deltas 360-377 and resumes at key frame 378. Its PTS must keep the 9.6 s gap. RED with the jitter buffer's new-stream distance at 2000: no loss counted, and the writer requests a key frame at 12303 ms. RED when every sample follows: deltas 360-377 are written (210). RED: a frame writer that caps a frame step at 1 s, or moves its timestamp on dropped deltas, collapses the gap (timeline). RED: a frame writer that takes the arrival gap for a step of over 3 s misplaces key frame 378 (timeline). The VP8 seed's picture-ID RED has no H.264 counterpart: H.264 has no picture ID.",
+  "traces": [
+    "h264-c24-blackout-9s-seq2160.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "firstRequestMinMs": 12500,
+  "firstRequestMaxMs": 12540,
+  "written": {
+    "min": 192,
+    "max": 192
+  },
+  "packetsLostMin": 2160,
+  "packetsLostMax": 2160,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 4,
+    "videoDropped": {
+      "min": 18,
+      "max": 18
+    }
+  }
+}

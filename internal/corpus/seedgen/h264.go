@@ -161,7 +161,7 @@ func h264Seeds(next func() uint32) []seed {
 func h264Twins(next func() uint32) []seed {
 	var out []seed
 	gen := func(o corpus.H264Options) string {
-		return fmt.Sprintf("corpus.GenerateH264{FPS:%v,Frames:%d,KeyInterval:%d,KeySlicePackets:%d,DeltaSlicePackets:%d,SpreadUs:%d}",
+		return fmt.Sprintf("corpus.GenerateH264{FPS:%.4g,Frames:%d,KeyInterval:%d,KeySlicePackets:%d,DeltaSlicePackets:%d,SpreadUs:%d}",
 			o.FPS, o.Frames, o.KeyInterval, o.KeySlicePackets, o.DeltaSlicePackets, o.SpreadUs)
 	}
 	// Frames have as many packets as in the VP8 seed. A key frame's STAP-A
@@ -170,6 +170,9 @@ func h264Twins(next func() uint32) []seed {
 		return corpus.H264Options{FPS: 30, Frames: frames, KeyInterval: keyInterval, KeySlicePackets: keyPackets - 1,
 			DeltaSlicePackets: deltaPackets, SpreadUs: spreadUs, StartSeq: 1000, StartTS: 90000, SSRC: next()}
 	}
+	// Frames read in the 700 ms after a gap come 300 ms late, as in the VP8
+	// c24 seeds.
+	const lateUs, lateForUs = 300000, 700000
 
 	// c03-d11-30fps: a packet in the middle of P frame 30 is lost and never
 	// repaired.
@@ -263,7 +266,6 @@ func h264Twins(next func() uint32) []seed {
 	// c24-resume-4s: a camera paused for 4 s and resumed, as LiveKit sends
 	// it.
 	{
-		const lateUs, lateForUs = 300000, 700000
 		o := camera(360, 90, 8, 3, 3000)
 		t := must(corpus.GenerateH264(o))
 		n, end := len(t.Records), endAt(t.Records)
@@ -274,6 +276,77 @@ func h264Twins(next func() uint32) []seed {
 			fmt.Sprintf("Frames 150-269 (%d packets) are not sent; the seqs after them follow on. Every frame read in the 700 ms after the resume is read 300 ms later. "+
 				"Key frame 270 is read at %.3f ms, its timestamp 4.033 s after frame 149's.", n-len(t.Records)+1, ms(atOf(t.Records, 150, 0))))
 		out = append(out, seed{name: "h264-c24-resume-4s", class: "24", tracks: []*corpus.Trace{t}})
+	}
+
+	// c01-paced-6x45: each frame's packets read over 225 ms.
+	{
+		o := camera(12, 4, 6, 6, 225000)
+		o.FPS, o.StartSeq, o.StartTS = 3.4, 45308, 3164626761
+		t := must(corpus.GenerateH264(o))
+		t.Records = must(corpus.Apply(t.Records, corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, gen(o)+"+EOFAt", nil, "h264-c01-paced-6x45/camera",
+			"As c01-paced-6x45: each frame's 6 packets are read 45 ms apart (225 ms). A key frame is a STAP-A and 5 FU-A fragments.")
+		out = append(out, seed{name: "h264-c01-paced-6x45", class: "1", tracks: []*corpus.Trace{t}})
+	}
+
+	// c01-trickle-11x50: each frame's packets read over 500 ms, the next
+	// frame right behind.
+	{
+		o := camera(8, 4, 11, 11, 500000)
+		o.FPS, o.StartSeq, o.StartTS = 1e6/550000.0, 45308, 3164626761
+		t := must(corpus.GenerateH264(o))
+		t.Records = must(corpus.Apply(t.Records, corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, gen(o)+"+EOFAt", nil, "h264-c01-trickle-11x50/camera",
+			"As c01-trickle-11x50: each frame's 11 packets are read 50 ms apart (500 ms), the next frame right behind. "+
+				"A key frame is a STAP-A and 10 FU-A fragments.")
+		out = append(out, seed{name: "h264-c01-trickle-11x50", class: "1", tracks: []*corpus.Trace{t}})
+	}
+
+	// c24-blackout-9s: a camera whose path carries nothing for 9 s mid-file,
+	// at 240 and 360 packets/s.
+	for _, c := range []struct {
+		tag     string
+		packets int
+	}{{"seq2160", 8}, {"seq3240", 12}} {
+		name := "h264-c24-blackout-9s-" + c.tag
+		o := camera(480, 63, c.packets, c.packets, 3000)
+		t := must(corpus.GenerateH264(o))
+		end := endAt(t.Records)
+		r := must(corpus.Apply(t.Records, corpus.Blackout(3e6, 12e6)))
+		r = must(corpus.Apply(r, corpus.DelayFrames(lateFrames(r, 12e6, 12e6+lateForUs, lateUs))))
+		t.Records = must(corpus.Apply(r, corpus.EOFAt(end+50000)))
+		last, resume := seqOf(t.Records, 89, c.packets-1), seqOf(t.Records, 90, 0)
+		synth(t, gen(o)+"+Blackout(3s,12s)+DelayFrames{read in [12s,12.7s):+300ms}+EOFAt", nil, name+"/camera",
+			fmt.Sprintf("Frames 90-359 are never read: seqs %d-%d (%d) and 9 s of RTP time. "+
+				"Every frame read in the 700 ms after the blackout is read 300 ms later. "+
+				"Delta 360 is read at %.3f ms. Key frames 126-315 fall in the blackout, so the next one is frame 378.",
+				last+1, resume-1, resume-last-1, ms(atOf(t.Records, 90, 0))))
+		out = append(out, seed{name: name, class: "24", tracks: []*corpus.Trace{t}})
+	}
+
+	// c24-start-stall-2500ms: nothing read for the first 2.5 s, then the
+	// backlog at once.
+	{
+		o := camera(240, 60, 8, 3, 3000)
+		t := must(corpus.GenerateH264(o))
+		t.Records = must(corpus.Apply(t.Records, corpus.Stall(0, 2.5e6), corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, gen(o)+"+Stall(0,2.5s)+EOFAt", nil, "h264-c24-start-stall-2500ms/camera",
+			"As c24-start-stall-2500ms: frames 0-74 are all read at 2500 ms; frame 75, sent then, is on time.")
+		out = append(out, seed{name: "h264-c24-start-stall-2500ms", class: "24", tracks: []*corpus.Trace{t}})
+	}
+
+	// c15-start-blank-key: a first key frame of 8x8, which the writer
+	// rejects.
+	{
+		o := camera(120, 20, 8, 3, 3000)
+		t := must(corpus.GenerateH264(o))
+		// A key frame's first packet is its STAP-A of SPS and PPS.
+		small := must(corpus.GenerateH264(corpus.H264Options{FPS: 30, Frames: 1, Width: 8, Height: 8}))
+		t.Records[0].Pay, t.Records[0].PLen = small.Records[0].Pay, small.Records[0].PLen
+		t.Records = must(corpus.Apply(t.Records, corpus.EOFAt(endAt(t.Records)+50000)))
+		synth(t, gen(o)+"+frame 0's SPS at 8x8+EOFAt", nil, "h264-c15-start-blank-key/camera",
+			"Key frame 0's STAP-A holds an 8x8 SPS. Key frame 20, the next, is 666.667 ms of RTP time after it.")
+		out = append(out, seed{name: "h264-c15-start-blank-key", class: "15", tracks: []*corpus.Trace{t}})
 	}
 
 	return out
