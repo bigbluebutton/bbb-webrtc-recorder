@@ -57,6 +57,8 @@ func (r *fenceRequester) RequestKeyframe() {
 func (r *fenceRequester) RequestKeyframeForSSRC(uint32) { r.RequestKeyframe() }
 
 func fenceVP8(t *testing.T, o corpus.VP8Options, ops ...corpus.Op) []corpus.Record {
+	t.Helper()
+
 	tr, err := corpus.GenerateVP8(o)
 	require.NoError(t, err)
 	recs, err := corpus.Apply(tr.Records, ops...)
@@ -66,6 +68,8 @@ func fenceVP8(t *testing.T, o corpus.VP8Options, ops ...corpus.Op) []corpus.Reco
 }
 
 func fenceOpus(t *testing.T, o corpus.OpusOptions, ops ...corpus.Op) []corpus.Record {
+	t.Helper()
+
 	tr, err := corpus.GenerateOpus(o)
 	require.NoError(t, err)
 	recs, err := corpus.Apply(tr.Records, ops...)
@@ -153,6 +157,8 @@ type fencePush struct {
 // runFenceCase pushes c's packets at their read times, closes the recorder
 // and returns what the fence pins. Run it inside a synctest bubble.
 func runFenceCase(t *testing.T, c fenceCase) fenceEntry {
+	t.Helper()
+
 	dir := t.TempDir()
 	file := filepath.Join(dir, "fence.webm")
 	rec := NewWebmRecorder(file, 0o600, 256, 32, c.custom, c.ivf)

@@ -106,6 +106,8 @@ func (r *frameTracker) KeyframeRequestedSince(_ uint32, since time.Time) bool {
 }
 
 func newFrameRecorder(t *testing.T) (*WebmRecorder, *frameRequester) {
+	t.Helper()
+
 	rec := NewWebmRecorder(filepath.Join(t.TempDir(), "frames.mkv"), 0o600, 256, 32, true, false)
 	rec.WithContext(testSessionContext())
 	rec.SetHasVideo(true)
@@ -141,6 +143,8 @@ type writtenBlock struct {
 }
 
 func readVideoBlocks(t *testing.T, file string) []writtenBlock {
+	t.Helper()
+
 	entries, read, err := oracle.ReadBlocks(file)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)

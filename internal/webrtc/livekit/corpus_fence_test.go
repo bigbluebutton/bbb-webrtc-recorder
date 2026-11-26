@@ -46,6 +46,8 @@ func corpusFenceEntryOf(r replayResult) corpusFenceEntry {
 }
 
 func newCorpusFence(t *testing.T) *oracle.Fence {
+	t.Helper()
+
 	f, err := oracle.NewFence(corpusFencePath, *updateFence)
 	require.NoError(t, err)
 
@@ -62,6 +64,8 @@ func newCorpusFence(t *testing.T) *oracle.Fence {
 }
 
 func checkCorpusFence(t *testing.T, f *oracle.Fence, name string, r replayResult) {
+	t.Helper()
+
 	diff, err := f.Check(name, corpusFenceEntryOf(r))
 	require.NoError(t, err)
 	assert.Empty(t, diff, "the recording or its keyframe requests changed; if intended, run with -update")

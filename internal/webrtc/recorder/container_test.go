@@ -18,6 +18,8 @@ type containerDoc struct {
 }
 
 func readContainer(t *testing.T, file string) containerDoc {
+	t.Helper()
+
 	f, err := os.Open(file)
 	require.NoError(t, err)
 	defer func() { _ = f.Close() }()
@@ -29,6 +31,8 @@ func readContainer(t *testing.T, file string) containerDoc {
 }
 
 func readBlocks(t *testing.T, file string) [][]int64 {
+	t.Helper()
+
 	entries, blocks, err := oracle.ReadBlocks(file)
 	require.NoError(t, err)
 
