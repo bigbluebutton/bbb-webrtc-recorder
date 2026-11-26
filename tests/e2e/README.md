@@ -44,6 +44,7 @@ those frames had one.
 | `TestStartResponseNamesTheCodec` | **Codec in the start response.** A VP8 camera and an H.264 camera started under a `.webm` name, and a microphone under none, one session each. `startRecordingResponse` and `getRecordingsResponse` must name the file on disk, `.mkv` for H.264, and list the track's codec. A requester must write that name into the recording's events, or processing looks for a `.webm` file that does not exist. |
 | `TestUnrepairedLossRequestsKeyframe` | **Unrepaired loss.** One packet is withheld from the middle of a tagged camera frame, at 15 and at 5 fps. The trace must show exactly one unrepaired gap, at that packet. The recorder must request a key frame early, from the sequence gap (trace PLI reason `packet_drop`), within a bound that depends on the fps. The WebM must skip the lossy frame and at least one more, and go on from the key frame the publisher sends for the PLI. Every block must still land within 15 ms of when its frame was sent, so the PTS keep the gap where the skipped frames were. `recordingStopped` must repeat `mediaStart`, and its `mediaEnd` must add the file's media and its last frame. |
 | `TestH264UnrepairedLossRequestsKeyframe` | **H.264 loss that nothing repairs.** `TestUnrepairedLossRequestsKeyframe`'s scenario on an H.264 camera, with its checks. Each frame is one slice of 8 FU-A fragments, and the third is withheld. The file must skip the frames from the lossy one to the PLI's key frame, and resume at that key frame. |
+| `TestH264ClipDecodes` | **H.264 decode.** A real x264 clip (see [The H.264 clip](#the-h264-clip)), packetized with pion's `H264Payloader` at a 300-byte MTU so that every slice goes as FU-A fragments, records for 6 s. The publisher answers a PLI with the clip's next key frame. The file must pass the oracle's checks and hold every frame sent from its first block to its last. `ffmpeg -v error -xerror -err_detect explode -i <file> -fps_mode vfr -f null -`, with `-vsync vfr` for ffmpeg before 5.1, must exit 0 and print nothing, so ffmpeg may not conceal a frame. ffprobe must decode one frame per block. Each picture ffmpeg decodes from the file must be the clip's next one, compared through `-f framemd5`. `ffmpeg -i <file> -c copy`, as BBB's archive step runs it, must give a Matroska file with the recording's duration. |
 | `TestPacedKeyframesNoLoop` | **Paced key frames.** A 3.4 fps camera whose key frames are paced over 664 ms, plus one lost packet. Key-frame requests must stay bounded (no keyframe loop) and frames must keep being written. |
 | `TestFlowingFollowsFirstMedia` | **Flowing at start.** A camera answers the recorder's key-frame request 400 ms late, so LiveKit sends padding ahead of the first frame. The first `flowing` event, on which the SFU stamps the recording's start, must not reach the driver before the recorder reads the first media packet, and the trace must hold padding before that read. Only LiveKit 1.13.5 to 1.13.9 give that padding a payload, so only they fail it on a recorder that takes a payload for media. |
 | `TestH264FlowingFollowsFirstMedia` | **H.264 flowing at start.** The flowing scenario on a tagged H.264 camera. The oracle and placement checks hold, and the recorder asks for no key frame. Here LiveKit pads only ahead of the first key frame, so the H.264 handling of padding is tested in process instead. |
@@ -192,6 +193,7 @@ Environment:
 | `E2E_BROWSER=1` | Run the browser scenarios. They need Node and the runner set up (see [Browser mode](#browser-mode)). |
 | `E2E_BROWSER_REQUIRED=1` | Fail the browser scenarios instead of skipping them when they cannot run. |
 | `E2E_BROWSER_BIN` | Run this Chrome or Chromium binary instead of Playwright's Chromium. |
+| `E2E_FFMPEG_REQUIRED=1` | Fail the ffmpeg checks instead of skipping them when `ffmpeg` or `ffprobe` is not on `PATH`. |
 
 The child processes do not inherit `BBBRECORDER_*`, `LIVEKIT_*`, `REDIS_*`,
 `NODE_IP` or `UDP_PORT`, so a shell set up for a dev recorder cannot override
@@ -218,6 +220,23 @@ recorder/recordings/<room>/<trackSID>-<session>.{webm,mkv}      # .mkv holds H.2
 ```
 
 A test run takes a few hundred KB.
+
+### The H.264 clip
+
+`testdata/h264-cbp-640x360-15fps.h264` is 4 s of x264 output: 640x360 at
+15 fps, constrained baseline, one slice per frame. An IDR comes every 15
+frames, with its SPS and PPS. ffmpeg 4.2.7 made it:
+
+```sh
+ffmpeg -f lavfi -i testsrc=size=640x360:rate=15 -t 4 -c:v libx264 \
+  -profile:v baseline -level 3.1 -pix_fmt yuv420p -bf 0 -g 15 \
+  -x264-params keyint=15:min-keyint=15:scenecut=0 \
+  -b:v 150k -maxrate 150k -bufsize 150k -f h264 h264-cbp-640x360-15fps.h264
+```
+
+x264 output differs from run to run, so a new clip has other bytes. The
+tests depend only on its profile, size, frame count and IDR interval, and
+on each slice being over `h264ClipMTU` bytes.
 
 ### The NACK scenario (root)
 
