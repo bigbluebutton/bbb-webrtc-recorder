@@ -56,10 +56,25 @@ type trackBuffer struct {
 	pending     bool   // that request has no key frame after it yet
 
 	mu        sync.Mutex
-	ready     []jitter.ExtPacket
+	ready     []bufferSample
 	lastLoss  time.Time
 	lastEarly time.Time
 	ended     bool
+	// The padding and empty packets pushed, which no sample holds, and the
+	// last packet released.
+	fillers  seqWindow
+	released bool
+	lastSeq  uint16
+}
+
+// A bufferSample is the packets of whole frames that the jitter buffer
+// releases together, in order and with their arrivals.
+type bufferSample struct {
+	packets []jitter.ExtPacket
+	// follows reports whether the sample starts right after the last packet
+	// released, with only padding or empty packets between them. The first
+	// sample does not follow, nor one after a loss or a sequence jump.
+	follows bool
 }
 
 // newTrackBuffer calls onLoss at most once per lossInterval: when the jitter
@@ -95,9 +110,25 @@ func (b *trackBuffer) push(pkt *rtp.Packet) []*rtp.Packet {
 // pushExt adds pkt, which arrived at now, to the jitter buffer. It returns,
 // in order and with their arrivals, the packets released since the last call.
 func (b *trackBuffer) pushExt(pkt *rtp.Packet, now time.Time) []jitter.ExtPacket {
+	return packetsIn(b.pushSamples(pkt, now))
+}
+
+// pushSamples is pushExt that returns the released packets by sample.
+func (b *trackBuffer) pushSamples(pkt *rtp.Packet, now time.Time) []bufferSample {
 	if b.gaps != nil {
 		b.gaps.read(now)
 	}
+
+	// Update fillers before the push: the push can release a sample, and
+	// followsLast reads fillers. A media packet advances the window too, so
+	// it forgets the padding of the last sequence cycle.
+	b.mu.Lock()
+	if pkt.Padding || len(pkt.Payload) == 0 {
+		b.fillers.add(pkt.SequenceNumber)
+	} else {
+		b.fillers.advance(pkt.SequenceNumber)
+	}
+	b.mu.Unlock()
 
 	// The jitter buffer keeps duplicates, and popping the second copy
 	// underflows its loss count by 65535. RTX probes resend recent packets.
@@ -123,7 +154,7 @@ func (b *trackBuffer) pushExt(pkt *rtp.Packet, now time.Time) []jitter.ExtPacket
 		b.onLoss()
 	}
 
-	return b.takeReady()
+	return b.takeSamples()
 }
 
 // gapDue reports whether a gap is due for a request, or the last early
@@ -180,13 +211,18 @@ func (b *trackBuffer) flush() []*rtp.Packet {
 
 // flushExt is flush, with each packet's arrival.
 func (b *trackBuffer) flushExt() []jitter.ExtPacket {
+	return packetsIn(b.flushSamples())
+}
+
+// flushSamples is flushExt that returns the released packets by sample.
+func (b *trackBuffer) flushSamples() []bufferSample {
 	b.mu.Lock()
 	b.ended = true
 	b.mu.Unlock()
 
 	b.jb.Flush()
 
-	return b.takeReady()
+	return b.takeSamples()
 }
 
 func packetsOf(ext []jitter.ExtPacket) []*rtp.Packet {
@@ -198,7 +234,16 @@ func packetsOf(ext []jitter.ExtPacket) []*rtp.Packet {
 	return packets
 }
 
-func (b *trackBuffer) takeReady() []jitter.ExtPacket {
+func packetsIn(samples []bufferSample) []jitter.ExtPacket {
+	var packets []jitter.ExtPacket
+	for _, s := range samples {
+		packets = append(packets, s.packets...)
+	}
+
+	return packets
+}
+
+func (b *trackBuffer) takeSamples() []bufferSample {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -214,11 +259,37 @@ func (b *trackBuffer) enqueue(sample []jitter.ExtPacket) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	var packets []jitter.ExtPacket
 	for _, p := range sample {
 		if len(p.Payload) > 0 {
-			b.ready = append(b.ready, p)
+			packets = append(packets, p)
 		}
 	}
+
+	if len(packets) == 0 {
+		return
+	}
+
+	follows := b.released && b.followsLast(packets[0].SequenceNumber)
+	b.released, b.lastSeq = true, packets[len(packets)-1].SequenceNumber
+	b.ready = append(b.ready, bufferSample{packets: packets, follows: follows})
+}
+
+// followsLast reports whether a sample that starts at first follows the
+// last one released. Call it with mu held.
+func (b *trackBuffer) followsLast(first uint16) bool {
+	gap := int(int16(first - b.lastSeq - 1))
+	if gap < 0 || gap >= seqWindowSize {
+		return false
+	}
+
+	for i := range gap {
+		if !b.fillers.contains(b.lastSeq + 1 + uint16(i)) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // lossDue rate-limits the loss reports: the jitter buffer's, which repeat
@@ -267,7 +338,8 @@ func (b *trackBuffer) close() {
 }
 
 // seqWindow records which of the last seqWindowSize sequence numbers were
-// seen. Only the pushing goroutine uses it.
+// seen. It has no lock: seen stays on the pushing goroutine, and fillers is
+// used under mu.
 type seqWindow struct {
 	started bool
 	head    uint16
@@ -276,6 +348,33 @@ type seqWindow struct {
 
 // duplicate records seq and reports whether it had been seen already.
 func (w *seqWindow) duplicate(seq uint16) bool {
+	dist := int(int16(seq - w.head))
+
+	switch {
+	case !w.started || dist > 0 || dist <= -seqResetDistance:
+		w.advance(seq)
+	case -dist >= seqWindowSize:
+		// Too old to tell. seqWindowSize covers the 2 s video latency at up
+		// to 1024 packets/s. A packet older than the window is then past the
+		// latency, and the jitter buffer drops it as late.
+		return false
+	case w.has(seq):
+		return true
+	}
+
+	w.set(seq)
+
+	return false
+}
+
+func (w *seqWindow) add(seq uint16) {
+	w.duplicate(seq)
+}
+
+// advance moves the head to a newer seq and clears the numbers it passes. A
+// jump of seqResetDistance or more starts the window over at seq. It does not
+// record seq.
+func (w *seqWindow) advance(seq uint16) {
 	dist := int(int16(seq - w.head))
 
 	switch {
@@ -288,17 +387,14 @@ func (w *seqWindow) duplicate(seq uint16) bool {
 			w.clear(w.head + uint16(i))
 		}
 		w.head = seq
-	case -dist >= seqWindowSize:
-		// Too old to tell. The window must cover the video latency times the
-		// packet rate, 1024 packets/s at 2 s, so the buffer drops it as late.
-		return false
-	case w.has(seq):
-		return true
 	}
+}
 
-	w.set(seq)
+// contains reports whether seq was recorded and is still in the window.
+func (w *seqWindow) contains(seq uint16) bool {
+	dist := int(int16(w.head - seq))
 
-	return false
+	return w.started && dist >= 0 && dist < seqWindowSize && w.has(seq)
 }
 
 func (w *seqWindow) has(seq uint16) bool {
