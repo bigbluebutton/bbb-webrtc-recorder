@@ -61,7 +61,7 @@ those frames had one.
 | `TestBrowserNetemControl` | The browser netem scenario's 3 s blackout case on loopback (browser mode), where the blackout changes nothing. The checks that detect the fault must find none. The placement checks must pass, the split at the blackout included. Two checks must find the opposite of a blackout, to show they can tell one. Media captured during the blackout is read during it. The microphone's capture step across the blackout stays well under its length, and its PTS step is at most one 20 ms frame plus the 30 ms drift bound. |
 | `TestNetemBrowserPlan`, `TestSenderClockSegments` | The browser netem plan's commands, and how the oracle splits the sender reports at a blackout. After a LiveKit re-base, a report from before it maps a frame 500 ms off; one from the frame's side maps it right. Both run unprivileged, without a browser. |
 | `TestShutdownSignalClosesRecordings` | **Shutdown signal.** A camera records for 3 s, then the recorder gets SIGINT, and in a second run SIGTERM, the signal systemd sends on stop. Either way it must exit 0 by itself, having closed the WebM (every frame read is written) and ended the trace with its EOF record. |
-| `TestPublisherSendLoop`, `TestScheduleFramesFindsKeyFrames` | The publisher's send loop (PLI answers, pacing, drops, pauses) and how it finds key frames, with no servers involved. |
+| `TestPublisherSendLoop`, `TestPublisherSendLoopH264`, `TestScheduleFramesFindsKeyFrames` | The publisher's send loop (PLI answers, pacing, drops, pauses, H.264 tags) and how it finds key frames, with no servers involved. |
 
 ## Adding a scenario
 
@@ -78,9 +78,10 @@ of the in-process replay corpus
    configs.
 2. **Publish.** `pub := s.NewPublisher(room, identity)`, with a room unique
    to the test (`"e2e-<scenario>-"` plus a short UUID), then
-   `pub.PublishVP8` or `pub.PublishOpus` with `TrackOptions`, or
-   `pub.PublishVP8Simulcast` with one `TrackOptions` per layer. A track sends
-   a `corpus.GenerateVP8` or `corpus.GenerateOpus` schedule. `TrackOptions`
+   `pub.PublishVP8`, `pub.PublishH264` or `pub.PublishOpus` with
+   `TrackOptions`, or `pub.PublishVP8Simulcast` with one `TrackOptions` per
+   layer. A track sends a `corpus.GenerateVP8`, `GenerateH264` or
+   `GenerateOpus` schedule. `TrackOptions`
    also sets how the publisher answers a keyframe request (`KeyframeDelay`,
    `KeyframeSpread`) and which packets it never sends (`Drop`). Wait with
    `pub.WaitPublished`.
