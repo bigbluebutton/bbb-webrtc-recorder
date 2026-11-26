@@ -23,7 +23,7 @@ Read traces for the in-process replay of the LiveKit path (read loop, `trackBuff
 A seed is one or more traces plus one expect file. `TestCorpusReplay` replays every `*.expect.json` in this directory, and fails on a trace that no expect file lists.
 
 1. **Write the trace.**
-   - **Synthetic:** add a block at the end of `seeds()` in `internal/corpus/seedgen/main.go`, then run `go run ./internal/corpus/seedgen`. Build it from the `internal/corpus` generators (`GenerateVP8`, `GenerateOpus`) and operators (`DropSeqs`, `Retransmit`, `Duplicate`, `Reorder`, `StartAt`, `EOFAt`, `MediaClock`, `SenderReports`, `Delay`, `Blackout`, `Stall`, `Pause`, `PauseOpus`, `DelayFrames`). Each seed takes the next SSRC, so a block inserted earlier changes every trace after it.
+   - **Synthetic:** add a block at the end of `seeds()` in `internal/corpus/seedgen/main.go`, or of `h264Seeds()` in `h264.go` there for an H.264 seed, then run `go run ./internal/corpus/seedgen`. Build it from the `internal/corpus` generators (`GenerateVP8`, `GenerateOpus`, `GenerateH264`) and operators (`DropSeqs`, `Retransmit`, `Duplicate`, `Reorder`, `StartAt`, `EOFAt`, `MediaClock`, `SenderReports`, `Delay`, `Blackout`, `Stall`, `Pause`, `PauseOpus`, `PauseH264`, `DelayFrames`, `Switch`, `Padding`, `H264BlankClose`). Each seed takes the next SSRC, so a block inserted earlier changes every trace after it.
    - **Live capture:** run the recorder with `livekit.traceCapture` enabled and record the session. `payload: header` keeps the media out of the trace. Copy the track's `<recording>.<trackID>.trace.ndjson.gz` here under the seed's name. `seedgen` does not write it, so `TestCorpusMatchesGenerator` only checks that its provenance is `capture`. To look at a capture before making it a seed, replay it with no expect file: `go test ./internal/webrtc/livekit/ -run 'TestReplayTraces$' -v -args -corpus.replay=<trace>[,<trace>...]`, with absolute paths, logs the same `measured:` line. It replays with the recorder's defaults, so it matches a seed with `audioClockSync: true`.
 2. **Write `<name>.expect.json`** with `v`, `class`, `intent` and `traces`, and no checks yet.
 3. **Measure:** run `go test ./internal/webrtc/livekit/ -run 'TestCorpusReplay/<name>$' -v`. It logs a `measured:` line with:
@@ -40,7 +40,7 @@ A seed is one or more traces plus one expect file. `TestCorpusReplay` replays ev
 
 ## Seeds
 
-The class groups the seeds that guard one defect, or a few related ones, named in the Guards column. A RED on a class-9 seed, for example, means the push-lag window defect has come back. Class 24 holds three: a mid-file blackout and a pause and resume, each for a camera and a microphone, and a camera's start stall. Each seed's expect file states its RED in `intent`.
+The class groups the seeds that guard one defect, or a few related ones, named in the Guards column. A RED on a class-9 seed, for example, means the push-lag window defect has come back. Class 24 holds three: a mid-file blackout and a pause and resume, each for a camera and a microphone, and a camera's start stall. Class h264 holds the defects only H.264 has; an H.264 twin of a VP8 seed takes that seed's class. Each seed's expect file states its RED in `intent`.
 
 | Seed | Class | Provenance | Source | Guards |
 |---|---|---|---|---|
@@ -75,6 +75,15 @@ The class groups the seeds that guard one defect, or a few related ones, named i
 | `c24-mic-blackout-9s` | 24 | synthetic | generators | A 9 s mid-file blackout of a microphone, 450 seqs, and the 300 ms after it read in one burst: the PTS must keep the 9.02 s gap |
 | `c24-mic-resume-4s` | 24 | synthetic | generators | A microphone that sends nothing for 4 s: seqs follow on, and only the timestamp carries the 4.02 s. The 300 ms after it is read in one burst. LiveKit's 1 s of silence at a mute is left out; `TestBrowserMidMeetingFilesKeepLipSync` records through it |
 | `baseline-av` (`.video` + `.audio`) | baseline | synthetic | generators | The ordinary path |
+| `h264-baseline` | h264 | synthetic | generators | The ordinary H.264 path: whole samples to the frames path, AVCC blocks in Matroska |
+| `h264-layer-switch` | h264 | synthetic | LiveKit's simulcast switch (`Switch`) | A cut frame ahead of the next layer's key frame in one sample: the parse must go on past the lost unit |
+| `h264-simulcast-orphan-sps` | h264 | synthetic | LiveKit's simulcast start (`Switch`) | The low layer's orphan SPS and PPS ahead of the high layer's key frame: size and CodecPrivate come from the key frame's own SPS |
+| `h264-blank-close` | h264 | synthetic | LiveKit's downtrack close (`H264BlankClose`) | 2x2 blank key frames at the end, which the 16 px rule rejects |
+| `h264-lost-stapa` | h264 | synthetic | generators | An IDR whose STAP-A of SPS and PPS is lost is no key frame |
+| `h264-lost-first-slice` | h264 | synthetic | generators | A P frame released without its first slice, in a sample that does not follow |
+| `h264-lost-fua-end` | h264 | synthetic | generators | A key frame that loses its last FU-A fragment: the requests end at the next key frame's SPS |
+| `h264-mode0-slices` | h264 | synthetic | generators, packetization mode 0 | Key frames that start with a lone SPS: the track buffer's key frame hint must see it |
+| `h264-padding-payload` | h264 | synthetic | LiveKit 1.13.5-1.13.9 (`Padding`) | Padding with a 255-byte payload between frames counts as padding by its bit, so the next frame follows |
 
 ## Expect v1
 

@@ -664,7 +664,7 @@ func seeds() []seed {
 		out = append(out, seed{name: "c18-mic-clock-gap-at-start", class: "18", tracks: []*corpus.Trace{t}})
 	}
 
-	return out
+	return append(out, h264Seeds(next)...)
 }
 
 func main() {

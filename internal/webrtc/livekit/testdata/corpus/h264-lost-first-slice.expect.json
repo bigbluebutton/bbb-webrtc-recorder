@@ -1,0 +1,44 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "P frame 20, two single-NAL slices, loses its first slice, never repaired. The jitter buffer releases the second slice on its own after the gap, in a sample that does not follow. The writer drops frames 20-59 and resumes at key frame 60. The track buffer asks 200-240 ms after the reveal, and again a second later while no key frame has come. RED when every sample counts as following: frame 20's second slice is written as frame 20 (90 written), and its block names no frame read.",
+  "traces": [
+    "h264-lost-first-slice.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 2,
+    "max": 2
+  },
+  "bufferRequestsMs": [
+    {
+      "min": 869.667,
+      "max": 909.667
+    },
+    {
+      "min": 1869.667,
+      "max": 1909.667
+    }
+  ],
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 50,
+    "max": 50
+  },
+  "packetsWritten": {
+    "min": 189,
+    "max": 189
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 40,
+      "max": 40
+    }
+  }
+}

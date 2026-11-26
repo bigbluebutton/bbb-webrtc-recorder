@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "LiveKit 1.13.5-1.13.9 padding: after the marker of each of frames 10, 25 and 40, 3 packets with the padding bit and a 255-byte zero payload. The jitter buffer drops them, and the frame after each still follows, since the track buffer counts their sequence numbers as padding by the bit. 0 requests, 0 lost, every frame written. RED when the track buffer takes padding by an empty payload only: frame 11 does not follow, so frames 11-59 are dropped (41 written). The writer asks for key frames twice.",
+  "traces": [
+    "h264-padding-payload.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 90,
+    "max": 90
+  },
+  "packetsWritten": {
+    "min": 190,
+    "max": 190
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 0,
+      "max": 0
+    }
+  }
+}

@@ -262,6 +262,93 @@
     "packetsLost": 0,
     "packetsDropped": 0
   },
+  "h264-baseline": {
+    "file": "15dc31245718b419608c223cbeb82ab04e7fbf524cab6c8eda11cc00673fcf26",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 1250,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
+  "h264-blank-close": {
+    "file": "467c3b4e6dd2cb433eb1882ed71b431b7587d45e204e85855bb470fe84eba70f",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [
+      2003000
+    ],
+    "packets": 136,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
+  "h264-layer-switch": {
+    "file": "fdb3b43d5faf11cc37a91e5fce6058df5c2555bf3b5798b862e2597480bd3404",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 325,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
+  "h264-lost-first-slice": {
+    "file": "48cbfc222fc0edab5e0c56ef7892c75e229bf29fdf169afec6c27cd4854fefea",
+    "bufferRequestsUs": [
+      869667,
+      1869667
+    ],
+    "writerRequestsUs": [],
+    "packets": 189,
+    "packetsLost": 1,
+    "packetsDropped": 0
+  },
+  "h264-lost-fua-end": {
+    "file": "c71b6c9c01218c132e7d0a7eef334ef641917354690e92ab61e39df02d9dac83",
+    "bufferRequestsUs": [
+      3233333,
+      4233333,
+      5233333
+    ],
+    "writerRequestsUs": [],
+    "packets": 428,
+    "packetsLost": 1,
+    "packetsDropped": 6
+  },
+  "h264-lost-stapa": {
+    "file": "80045b0c4a4c2cf28e6d3b33949c1831e6fd33e77dc200b7ef85013ed8cb4be4",
+    "bufferRequestsUs": [
+      1203000
+    ],
+    "writerRequestsUs": [],
+    "packets": 194,
+    "packetsLost": 1,
+    "packetsDropped": 0
+  },
+  "h264-mode0-slices": {
+    "file": "1e116bb48e0dd8347ca0e1b793e9d91336d0c185659cec2ce9ded9450d7c4395",
+    "bufferRequestsUs": [
+      3536333,
+      4536333,
+      5536333
+    ],
+    "writerRequestsUs": [],
+    "packets": 843,
+    "packetsLost": 1,
+    "packetsDropped": 2
+  },
+  "h264-padding-payload": {
+    "file": "f19bb5ada192b6392b1c6e95f321b266c0325ae743c80604c4bea0a48b938f45",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 190,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
+  "h264-simulcast-orphan-sps": {
+    "file": "fd57a39ba1eb23886ef0ac329a4457ddf2eb3292793d476244272c7e4fbcfb6f",
+    "bufferRequestsUs": [],
+    "writerRequestsUs": [],
+    "packets": 191,
+    "packetsLost": 0,
+    "packetsDropped": 0
+  },
   "wrap-dup-probe": {
     "file": "2efc034d3d10eab41020ebac21cd14f88b88ec3259b197d9c750eb7bb9ad0ba7",
     "bufferRequestsUs": [],

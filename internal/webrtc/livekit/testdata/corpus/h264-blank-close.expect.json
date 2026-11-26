@@ -1,0 +1,37 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "2 s of camera, then the 6 blank frames LiveKit sends as an H.264 downtrack closes, each a STAP-A of a 2x2 SPS, PPS and IDR, then eof. The writer rejects them as key frames under 16 px and asks for a key frame once, at the first. The 60 camera frames are written, the file stays 640x360. RED when the 16 px rule is disabled: the 6 blank frames are written as key blocks (66), and none names a frame read, since a STAP-A is never tagged.",
+  "traces": [
+    "h264-blank-close.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "firstRequestMinMs": 2003,
+  "firstRequestMaxMs": 2003,
+  "written": {
+    "min": 60,
+    "max": 60
+  },
+  "packetsWritten": {
+    "min": 136,
+    "max": 136
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 6,
+      "max": 6
+    },
+    "videoSize": [640, 360]
+  }
+}

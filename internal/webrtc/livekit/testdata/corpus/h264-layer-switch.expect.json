@@ -1,0 +1,35 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "A LiveKit simulcast layer switch: the 320x180 layer's frame 44 is cut after its first FU-A fragment. The 640x360 layer's key frame follows at the next seq and one tick later. The jitter buffer releases both in one sample. The cut frame is a lost unit, the key frame after it in the same sample is written, and no key frame is requested. The track keeps its first key frame's 320x180 and CodecPrivate; the 640x360 SPS and PPS stay in band. RED when the parse stops at the cut frame: the key frame is lost too, and the writer asks twice. Only frames 0-43 and the high layer's frames from its key frame 60 on are written (74).",
+  "traces": [
+    "h264-layer-switch.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 134,
+    "max": 134
+  },
+  "packetsWritten": {
+    "min": 325,
+    "max": 325
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 3,
+    "videoDropped": {
+      "min": 1,
+      "max": 1
+    },
+    "videoSize": [320, 180]
+  }
+}
