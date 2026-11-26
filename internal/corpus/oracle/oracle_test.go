@@ -79,6 +79,7 @@ func TestSummarizeWebMAudioDuplicateTimestamp(t *testing.T) {
 
 	s, err := oracle.SummarizeWebM(file)
 	require.NoError(t, err)
+	assert.Equal(t, "webm", s.DocType)
 	require.Len(t, s.Tracks, 1)
 	assert.Nil(t, s.Track(oracle.CodecVP8))
 

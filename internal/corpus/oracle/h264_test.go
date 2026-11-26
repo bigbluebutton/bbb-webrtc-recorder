@@ -88,6 +88,7 @@ func TestSummarizeWebMH264Recorded(t *testing.T) {
 
 	s, err := oracle.SummarizeWebM(rec.GetFilePath())
 	require.NoError(t, err)
+	assert.Equal(t, "matroska", s.DocType)
 	require.Len(t, s.Tracks, 1)
 
 	vt := s.Track(oracle.CodecH264)

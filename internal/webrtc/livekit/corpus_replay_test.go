@@ -295,13 +295,22 @@ func videoPlaceViolations(r replayResult) []string {
 
 // fileViolations checks what every replayed file must hold. The writer's
 // count and the file must agree, or a frame the writer counts can go missing
-// from the recording unseen. An H.264 track must pass oracle.CheckH264.
+// from the recording unseen. An H.264 track must pass oracle.CheckH264, in
+// a Matroska file, since WebM cannot hold H.264.
 func fileViolations(r replayResult, traces []*corpus.Trace) []string {
 	if r.webm == nil {
 		return nil
 	}
 
 	var v []string
+	docType := "webm"
+	if videoCodecOf(traces) == oracle.CodecH264 {
+		docType = "matroska"
+	}
+	if r.webm.DocType != docType {
+		v = append(v, fmt.Sprintf("DocType %q, want %q", r.webm.DocType, docType))
+	}
+
 	for _, c := range []struct {
 		codec  string
 		frames int

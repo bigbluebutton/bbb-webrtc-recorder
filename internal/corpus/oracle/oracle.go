@@ -20,7 +20,9 @@ const (
 
 // Summary holds one Track per codec id found in the file.
 type Summary struct {
-	Tracks map[string]*Track
+	// DocType is the EBML header's: "webm" or "matroska".
+	DocType string
+	Tracks  map[string]*Track
 }
 
 // Track summarizes the blocks of one WebM track, in file order.
@@ -103,9 +105,16 @@ type Block struct {
 // WebmRecorder never writes BlockGroups. One with no ReferenceBlock is a
 // keyframe.
 func ReadBlocks(path string) ([]webm.TrackEntry, []Block, error) {
+	_, entries, blocks, err := readFile(path)
+
+	return entries, blocks, err
+}
+
+// readFile is ReadBlocks that also returns the file's DocType.
+func readFile(path string) (string, []webm.TrackEntry, []Block, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 	defer f.Close() //nolint:errcheck // read-only
 
@@ -114,7 +123,7 @@ func ReadBlocks(path string) ([]webm.TrackEntry, []Block, error) {
 		Segment webm.Segment    `ebml:"Segment"`
 	}
 	if err := ebml.Unmarshal(f, &doc); err != nil {
-		return nil, nil, fmt.Errorf("parse %s: %w", path, err)
+		return "", nil, nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 
 	scale := int64(doc.Segment.Info.TimecodeScale)
@@ -139,12 +148,12 @@ func ReadBlocks(path string) ([]webm.TrackEntry, []Block, error) {
 		}
 	}
 
-	return doc.Segment.Tracks.TrackEntry, blocks, nil
+	return doc.Header.DocType, doc.Segment.Tracks.TrackEntry, blocks, nil
 }
 
-// SummarizeWebM parses the whole file, through ReadBlocks.
+// SummarizeWebM parses the whole file, as ReadBlocks does.
 func SummarizeWebM(path string) (*Summary, error) {
-	entries, blocks, err := ReadBlocks(path)
+	docType, entries, blocks, err := readFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +161,7 @@ func SummarizeWebM(path string) (*Summary, error) {
 		return nil, fmt.Errorf("parse %s: no tracks", path)
 	}
 
-	s := &Summary{Tracks: make(map[string]*Track)}
+	s := &Summary{DocType: docType, Tracks: make(map[string]*Track)}
 	byNumber := make(map[uint64]*Track)
 	configs := make(map[uint64]*h264Config)
 	for _, e := range entries {
