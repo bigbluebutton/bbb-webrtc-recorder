@@ -177,8 +177,9 @@ type LiveKitWebRTC struct {
 	pendingSubscriptions map[string]time.Time
 
 	// The MIME types of the requested publications' primary codecs, set by
-	// Init. Guarded by m.
-	codecs []string
+	// Init, and the codec each track was first subscribed with. Guarded by m.
+	codecs      []string
+	trackCodecs map[string]*recorder.Codec
 
 	// constraintMu is held from computing a track's quality until it is
 	// sent via sendVideoQuality. Taken before m; constraints itself is guarded by m.
@@ -823,7 +824,7 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 	})
 
 	// Before subscribing: the start response reports the file name, and a
-	// track's first packets can open the file.
+	// subscription can set the codec.
 	infos := make([]*livekit.TrackInfo, 0, len(toSubscribe))
 	for _, pub := range toSubscribe {
 		infos = append(infos, pub.TrackInfo())
@@ -1070,6 +1071,10 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		return
 	}
 
+	if !w.acceptCodec(trackID, trackKind, codec) {
+		return
+	}
+
 	if w.cfg.WriteRTPDump {
 		w.openRTPDump(trackID)
 	}
@@ -1098,6 +1103,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		id:      trackID,
 		kind:    trackKind,
 		mime:    mimeType,
+		codec:   codec,
 		source:  pub.Source().String(),
 		ssrc:    ssrcForHandler,
 		pubMime: pub.MimeType(),
@@ -1107,6 +1113,47 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	appstats.OnTrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
 
 	w.startReader(track, info, buffer)
+}
+
+// acceptCodec reports whether the packets of trackID, subscribed with codec,
+// may go to the recorder, and sets a video codec there. A codec regression
+// subscribes a track again with another codec, which is refused. The refusal
+// reports no connection state: EOF on the first reader already ends the
+// session, and the requester retries with a new file. A codec the
+// recording's format cannot hold fails the connection.
+func (w *LiveKitWebRTC) acceptCodec(trackID string, kind TrackKind, codec *recorder.Codec) bool {
+	logger := log.WithField("session", w.ctx.Value("session")).WithField("trackID", trackID)
+
+	w.m.Lock()
+	if w.trackCodecs == nil {
+		w.trackCodecs = map[string]*recorder.Codec{}
+	}
+	first, seen := w.trackCodecs[trackID]
+	if !seen {
+		w.trackCodecs[trackID] = codec
+	}
+	w.m.Unlock()
+
+	if seen && first != codec {
+		logger.Warnf("Not recording track %s subscribed again with %s: it started with %s",
+			trackID, codec.MimeType, first.MimeType)
+
+		return false
+	}
+
+	if kind != TrackKindVideo {
+		return true
+	}
+
+	// With m released: the recorder takes its own lock first.
+	if err := w.rec.SetVideoCodec(codec); err != nil {
+		logger.Errorf("Cannot record track %s: %v", trackID, err)
+		w.notifyConnState(utils.ConnectionStateFailed)
+
+		return false
+	}
+
+	return true
 }
 
 // waitForReaders waits up to readersCloseTimeout for the track readers to end.
@@ -1377,6 +1424,7 @@ type trackInfo struct {
 	id     string
 	kind   TrackKind
 	mime   MimeType // the negotiated codec's, lowercased
+	codec  *recorder.Codec
 	source string
 	ssrc   uint32
 	// The publication's MIME type as LiveKit signals it ("video/VP8"), which
@@ -1423,18 +1471,27 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 	rtpWriter, rtpWriterExists := w.rtpWriters[info.id]
 	w.m.Unlock()
 
-	writePackets := func(packets []jitter.ExtPacket) {
-		for _, p := range packets {
-			switch info.kind {
-			case TrackKindVideo:
-				w.rec.PushVideoAt(p.Packet, p.ReceivedAt)
-			case TrackKindAudio:
-				w.rec.PushAudioAt(p.Packet, p.ReceivedAt)
+	samples := info.kind == TrackKindVideo && info.codec != nil && info.codec.TakesSamples()
+	writePackets := func(released []bufferSample) {
+		for _, s := range released {
+			if samples {
+				w.rec.PushVideoSample(videoSampleOf(s))
+
+				continue
+			}
+
+			for _, p := range s.packets {
+				switch info.kind {
+				case TrackKindVideo:
+					w.rec.PushVideoAt(p.Packet, p.ReceivedAt)
+				case TrackKindAudio:
+					w.rec.PushAudioAt(p.Packet, p.ReceivedAt)
+				}
 			}
 		}
 
 		w.queueMediaStart()
-		w.processPacketStats(info.id, packetsOf(packets))
+		w.processPacketStats(info.id, packetsOf(packetsIn(released)))
 	}
 
 	push := w.packetPusher(info.id, buffer)
@@ -1457,7 +1514,7 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 						Infof("%s track=%s stopped", info.pubMime, info.id)
 
 					// No later packet hands out what the jitter buffer holds.
-					if tail := buffer.flushExt(); len(tail) > 0 {
+					if tail := buffer.flushSamples(); len(tail) > 0 {
 						writePackets(tail)
 					}
 				} else {
@@ -1502,11 +1559,11 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 // A microphone's media clock also needs the arrival, so it moves the
 // timestamps here, after the trace and the RTP dump took the sender's. The
 // recorder gets each packet with this arrival, to time the media.
-func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*rtp.Packet) []jitter.ExtPacket {
+func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*rtp.Packet) []bufferSample {
 	var arrived seqWindow
 	clock := w.mediaClock(trackID)
 
-	return func(packet *rtp.Packet) []jitter.ExtPacket {
+	return func(packet *rtp.Packet) []bufferSample {
 		now := time.Now()
 		if !packet.Padding && len(packet.Payload) > 0 && !arrived.duplicate(packet.SequenceNumber) {
 			w.updateFlowState(trackID, packet.SequenceNumber, now)
@@ -1516,8 +1573,17 @@ func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*
 			packet.Timestamp = clock.Timestamp(packet.Timestamp, packet.SequenceNumber, now)
 		}
 
-		return buffer.pushExt(packet, now)
+		return buffer.pushSamples(packet, now)
 	}
+}
+
+func videoSampleOf(s bufferSample) recorder.VideoSample {
+	v := recorder.VideoSample{Packets: make([]recorder.ArrivedPacket, 0, len(s.packets)), Follows: s.follows}
+	for _, p := range s.packets {
+		v.Packets = append(v.Packets, recorder.ArrivedPacket{Packet: p.Packet, At: p.ReceivedAt})
+	}
+
+	return v
 }
 
 // addJitterBuffer creates and registers the jitter buffer of trackID. m and

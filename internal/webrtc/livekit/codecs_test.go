@@ -31,6 +31,15 @@ func TestTrackCodecsNamesARedMicrophoneOpus(t *testing.T) {
 	assert.Equal(t, recorder.FormatWebM, recorder.FormatFor(trackCodecs(info)))
 }
 
+func TestAcceptCodecTakesAudioAsItIs(t *testing.T) {
+	rec := recorder.NewWebmRecorder(filepath.Join(t.TempDir(), "mic.webm"), 0o600, 256, 32, true, false)
+	rec.SetHasAudio(true)
+	h := newLoopHarness(rec, "mic")
+
+	assert.True(t, h.w.acceptCodec("mic", TrackKindAudio, recorder.CodecOpus))
+	assert.Equal(t, []string{"audio/opus"}, rec.Codecs())
+}
+
 func TestRecordingCodecsPickTheFormatFromTheBackupsToo(t *testing.T) {
 	for _, c := range []struct {
 		name   string

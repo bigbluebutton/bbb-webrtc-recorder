@@ -22,6 +22,16 @@ const (
 	gapRequestMax = 260 * time.Millisecond
 )
 
+// push is pushSamples for a packet that arrives now, without the arrivals.
+func (b *trackBuffer) push(pkt *rtp.Packet) []*rtp.Packet {
+	return packetsOf(packetsIn(b.pushSamples(pkt, time.Now())))
+}
+
+// flush is flushSamples without the arrivals.
+func (b *trackBuffer) flush() []*rtp.Packet {
+	return packetsOf(packetsIn(b.flushSamples()))
+}
+
 func vp8Packet(seq uint16, ts uint32, start, end bool) *rtp.Packet {
 	descriptor := byte(0x00)
 	if start {

@@ -23,10 +23,10 @@ func TestTrackBufferReleasesPacketsWithTheirArrival(t *testing.T) {
 		defer b.close()
 
 		t0 := time.Now()
-		assert.Len(t, b.pushExt(opusPacket(100), t0), 1)
-		assert.Empty(t, b.pushExt(opusPacket(102), t0.Add(30*time.Millisecond)))
+		assert.Len(t, packetsIn(b.pushSamples(opusPacket(100), t0)), 1)
+		assert.Empty(t, packetsIn(b.pushSamples(opusPacket(102), t0.Add(30*time.Millisecond))))
 
-		released := b.pushExt(opusPacket(101), t0.Add(50*time.Millisecond))
+		released := packetsIn(b.pushSamples(opusPacket(101), t0.Add(50*time.Millisecond)))
 		require.Len(t, released, 2)
 		assert.Equal(t, uint16(101), released[0].SequenceNumber)
 		assert.Equal(t, t0.Add(50*time.Millisecond), released[0].ReceivedAt)

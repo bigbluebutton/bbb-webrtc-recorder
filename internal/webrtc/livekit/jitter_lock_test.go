@@ -79,6 +79,29 @@ func TestJitterLossHandlerDoesNotTakeAdapterLock(t *testing.T) {
 	<-lost
 }
 
+// lockCheckRecorder notes whether the adapter's lock was held when the
+// adapter set the video codec.
+type lockCheckRecorder struct {
+	*mockRecorder
+	adapter *LiveKitWebRTC
+	held    bool
+}
+
+func (r *lockCheckRecorder) SetVideoCodec(*recorder.Codec) error {
+	r.held = r.held || !adapterLockFree(r.adapter)()
+
+	return nil
+}
+
+func TestAcceptCodecSetsTheVideoCodecWithoutAdapterLock(t *testing.T) {
+	rec := &lockCheckRecorder{mockRecorder: &mockRecorder{}}
+	h := newLoopHarness(rec, videoInfo.id)
+	rec.adapter = h.w
+
+	assert.True(t, h.w.acceptCodec(videoInfo.id, TrackKindVideo, recorder.CodecVP8))
+	assert.False(t, rec.held, "SetVideoCodec was called with the adapter lock held")
+}
+
 func TestGetStatsReadsJitterStatsWithoutAdapterLock(t *testing.T) {
 	lk, _ := setupMockLK()
 	defer lk.Close()

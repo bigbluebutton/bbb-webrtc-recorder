@@ -36,9 +36,10 @@ const (
 )
 
 // trackBuffer runs a track's packets through a jitter buffer and returns the
-// released packets to the caller of push. The buffer also releases samples
-// from its own timer goroutine; those are held until the next push, so the
-// recorder is only ever fed from the track's read loop.
+// released samples to the caller of pushSamples. The buffer also releases
+// samples from its own timer goroutine; those are held until the next
+// pushSamples or flushSamples call, so the recorder is only ever fed from the
+// track's read loop.
 type trackBuffer struct {
 	jb           *jitter.Buffer
 	seen         seqWindow
@@ -102,18 +103,9 @@ func newTrackBuffer(codec *recorder.Codec, latency, lossInterval time.Duration, 
 	return b
 }
 
-// push is pushExt for a packet that arrives now, without the arrivals.
-func (b *trackBuffer) push(pkt *rtp.Packet) []*rtp.Packet {
-	return packetsOf(b.pushExt(pkt, time.Now()))
-}
-
-// pushExt adds pkt, which arrived at now, to the jitter buffer. It returns,
-// in order and with their arrivals, the packets released since the last call.
-func (b *trackBuffer) pushExt(pkt *rtp.Packet, now time.Time) []jitter.ExtPacket {
-	return packetsIn(b.pushSamples(pkt, now))
-}
-
-// pushSamples is pushExt that returns the released packets by sample.
+// pushSamples adds pkt, which arrived at now, to the jitter buffer. It
+// returns, in order and with their arrivals, the samples released since the
+// last call.
 func (b *trackBuffer) pushSamples(pkt *rtp.Packet, now time.Time) []bufferSample {
 	if b.gaps != nil {
 		b.gaps.read(now)
@@ -202,19 +194,9 @@ func seqNewer(seq, ref uint16) bool {
 	return d > 0 || d <= -seqResetDistance
 }
 
-// flush is push for a track that has ended: it also releases the complete
-// frames the jitter buffer holds and drops the rest. A frame it drops
-// requests no keyframe, since none would arrive.
-func (b *trackBuffer) flush() []*rtp.Packet {
-	return packetsOf(b.flushExt())
-}
-
-// flushExt is flush, with each packet's arrival.
-func (b *trackBuffer) flushExt() []jitter.ExtPacket {
-	return packetsIn(b.flushSamples())
-}
-
-// flushSamples is flushExt that returns the released packets by sample.
+// flushSamples is pushSamples for a track that has ended: it also releases
+// the complete frames the jitter buffer holds and drops the rest. A frame it
+// drops requests no keyframe, since none would arrive.
 func (b *trackBuffer) flushSamples() []bufferSample {
 	b.mu.Lock()
 	b.ended = true
