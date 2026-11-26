@@ -402,6 +402,27 @@ func tagH264Frames(reads []trackRead) {
 	}
 }
 
+// fillH264Payloads fills each payload of reads past the prefix that its
+// record in tr keeps. Zeros would hide a writer that drops, repeats or zeroes
+// part of a slice. The bytes come from the sequence number and the offset,
+// so an RTX or duplicate copy gets the original's. The high bit keeps them
+// from reading as a frame tag.
+func fillH264Payloads(tr *corpus.Trace, reads []trackRead) {
+	i := 0
+	for _, rec := range tr.Records {
+		if rec.IsEvent() {
+			continue
+		}
+
+		if p := reads[i].pkt; p != nil && !p.Padding {
+			for k := len(rec.Pay); k < len(p.Payload); k++ {
+				p.Payload[k] = 0x80 | byte(int(p.SequenceNumber)*7+k)
+			}
+		}
+		i++
+	}
+}
+
 // tagVP8Frames tags the first packet of each VP8 frame in reads, and every
 // copy of it, with its RTP timestamp. oracle.VideoPlacement reads it back
 // from each block. Each read holds a packet of its own, so the trace is
@@ -486,6 +507,7 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 			tagVP8Frames(reads)
 			video = append(video, i)
 		case corpus.CodecH264:
+			fillH264Payloads(tr, reads)
 			tagH264Frames(reads)
 			video = append(video, i)
 		case corpus.CodecOpus:
