@@ -196,7 +196,7 @@ Environment:
 | `E2E_BROWSER=1` | Run the browser scenarios. They need Node and the runner set up (see [Browser mode](#browser-mode)). |
 | `E2E_BROWSER_REQUIRED=1` | Fail the browser scenarios instead of skipping them when they cannot run. |
 | `E2E_BROWSER_BIN` | Run this Chrome or Chromium binary instead of Playwright's Chromium. |
-| `E2E_FFMPEG_REQUIRED=1` | Fail the ffmpeg checks instead of skipping them when `ffmpeg` or `ffprobe` is not on `PATH`. |
+| `E2E_FFMPEG_REQUIRED=1` | Fail the ffmpeg checks instead of skipping them when `ffmpeg` or `ffprobe` is not on `PATH`. CI sets it. |
 
 The child processes do not inherit `BBBRECORDER_*`, `LIVEKIT_*`, `REDIS_*`,
 `NODE_IP` or `UDP_PORT`, so a shell set up for a dev recorder cannot override
@@ -364,8 +364,8 @@ suite with it.
 The e2e job sets up Go from `go.mod` and downloads `livekit-server` 1.13.7 from
 the official GitHub release, checking it against a pinned sha256. The tarball
 is cached under that version and checksum, and checked again on a cache hit.
-It installs `redis-server` from apt and stops the system service, then runs
-two steps:
+It installs `redis-server` and `ffmpeg` from apt, stops Redis's system
+service, then runs two steps:
 1. `go test -tags e2e -v -timeout 15m ./tests/e2e/...`, the whole suite
    unprivileged. The netem scenarios skip here.
 2. The netem scenarios as root, as shown above, with

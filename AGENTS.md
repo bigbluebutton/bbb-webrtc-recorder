@@ -42,6 +42,7 @@ Write new tests with testify (`assert`, `require`), not `testing.T.Error/Fatal/F
 - LiveKit adapter unit tests: `setupMockLK()` (`livekit_test.go`) builds an adapter without a room; an empty `&lksdk.RemoteTrackPublication{}` is enough for `GetStats` (lksdk has no public setter for TrackInfo).
 - E2E suite (`tests/e2e/`, `e2e` build tag): the recorder binary against its own `livekit-server` and `redis-server` on loopback, no Docker. `tests/e2e/README.md` has "Adding a scenario".
   - Run: `LIVEKIT_SERVER_BIN=/usr/bin/livekit-server make test-e2e`
+  - The ffmpeg checks of the H.264 scenarios need ffmpeg and ffprobe on PATH. They skip without them unless `E2E_FFMPEG_REQUIRED=1`, which CI sets.
   - `TestNACKRepairUnderLoss`, `TestMediaTimestampsTakeOffAStartDelay` and `TestBrowserNetemKeepsPlacement` need root and `E2E_NETEM=1`; the last also needs browser mode (README: "The browser netem scenario (root)"). Without sudo, run them inside `unshare --user --map-root-user --net --mount` with a tmpfs over `/run/netns` and `ip link set lo up`.
   - CI (`.github/workflows/e2e.yml`): PRs touching `internal/`, `cmd/`, `third_party/`, `tests/e2e/`, `go.mod`/`go.sum`, or labelled `e2e`.
   - `E2E_RECORDER_RACE=1` builds the recorder with `-race`; a race report in its log fails the test. CI runs the e2e suite with and without it.

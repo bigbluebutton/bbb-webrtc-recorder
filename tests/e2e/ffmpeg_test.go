@@ -20,7 +20,7 @@ import (
 )
 
 // requireFFmpeg skips t unless ffmpeg and ffprobe are on PATH. With
-// E2E_FFMPEG_REQUIRED=1, it fails t instead.
+// E2E_FFMPEG_REQUIRED=1, as CI sets, it fails t instead.
 func requireFFmpeg(t *testing.T) {
 	t.Helper()
 
