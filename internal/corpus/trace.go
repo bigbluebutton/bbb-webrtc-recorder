@@ -31,6 +31,7 @@ const (
 
 	CodecVP8  Codec = "vp8"
 	CodecOpus Codec = "opus"
+	CodecH264 Codec = "h264"
 
 	ProvenanceSynthetic   Provenance = "synthetic"
 	ProvenancePcapExtract Provenance = "pcap-extract"
@@ -163,6 +164,10 @@ func (h Header) validate() error {
 	case h.Kind == KindVideo && h.Codec == CodecVP8:
 		if h.ClockRate != vp8ClockRate {
 			return fmt.Errorf("header: vp8 clock rate %d, want %d", h.ClockRate, vp8ClockRate)
+		}
+	case h.Kind == KindVideo && h.Codec == CodecH264:
+		if h.ClockRate != h264ClockRate {
+			return fmt.Errorf("header: h264 clock rate %d, want %d", h.ClockRate, h264ClockRate)
 		}
 	case h.Kind == KindAudio && h.Codec == CodecOpus:
 		if h.ClockRate != opusClockRate {

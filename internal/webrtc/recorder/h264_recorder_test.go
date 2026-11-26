@@ -12,6 +12,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/pion/rtp"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
@@ -383,6 +384,17 @@ func TestWebmRecorderH264DropsPacketsPushedOneAtATime(t *testing.T) {
 
 	_, err := os.Stat(rec.GetFilePath())
 	assert.True(t, os.IsNotExist(err))
+}
+
+// The corpus generator's SPS must read back as its size, or every H.264
+// seed and e2e recording would start with the wrong track size.
+func TestParseH264SPSOfTheCorpusGenerator(t *testing.T) {
+	for _, size := range [][2]int{{640, 360}, {1280, 720}, {320, 180}, {854, 480}, {1920, 1080}, {2, 2}} {
+		sps, err := parseH264SPS(corpus.H264SPS(size[0], size[1]))
+		require.NoError(t, err, "%v", size)
+		assert.Equal(t, size, [2]int{sps.width, sps.height})
+		assert.Equal(t, uint8(66), sps.profileIDC)
+	}
 }
 
 // The layer switch h264AccessUnits describes, as the writer gets it.
