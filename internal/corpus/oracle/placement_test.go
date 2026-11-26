@@ -1,6 +1,7 @@
 package oracle_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
@@ -17,15 +18,15 @@ func vp8Trace(recs ...corpus.Record) *corpus.Trace {
 	return &corpus.Trace{Header: corpus.NewSyntheticHeader(corpus.KindVideo, 1, "test"), Records: recs}
 }
 
-// tagged is a VP8 track whose blocks, at pts, carry tags as their RTP
-// timestamps.
+// tagged is a VP8 track of key frames whose blocks, at pts, carry tags as
+// their RTP timestamps.
 func tagged(pts []int64, tags ...uint32) *oracle.Track {
 	ok := make([]bool, len(tags))
 	for i := range ok {
 		ok[i] = true
 	}
 
-	return &oracle.Track{Codec: oracle.CodecVP8, Blocks: len(tags), PTS: pts, Tags: tags, TagOK: ok}
+	return &oracle.Track{Codec: oracle.CodecVP8, Blocks: len(tags), PTS: pts, Tags: tags, TagOK: ok, Keyframes: slices.Clone(ok)}
 }
 
 // fiveFrames is five frames at 25 fps, one packet each, read on time from
@@ -103,6 +104,44 @@ func TestVideoPlacementErrors(t *testing.T) {
 
 	_, err = oracle.VideoPlacement(tagged([]int64{0, 40}, 0, 0), tr)
 	assert.ErrorContains(t, err, "tags not increasing", "a frame written twice")
+}
+
+func TestVideoPlacementDeltaFrameNeedsTheFrameBefore(t *testing.T) {
+	// Four frames of one packet each, and padding after frame 1. Seq 5, a
+	// whole frame between frames 2 and 3, is never read.
+	tr := vp8Trace(
+		vp8Read(1, 0, 0),
+		vp8Read(2, 3600, 40000),
+		corpus.Record{T: corpus.RecordRTP, AtUs: 40000, Seq: 3, TS: 3600, PT: 96, Pad: true},
+		vp8Read(4, 7200, 80000),
+		vp8Read(6, 14400, 160000),
+	)
+	// Every block after the first is a delta frame, except those whose index
+	// is in keys.
+	blocks := func(tags []uint32, keys ...int) *oracle.Track {
+		pts := make([]int64, 0, len(tags))
+		for _, tag := range tags {
+			pts = append(pts, int64(tag/90))
+		}
+		vt := tagged(pts, tags...)
+		for k := 1; k < len(tags); k++ {
+			vt.Keyframes[k] = slices.Contains(keys, k)
+		}
+
+		return vt
+	}
+
+	_, err := oracle.VideoPlacement(blocks([]uint32{0, 3600, 7200}), tr)
+	require.NoError(t, err, "the padding read between frames 1 and 2 is no loss")
+
+	_, err = oracle.VideoPlacement(blocks([]uint32{0, 7200}), tr)
+	assert.ErrorContains(t, err, "block 1 (PTS 80 ms): a delta frame at timestamp 7200, but the frame read before it, at 3600, was not written")
+
+	_, err = oracle.VideoPlacement(blocks([]uint32{0, 3600, 7200, 14400}), tr)
+	assert.ErrorContains(t, err, "block 3 (PTS 160 ms): a delta frame at timestamp 14400, but sequence numbers 5-5 before it were not read")
+
+	_, err = oracle.VideoPlacement(blocks([]uint32{0, 7200, 14400}, 1, 2), tr)
+	require.NoError(t, err, "a key frame needs no frame before it")
 }
 
 func TestVideoPlacementKeepsBothErrorSigns(t *testing.T) {

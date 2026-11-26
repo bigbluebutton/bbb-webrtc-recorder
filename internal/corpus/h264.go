@@ -326,6 +326,34 @@ func h264PictureSlice(payload []byte) ([]byte, bool) {
 	return payload, len(payload) > at && payload[at]&0x80 != 0
 }
 
+// H264HoldsSlice reports whether payload carries slice data: a slice NAL
+// unit, a STAP-A that holds one, or any FU-A fragment of one.
+func H264HoldsSlice(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+
+	switch payload[0] & 0x1f {
+	case h264STAPA:
+		for rest := payload[1:]; len(rest) > 2; {
+			n := int(binary.BigEndian.Uint16(rest))
+			if n == 0 || 2+n > len(rest) {
+				return false
+			}
+			if h264IsSlice(rest[2]) {
+				return true
+			}
+			rest = rest[2+n:]
+		}
+
+		return false
+	case h264FUA:
+		return len(payload) > 1 && h264IsSlice(payload[1])
+	}
+
+	return h264IsSlice(payload[0])
+}
+
 func h264IsSlice(header byte) bool {
 	t := header & 0x1f
 

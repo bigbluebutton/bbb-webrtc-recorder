@@ -196,3 +196,20 @@ func TestGenerateH264Rejects(t *testing.T) {
 		assert.Error(t, err, "%+v", o)
 	}
 }
+
+func TestH264HoldsSlice(t *testing.T) {
+	tr, err := GenerateH264(H264Options{FPS: 30, Frames: 2, KeySlicePackets: 3})
+	require.NoError(t, err)
+
+	var holds []bool
+	for _, r := range tr.Records {
+		holds = append(holds, H264HoldsSlice(r.Packet().Payload))
+	}
+	assert.Equal(t, []bool{false, true, true, true, true}, holds, "every packet but the parameter sets")
+
+	assert.True(t, H264HoldsSlice(h264STAP(H264SPS(2, 2), h264PPS, []byte{h264HeaderIDR, 0x88})), "a blank frame's STAP-A")
+	assert.False(t, H264HoldsSlice([]byte{h264STAPA, 0x00}), "a truncated STAP-A")
+	assert.False(t, H264HoldsSlice([]byte{h264STAPA, 0x00, 0x09, h264HeaderIDR}), "a STAP-A size past the payload")
+	assert.False(t, H264HoldsSlice([]byte{h264FUA}), "an FU-A without its header")
+	assert.False(t, H264HoldsSlice(nil))
+}

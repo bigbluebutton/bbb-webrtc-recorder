@@ -34,7 +34,7 @@ type Lag struct {
 // tr: their distinct RTP timestamps in order, each at its first read. It
 // needs one block per frame read, so it fails on a lost or dropped frame.
 func TimelineLag(t *Track, tr *corpus.Trace) (Lag, error) {
-	frames := framesRead(tr)
+	frames, _ := framesRead(tr)
 	if len(frames) == 0 || len(frames) != t.Blocks {
 		return Lag{}, fmt.Errorf("%d frames read, %d blocks: the lag needs one block per frame", len(frames), t.Blocks)
 	}

@@ -120,6 +120,7 @@ func TestSummarizeWebMVideoKeyAndDeltaFrames(t *testing.T) {
 	require.NotNil(t, vt)
 	assert.Equal(t, uint64(1), vt.Number)
 	assert.Equal(t, 6, vt.Blocks)
+	assert.Equal(t, [2]int{320, 240}, [2]int{vt.Width, vt.Height})
 	assert.Equal(t, 2, vt.VP8Keyframes)
 	// The writer takes the keyframe flag from the frame's last packet, so
 	// only the single-packet key frame carries it.
