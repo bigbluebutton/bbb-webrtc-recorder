@@ -392,6 +392,24 @@ func (lk *LiveKit) listedTracks(ctx context.Context, room, identity string) (map
 	return tracks, nil
 }
 
+// publicationCodecs returns the MIME types LiveKit lists for a track,
+// lowercased, primary codec first.
+func publicationCodecs(info *livekit.TrackInfo) []string {
+	var codecs []string
+	add := func(m string) {
+		if m = strings.ToLower(m); m != "" && !slices.Contains(codecs, m) {
+			codecs = append(codecs, m)
+		}
+	}
+
+	add(info.GetMimeType())
+	for _, c := range info.GetCodecs() {
+		add(c.GetMimeType())
+	}
+
+	return codecs
+}
+
 func waitTracksUnlisted(ctx context.Context, lk *LiveKit, room, identity string, sids ...string) error {
 	return waitTracks(ctx, lk, room, identity, false, sids)
 }

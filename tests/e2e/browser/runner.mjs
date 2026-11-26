@@ -207,9 +207,10 @@ const methods = {
   // one, three at most, become simulcast layers; a hidden profile is
   // published alone.
   //
-  // previewMs is CameraCapture.Preview.
-  async publishBBBCamera({ peer, name, profiles, profileId, captureFrameRate, previewMs }) {
-    return page(peer).evaluate(async ({ name, profiles, profileId, captureFrameRate, previewMs }) => {
+  // previewMs is CameraCapture.Preview; videoCodec and backupCodec are
+  // CameraCodec's.
+  async publishBBBCamera({ peer, name, profiles, profileId, captureFrameRate, previewMs, videoCodec, backupCodec }) {
+    return page(peer).evaluate(async ({ name, profiles, profileId, captureFrameRate, previewMs, videoCodec, backupCodec }) => {
       const { Track, VideoPreset } = window.LivekitClient;
       const profile = profiles.find((p) => p.id === profileId);
       if (!profile) throw new Error(`no camera profile ${profileId}`);
@@ -253,7 +254,8 @@ const methods = {
 
       const pub = await window.e2eRoom.localParticipant.publishTrack(track, {
         dtx: true,
-        videoCodec: 'vp8',
+        videoCodec: videoCodec ?? 'vp8',
+        ...(backupCodec === undefined ? {} : { backupCodec }),
         degradationPreference: 'balanced',
         simulcast: presets.length > 1,
         videoEncoding,
@@ -271,7 +273,7 @@ const methods = {
         capture: { width: capture.width, height: capture.height, frameRate: capture.frameRate },
         encodings,
       };
-    }, { name, profiles, profileId, captureFrameRate, previewMs });
+    }, { name, profiles, profileId, captureFrameRate, previewMs, videoCodec, backupCodec });
   },
 
   // See UnpublishCamera in browser_test.go.
@@ -323,13 +325,20 @@ const methods = {
   async senderStats({ peer, trackSid }) {
     return page(peer).evaluate(async ({ trackSid }) => {
       const stats = {};
-      (await window.e2eSender(trackSid).getStats()).forEach((s) => {
+      const codecs = {};
+      const report = await window.e2eSender(trackSid).getStats();
+      report.forEach((s) => {
+        if (s.type === 'codec') codecs[s.id] = s.mimeType;
+      });
+      report.forEach((s) => {
         if (s.type !== 'outbound-rtp') return;
         stats[s.rid ?? ''] = {
           packetsSent: s.packetsSent ?? 0,
           nackCount: s.nackCount ?? 0,
           retransmittedPacketsSent: s.retransmittedPacketsSent ?? 0,
           pliCount: s.pliCount ?? 0,
+          codec: codecs[s.codecId] ?? '',
+          encoderImplementation: s.encoderImplementation ?? '',
         };
       });
 

@@ -435,11 +435,31 @@ type CameraCapture struct {
 	Preview time.Duration
 }
 
+// CameraCodec is the codec a BBB camera publishes with. The zero value is
+// BBB's VP8.
+type CameraCodec struct {
+	// Video is livekit-client's videoCodec, e.g. "h264".
+	Video string
+	// NoBackup turns livekit-client's backup codec off. BBB's client
+	// leaves it on.
+	NoBackup bool
+	// Backup is livekit-client's backup codec, e.g. "h264". Empty keeps
+	// its default, VP8.
+	Backup string
+}
+
 // PublishBBBCamera is PublishBBBCameraCapturing with the profile's capture.
 func (p *BrowserPeer) PublishBBBCamera(name, profile string) *BBBCamera {
 	p.b.t.Helper()
 
 	return p.PublishBBBCameraCapturing(name, profile, CameraCapture{})
+}
+
+// PublishBBBCameraCodec is PublishBBBCamera in codec.
+func (p *BrowserPeer) PublishBBBCameraCodec(name, profile string, codec CameraCodec) *BBBCamera {
+	p.b.t.Helper()
+
+	return p.publishBBBCamera(name, profile, CameraCapture{}, codec)
 }
 
 // PublishBBBCameraCapturing publishes the browser's fake camera in VP8 as
@@ -448,6 +468,12 @@ func (p *BrowserPeer) PublishBBBCamera(name, profile string) *BBBCamera {
 // layers, duplicates dropped; a hidden profile is one layer. It waits
 // until LiveKit lists the track.
 func (p *BrowserPeer) PublishBBBCameraCapturing(name, profile string, capture CameraCapture) *BBBCamera {
+	p.b.t.Helper()
+
+	return p.publishBBBCamera(name, profile, capture, CameraCodec{})
+}
+
+func (p *BrowserPeer) publishBBBCamera(name, profile string, capture CameraCapture, codec CameraCodec) *BBBCamera {
 	p.b.t.Helper()
 
 	var cam struct {
@@ -468,6 +494,15 @@ func (p *BrowserPeer) PublishBBBCameraCapturing(name, profile string, capture Ca
 	}
 	if capture.Preview > 0 {
 		args["previewMs"] = capture.Preview.Milliseconds()
+	}
+	if codec.Video != "" {
+		args["videoCodec"] = codec.Video
+	}
+	if codec.NoBackup {
+		args["backupCodec"] = false
+	}
+	if codec.Backup != "" {
+		args["backupCodec"] = map[string]any{"codec": codec.Backup}
 	}
 	p.b.call("publishBBBCamera", args, &cam)
 	p.waitListed(cam.TrackSid, true)
@@ -557,6 +592,8 @@ type SenderStat struct {
 	NACKCount                int
 	RetransmittedPacketsSent int
 	PLICount                 int
+	Codec                    string // the MIME type it sends, e.g. video/H264
+	EncoderImplementation    string // e.g. OpenH264
 }
 
 // SenderStats returns the outbound-rtp counters of the track sid, by rid,
