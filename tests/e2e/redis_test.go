@@ -413,6 +413,34 @@ func (d *Driver) StartRecordingWith(ctx context.Context, s StartSpec) (*Recordin
 	return rec, nil
 }
 
+// GetRecordings sends getRecordings and returns the recordings its response
+// lists.
+func (d *Driver) GetRecordings(ctx context.Context) ([]*events.RecordingInfo, error) {
+	reqID := uuid.NewString()
+	from := len(d.Messages())
+	if err := d.Publish(events.GetRecordings{Id: events.GetRecordingsKey, RequestId: reqID}); err != nil {
+		return nil, err
+	}
+
+	m, _, err := d.WaitMessage(ctx, from, func(m Message) bool {
+		var head struct {
+			RequestID string `json:"requestId"`
+		}
+
+		return m.ID == events.GetRecordingsResponseKey && json.Unmarshal(m.Raw, &head) == nil && head.RequestID == reqID
+	})
+	if err != nil {
+		return nil, fmt.Errorf("waiting for %s: %w", events.GetRecordingsResponseKey, err)
+	}
+
+	var resp events.GetRecordingsResponse
+	if err := json.Unmarshal(m.Raw, &resp); err != nil {
+		return nil, err
+	}
+
+	return resp.Recordings, nil
+}
+
 // Stop sends stopRecording for sessionID.
 func (d *Driver) Stop(sessionID string) error {
 	return d.Publish(events.StopRecording{Id: events.StopRecordingKey, SessionId: sessionID})
