@@ -220,7 +220,7 @@ jobs:
           if [ "${{ matrix.browser }}" = 1 ]; then
             run='^TestBrowserNetemKeepsPlacement$' want=1
           else
-            run='^(TestNACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$' want=2
+            run='^(TestNACKRepairUnderLoss|TestH264NACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$' want=3
           fi
           cd tests/e2e
           # A -test.run pattern that selects no test passes.

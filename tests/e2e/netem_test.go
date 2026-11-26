@@ -385,8 +385,8 @@ func shellQuote(s string) string {
 func netemSkipReason() string {
 	if os.Geteuid() != 0 || os.Getenv("E2E_NETEM") != "1" {
 		return "The netem scenarios need root and E2E_NETEM=1: they create network namespaces, veth pairs and netem qdiscs. " +
-			"tests/e2e/README.md shows how to build as the user and run -test.run '^TestNACKRepairUnderLoss$', " +
-			"'^TestMediaTimestampsTakeOffAStartDelay$' or '^TestBrowserNetemKeepsPlacement$' as root."
+			"tests/e2e/README.md shows how to build as the user and run -test.run '^Test.*NACKRepairUnderLoss$' " +
+			"(the NACK scenarios), '^TestMediaTimestampsTakeOffAStartDelay$' or '^TestBrowserNetemKeepsPlacement$' as root."
 	}
 
 	return ""
@@ -412,12 +412,19 @@ func requireNetem(t *testing.T) {
 // it: lost packets read later, nearly every frame written, no keyframe loop.
 // A frame held for its retransmission must still play where it was sent.
 func TestNACKRepairUnderLoss(t *testing.T) {
+	checkNACKRepairUnderLoss(t, "")
+}
+
+// checkNACKRepairUnderLoss runs the NACK scenario on a camera of codec, VP8
+// when empty, and checks what TestNACKRepairUnderLoss says.
+func checkNACKRepairUnderLoss(t *testing.T, codec corpus.Codec) nackResult {
+	t.Helper()
 	requireNetem(t)
 
 	plan := newNetemPlan(os.Getpid(), nackLossPct)
 	setupNetem(t, plan)
 
-	res := runNACKScenario(t, plan, nackRecordFor)
+	res := runNACKScenario(t, plan, nackRecordFor, codec)
 	loss := readTraceLoss(res.out.Trace)
 
 	t.Logf("netem: %s", res.qdisc)
@@ -450,6 +457,8 @@ func TestNACKRepairUnderLoss(t *testing.T) {
 		"%d gaps never repaired, %d key-frame outages after the first key frame read",
 		len(held), framePlacementBound, longest, res.place.Worst, len(loss.Unrepaired()), outages)
 	assert.NotEmpty(t, held, "no frame waited longer than framePlacementBound for its retransmission")
+
+	return res
 }
 
 // TestNACKRepairControl runs the NACK scenario's stack and checks without
@@ -460,7 +469,7 @@ func TestNACKRepairUnderLoss(t *testing.T) {
 // NACK scenario covers its namespace ICE config, and only it can show that the
 // recorder's ICE pair uses the server <-> recorder link.
 func TestNACKRepairControl(t *testing.T) {
-	runNACKScenario(t, dryNetemPlan(), 8*time.Second)
+	runNACKScenario(t, dryNetemPlan(), 8*time.Second, "")
 }
 
 // TestNetemPlan checks the namespace plan and the config edits the NACK
@@ -697,9 +706,10 @@ type nackResult struct {
 	netemDropped int
 }
 
-// runNACKScenario records a camera for recordFor through plan's network and
-// asserts the bounds that hold with or without loss.
-func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nackResult {
+// runNACKScenario records a camera of codec, VP8 when empty, for recordFor
+// through plan's network and asserts the bounds that hold with or without
+// loss.
+func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration, codec corpus.Codec) nackResult {
 	t.Helper()
 
 	s := newNetemStack(t, plan, StackOptions{})
@@ -707,10 +717,25 @@ func runNACKScenario(t *testing.T, plan netemPlan, recordFor time.Duration) nack
 	room := "e2e-nack-" + uuid.NewString()[:8]
 	pub := s.NewPublisher(room, "e2e-publisher")
 
-	video, err := corpus.GenerateVP8(corpus.VP8Options{FPS: nackCameraFPS, Duration: recordFor + 30*time.Second, SpreadUs: 2000})
+	var (
+		video *corpus.Trace
+		err   error
+	)
+	publish := pub.PublishVP8
+	if codec == corpus.CodecH264 {
+		// The VP8 schedule's packets per frame: a key frame is a STAP-A and
+		// three FU-A fragments, a delta frame two fragments.
+		publish = pub.PublishH264
+		video, err = corpus.GenerateH264(corpus.H264Options{
+			FPS: nackCameraFPS, Duration: recordFor + 30*time.Second, SpreadUs: 2000,
+			KeySlicePackets: 3, DeltaSlicePackets: 2,
+		})
+	} else {
+		video, err = corpus.GenerateVP8(corpus.VP8Options{FPS: nackCameraFPS, Duration: recordFor + 30*time.Second, SpreadUs: 2000})
+	}
 	require.NoError(t, err)
 
-	cam := pub.PublishVP8(TrackOptions{Name: "camera", Schedule: video, TagFrames: true})
+	cam := publish(TrackOptions{Name: "camera", Schedule: video, TagFrames: true})
 
 	ctx, cancel := context.WithTimeout(t.Context(), recordFor+time.Minute)
 	defer cancel()

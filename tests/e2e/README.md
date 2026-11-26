@@ -51,6 +51,7 @@ those frames had one.
 | `TestH264FlowingFollowsFirstMedia` | **H.264 flowing at start.** The flowing scenario on a tagged H.264 camera. The oracle and placement checks hold, and the recorder asks for no key frame. Here LiveKit pads only ahead of the first key frame, so the H.264 handling of padding is tested in process instead. |
 | `TestAudioAfterTrailingLossIsWritten` | **Audio after a trailing loss.** One microphone packet is withheld shortly before the recording stops, in two cases. In the first the source pauses 10 frames later; in the second it keeps talking and the stop comes 3 frames later, within the adapter's 200 ms jitter latency. Both times the recorder has not moved past the loss when it stops. Every frame the recorder read after the loss must be in the WebM. The scenario checks that it read some, and fewer than 32. |
 | `TestNACKRepairUnderLoss` | **NACK/RTX repair under loss.** `livekit-server` and `redis-server` run in one network namespace and the recorder in another, and netem drops 3% of what the servers send the recorder. The recorder's ICE pair must use the link between the namespaces. Lost packets must be read later (by sequence number, whichever SSRC carried them), nearly every frame must be written, and key-frame requests must not loop. The publisher tags each frame. At least one written frame must wait over 15 ms for its retransmission (the test says why every run has one). Every block must still land within 15 ms of when its frame was sent, and `recordingStopped` must repeat `mediaStart`, with `mediaEnd` matching the file. When the first key frame waits for a retransmission, the frames after it arrive on time and still set `mediaStart`. So this test does not show how `mediaStart` treats a late first frame; the replay corpus covers that. It needs root and `E2E_NETEM=1`, and is skipped otherwise, or fails with `E2E_NETEM_REQUIRED=1`. |
+| `TestH264NACKRepairUnderLoss` | **H.264 NACK/RTX repair under loss** (root). The NACK scenario on an H.264 camera, with its checks. Its frames take as many packets as the VP8 camera's: four for a key frame, two for a delta frame. The oracle's H.264 checks are added. |
 | `TestNACKRepairControl`, `TestNetemPlan`, `TestNetemDryPlan` | The NACK scenario's stack and checks, placement and `mediaEnd` included, without the namespaces or the loss. Loopback addresses stand in for the links. `TestNetemPlan` checks the namespace plan and config edits, and `TestNetemDryPlan` that the controls' dry plan runs no command. All three run unprivileged. The control cannot show that ICE uses the link between the namespaces; only the NACK scenario can. |
 | `TestSignalCutResumesInPlace` | **Signal cut.** A TCP proxy resets the recorder's signalling connections and lets the redial through. Each session resumes in place, in its one file. Both tracks are tagged. Each block must land within 15 ms of when its frame was sent, and the two tracks within 15 ms of each other. `recordingStopped` must repeat `mediaStart`, with `mediaEnd` matching the file. The cut is on the signal only and the media path stays up. So this guards against a resume that re-bases timestamps or re-subscribes. The test logs the largest PTS step and the frames missing in the 3 s after the cut; an unrepaired packet there does not fail it. |
 | `TestSignalRefusedSplitsFile` | **Signal refused.** The proxy also refuses redials for 5 s. The SDK falls back to a full reconnect and every session stops as `closed`. The test retries as the SFU does, so each session ends with two files. Each of the four files must pass the same placement and `mediaEnd` checks. The camera's and the microphone's first files must land within 15 ms of each other, and so must their second files. The first file's closed `recordingStopped` must carry its media span. The second file must hold only frames sent after the refusal ended. This pins today's behaviour; it is not a target. |
@@ -297,9 +298,10 @@ d=$(mktemp -d) &&
     E2E_ARTIFACTS="$d/artifacts" "$d/e2e.test" -test.run '^TestNACKRepairUnderLoss$' -test.v
 ```
 
-`TestMediaTimestampsTakeOffAStartDelay` runs the same way, with its name in
-`-test.run`. It builds the same namespaces with no loss, and adds its own
-netem delay on the host's end of the host <-> server link.
+`TestH264NACKRepairUnderLoss` and `TestMediaTimestampsTakeOffAStartDelay`
+run the same way, with their names in `-test.run`. The second builds the
+same namespaces with no loss, and adds its own netem delay on the host's end
+of the host <-> server link.
 
 `go test -tags e2e -v -run TestNetemPlan ./tests/e2e/...` logs the exact
 setup and teardown commands for a sample PID.
@@ -390,7 +392,7 @@ service, then runs two steps:
 1. `go test -tags e2e -v -timeout 15m ./tests/e2e/...`, the whole suite
    unprivileged. The netem scenarios skip here.
 2. The netem scenarios as root, as shown above, with
-   `-test.run '^(TestNACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$'`
+   `-test.run '^(TestNACKRepairUnderLoss|TestH264NACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$'`
    and `E2E_NETEM_REQUIRED=1`. A skip, or a scenario missing from what the
    pattern lists, fails the step. This step runs even if step 1 failed, but not if
    setup did, and has its own 10-minute limit. It loads `sch_netem`, and
