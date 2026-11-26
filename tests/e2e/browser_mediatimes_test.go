@@ -354,7 +354,7 @@ func placeOnCaptureClockCut(ctx context.Context, t *testing.T, s *Stack, name st
 		Name:    name,
 		Start:   time.UnixMilli(started.MediaStartUTC),
 		Started: started,
-		Blocks:  pairBlocks(t, out.WebMPath, readFrames(t, out.Trace), out.Trace.Header.ClockRate),
+		Blocks:  pairBlocks(t, out.FilePath, readFrames(t, out.Trace), out.Trace.Header.ClockRate),
 		Clock:   clock,
 		Out:     out,
 	}

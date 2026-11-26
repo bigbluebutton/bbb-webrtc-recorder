@@ -86,7 +86,8 @@ of the in-process replay corpus
 3. **Record as the SFU does,** one session per track:
    `s.Driver.StartRecording(ctx, room, track.SID)`, then
    `WaitRtpStatus(..., "flowing")`. Record for a fixed time, then `Stop`
-   and `WaitStopped`.
+   and `WaitStopped`. `rec.Path` is the file, with the extension the
+   recorder picked.
 4. **Read what came out.** `ReadOutput(t, rec, trackID)` reads the WebM
    through `internal/corpus/oracle` and summarises the recorder's trace
    (see `Output`). `ScrapeMetrics` and `Delta` give the metrics, and

@@ -256,7 +256,7 @@ func TestSignalRefusedSplitsFile(t *testing.T) {
 					Room:      r.room,
 					TrackIDs:  []string{tr.track.SID},
 					SessionID: tr.rec.SessionID,
-					FileName:  fmt.Sprintf("recordings/%s/%s-%s-retry%d.webm", r.room, tr.track.SID, tr.rec.SessionID, attempt),
+					FileName:  fmt.Sprintf("recordings/%s/%s-%s-retry%d", r.room, tr.track.SID, tr.rec.SessionID, attempt),
 				})
 				if err == nil {
 					tr.retry = rec
@@ -324,8 +324,8 @@ func TestSignalRefusedSplitsFile(t *testing.T) {
 				second.WebM.Blocks, second.WebM.MaxGapMs, second.PLIs)
 
 			for _, out := range []*Output{first, second} {
-				assert.NoError(t, out.WebM.CheckMonotonic(), out.WebMPath)
-				assert.NoError(t, out.WebM.CheckNoDuplicatePTS(), out.WebMPath)
+				assert.NoError(t, out.WebM.CheckMonotonic(), out.FilePath)
+				assert.NoError(t, out.WebM.CheckNoDuplicatePTS(), out.FilePath)
 				assert.NotNil(t, out.EOF, "%s: trace eof", out.TracePath)
 			}
 
@@ -493,14 +493,18 @@ func lastRestart(tracks []*signalTrack) time.Time {
 	return last
 }
 
-// sessionFiles lists the WebM files the recorder wrote for track sid in
-// session sessionID.
+// sessionFiles lists the recordings, WebM or Matroska, that the recorder
+// wrote for track sid in session sessionID.
 func sessionFiles(t *testing.T, s *Stack, room, sid, sessionID string) []string {
 	t.Helper()
 
-	files, err := filepath.Glob(filepath.Join(s.Recorder.Dir, "recordings", room,
-		fmt.Sprintf("%s-%s*.webm", sid, sessionID)))
-	require.NoError(t, err)
+	var files []string
+	for _, ext := range []string{".webm", ".mkv"} {
+		matches, err := filepath.Glob(filepath.Join(s.Recorder.Dir, "recordings", room,
+			fmt.Sprintf("%s-%s*%s", sid, sessionID, ext)))
+		require.NoError(t, err)
+		files = append(files, matches...)
+	}
 
 	return files
 }

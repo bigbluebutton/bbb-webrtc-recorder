@@ -17,7 +17,7 @@ import (
 
 // Output is what one single-track recording session left on disk, read back.
 type Output struct {
-	WebMPath  string
+	FilePath  string
 	TracePath string
 	WebM      *oracle.Track // the session's only track
 	Trace     *corpus.Trace
@@ -50,9 +50,9 @@ func assertTraceEnded(t *testing.T, name string, out *Output) {
 func ReadOutput(t *testing.T, rec *Recording, trackID string) *Output {
 	t.Helper()
 
-	o := &Output{WebMPath: rec.Path, TracePath: TracePath(rec.Path, trackID), PLIs: map[string]int{}}
+	o := &Output{FilePath: rec.Path, TracePath: TracePath(rec.Path, trackID), PLIs: map[string]int{}}
 
-	sum, err := oracle.SummarizeWebM(o.WebMPath)
+	sum, err := oracle.SummarizeWebM(o.FilePath)
 	require.NoError(t, err)
 	require.Len(t, sum.Tracks, 1, "a session records one track")
 
@@ -139,5 +139,5 @@ func (o *Output) writeSummary(t *testing.T) {
 
 	data, err := json.MarshalIndent(s, "", "  ")
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(strings.TrimSuffix(o.WebMPath, ".webm")+".summary.json", data, 0o644))
+	require.NoError(t, os.WriteFile(strings.TrimSuffix(o.FilePath, filepath.Ext(o.FilePath))+".summary.json", data, 0o644))
 }
