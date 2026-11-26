@@ -122,3 +122,119 @@ with silence, without stretching the audio around it.
   or when the sender loses at least three quarters as much in the same report
   interval. With a sender clock 2 % fast, a network delay that drops during
   silence can count as a realignment: up to 400 ms with reports 5 s apart.
+
+## H.264 cameras (LiveKit)
+
+### What goes wrong
+
+An H.264 frame usually spans several RTP packets: one NAL unit split into
+FU-A fragments, or several NAL units packed into one STAP-A. A frame missing
+any packet cannot be decoded, and neither can the frames after it until the
+next IDR. A key frame also needs its own SPS and PPS: an IDR decoded with
+older parameter sets shows garbage after a resolution change.
+
+LiveKit adds cases of its own:
+
+- **Simulcast layer switch.** The old layer's last frame can be cut short,
+  and arrive in the same jitter-buffer sample as the new layer's key frame.
+  An SPS of one layer can also arrive without its IDR.
+- **Blank frames.** LiveKit can send 2x2 key frames, for example when a
+  downtrack closes. They are valid H.264, but would set a 2x2 track size.
+- **Padding.** LiveKit 1.13.5-1.13.9 sends padding with a 255-byte payload,
+  which looks like media unless the padding bit is checked.
+- **Backup codec.** A publisher can list VP8 as a backup for H.264. LiveKit
+  may send either one, and can switch to the other mid-session.
+
+### What the recorder does
+
+- **Whole frames.** The track buffer releases H.264 as whole samples, not
+  packets. A sample is marked `follows` when no packet was lost since the
+  previous one, and every packet between them was padding or empty. A sample
+  that does not follow, or a frame broken inside a sample, stops writing
+  until the next key frame. The recorder then requests one, at most once a
+  second, and not while one is due.
+- **Broken frames inside a sample.** Parsing goes on past a broken frame, so
+  a key frame later in the same sample, as after a layer switch, is written.
+- **Key frames.** A key frame is an IDR with an SPS and a PPS in the same
+  frame, from 16x16 to 8192x8192, whose SPS parses. Blank frames and an IDR
+  whose parameter sets were lost are not key frames.
+- **File and track header.** The file is Matroska (`.mkv`) when a requested
+  publication lists H.264, primary or backup. The track's size and
+  `CodecPrivate` come from the first key frame's own SPS and PPS. Every key
+  frame keeps its SPS and PPS in band, so later sizes still decode.
+- **Codec changes.** A track subscribed again with another codec is not
+  recorded. The first track reader's end then ends the session, and the
+  requester starts a new recording.
+- **Timestamps.** The presentation time counts the RTP ticks since the first
+  key frame. A delta frame whose timestamp goes back is skipped, and so are
+  the frames after it until a key frame. A key frame behind the last frame
+  written starts a new timestamp base. It is placed after that frame by the
+  time between their arrivals, and at least 1 ms after it. A jump of 2^31 to
+  2^32 ticks (6.6 to 13.3 h), such as a long mute, reads as a step back.
+
+### Where to look
+
+- **Log:** `First video/h264 key frame: timestamp=..., WxH` once per
+  recording. `Discarding malformed video/h264 frame` names the broken packets
+  and why, and `Discarding invalid video/h264 frame` a refused key frame.
+  `Discarding video/h264 frame: ...`, at debug level, names the others.
+- **Warnings:** those two, `Skipping video frame whose timestamp goes back`,
+  `Video timestamps restart at a key frame`, `Duplicate frame detected` and
+  `Discarding video/h264 frame of N bytes: the limit is M` are logged at warn
+  level once per kind per recording. Later ones are at debug level.
+- **Codec changes:** at a regression, the reader logs `video/H264 track=...
+  stopped` and LiveKit logs `renegotiate new codec`. `Not recording track ...
+  subscribed again with ...` marks a new subscription in another codec.
+- **Stats file:** the camera's `mimeType` names the codec written,
+  `keyframeCount` the key frames seen and `pliRequests` the key-frame
+  requests sent. For H.264, `totalSamples` counts every frame, written or
+  not, except broken frames and IDRs that are not key frames. H.264 sample
+  durations are RTP intervals. With VP8's default assembler, they are the
+  time each frame took to arrive.
+- **Metrics:** the `mime` label is the publication's MIME type, also for a
+  camera that LiveKit sends in its backup codec. On `recorder_active_tracks`
+  it is the codec LiveKit sends.
+- **Replay corpus:** the `h264-*` seeds in
+  `internal/webrtc/livekit/testdata/corpus/README.md`. `h264-layer-switch`,
+  `h264-simulcast-orphan-sps`, `h264-blank-close`, `h264-lost-stapa` and
+  `h264-padding-payload` cover the cases above. The `h264-c*` seeds are
+  twins of VP8 seeds, which that README's Source column names.
+- **E2E:** `TestH264UnrepairedLossRequestsKeyframe`, `TestH264ClipDecodes`
+  (an x264 clip decoded by ffmpeg) and `TestBrowserH264Camera` in
+  `tests/e2e`.
+- **E2E by case:** `TestBrowserVP8CameraWithH264Backup` records a VP8
+  camera with an H.264 backup.
+- **Code:** `h264.go`, `h264_sps.go` and `frames.go` in
+  `internal/webrtc/recorder`, and `trackbuffer.go` in
+  `internal/webrtc/livekit`.
+
+### Known limits
+
+- **File name.** An H.264 recording ends in `.mkv`, whatever name the
+  requester sent. A requester that writes the `.webm` name it sent into the
+  recording events leaves the camera out of the published recording. The
+  `.mkv` stays in the raw archive.
+- **Start time.** After a restart of its own, bbb-webrtc-sfu takes each
+  file's start time from a name ending in `.webm`. An `.mkv` name gives it
+  no start time, so it can stop the file being recorded.
+- **Parameter sets.** An IDR without its own SPS and PPS is not a key frame,
+  and writing waits for an IDR with them. LiveKit itself does not start
+  forwarding a sender whose key frames lack an SPS.
+- **Track size.** The track header keeps the first key frame's size, which
+  is often a reduced one: Chrome can start a 1280x720 camera at 320x180. A
+  player that reads only the header reports that size.
+- **Backup codec.** `startRecordingResponse` names the primary codec. When
+  LiveKit sends the backup codec, the stats file, `recorder_active_tracks`
+  and the log name it.
+- **Packetization.** Modes 0 and 1 are recorded. Mode 2 (STAP-B, MTAP, FU-B)
+  is refused as malformed; WebRTC senders do not use it.
+- **Frame reordering.** The recorder writes frames in the order they were sent.
+  Browsers never send reordered frames: libwebrtc drops a frame whose capture
+  time does not increase. A non-browser publisher that sends B-frames with
+  timestamps that go back gets only the frames from each key frame to the
+  first one that goes back. B-frames with rising timestamps are written in
+  decode order with those timestamps.
+- **VP8 timestamps that go back.** The VP8 writer reads a timestamp step
+  back as a jump of about 13 h forward. The rest of the file then starts 13 h
+  later. Browsers do not step back; other publishers can.
+- **mediasoup.** Only the LiveKit adapter records H.264.
