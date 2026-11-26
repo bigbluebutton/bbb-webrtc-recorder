@@ -86,6 +86,36 @@ func TestUpdateCaptureMetricsMediaClock(t *testing.T) {
 	registry := useFreshRegistry(t)
 	RegisterMetrics()
 
+	// The series are package globals, so a repeated run starts from the
+	// values of the run before. The test checks what its updates add.
+	read := func() map[string]float64 {
+		families, err := registry.Gather()
+		require.NoError(t, err)
+
+		got := map[string]float64{}
+		for _, family := range families {
+			for _, metric := range family.GetMetric() {
+				labels := map[string]string{}
+				for _, l := range metric.GetLabel() {
+					labels[l.GetName()] = l.GetValue()
+				}
+				if labels["mime"] != "audio/red" {
+					continue
+				}
+				switch family.GetName() {
+				case "recorder_media_clock_inserted_gaps_total", "recorder_media_clock_inserted_gap_seconds_total":
+					got[family.GetName()] = metric.GetCounter().GetValue()
+				case "recorder_media_clock_rate_ratio", "recorder_media_clock_end_lag_seconds":
+					got[family.GetName()+"_count"] = float64(metric.GetHistogram().GetSampleCount())
+					got[family.GetName()+"_sum"] = metric.GetHistogram().GetSampleSum()
+				}
+			}
+		}
+
+		return got
+	}
+	before := read()
+
 	// A RED microphone, as the LiveKit adapter reports it.
 	track := func(arrivalMs int64) *TrackStats {
 		return &TrackStats{Source: "MICROPHONE", TrackKind: "audio", MimeType: "audio/opus", PubMimeType: "audio/red",
@@ -95,30 +125,17 @@ func TestUpdateCaptureMetricsMediaClock(t *testing.T) {
 	// Too short for the rate and the lag; its corrections still count.
 	UpdateCaptureMetrics(&CaptureStats{Tracks: map[string]*TrackStats{"MICROPHONE": track(5000)}})
 
-	families, err := registry.Gather()
-	assert.NoError(t, err)
-
-	got := map[string]float64{}
-	for _, family := range families {
-		for _, metric := range family.GetMetric() {
-			switch family.GetName() {
-			case "recorder_media_clock_inserted_gaps_total", "recorder_media_clock_inserted_gap_seconds_total":
-				got[family.GetName()] = metric.GetCounter().GetValue()
-			case "recorder_media_clock_rate_ratio", "recorder_media_clock_end_lag_seconds":
-				got[family.GetName()+"_count"] = float64(metric.GetHistogram().GetSampleCount())
-				got[family.GetName()+"_sum"] = metric.GetHistogram().GetSampleSum()
-			}
-		}
-	}
-
-	assert.Equal(t, map[string]float64{
+	after := read()
+	for name, want := range map[string]float64{
 		"recorder_media_clock_inserted_gaps_total":        108,
 		"recorder_media_clock_inserted_gap_seconds_total": 2.68,
 		"recorder_media_clock_rate_ratio_count":           1,
 		"recorder_media_clock_rate_ratio_sum":             0.978,
 		"recorder_media_clock_end_lag_seconds_count":      1,
 		"recorder_media_clock_end_lag_seconds_sum":        0.03,
-	}, got)
+	} {
+		assert.InDelta(t, want, after[name]-before[name], 1e-9, name)
+	}
 }
 
 func TestOnServerResponseCountsTheMediaStart(t *testing.T) {
