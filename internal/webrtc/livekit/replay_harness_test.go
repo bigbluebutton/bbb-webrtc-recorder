@@ -2,6 +2,7 @@ package livekit
 
 import (
 	"io"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -28,6 +29,7 @@ type replayResult struct {
 	packetsDropped uint64
 	webm           *oracle.Summary
 	webmErr        error
+	file           []byte // the recording as written
 	// The Opus track's lag behind its read times and its media clock, set
 	// when exactly one Opus trace is replayed.
 	audioLag    *oracle.Lag
@@ -176,6 +178,7 @@ func (h *replayHarness) run(onRequest func(ssrc uint32), srcs ...trackSource) re
 	h.rec.Close()
 	r.span, r.spanOK = h.rec.MediaSpan()
 	r.webm, r.webmErr = oracle.SummarizeWebM(h.file)
+	r.file, _ = os.ReadFile(h.file)
 
 	h.mu.Lock()
 	r.bufferRequests = append(r.bufferRequests, h.bufferRequests...)

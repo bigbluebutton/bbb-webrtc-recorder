@@ -35,6 +35,7 @@ A seed is one or more traces plus one expect file. `TestCorpusReplay` replays ev
    - Put the defect back, or the setting the intent names, such as `videoJitterLatency` at 200 ms.
    - Check that the seed fails, then revert.
    - Say what the RED is in `intent`, and add the seed to the Seeds table.
+6. **Pin the fence:** run `go test ./internal/webrtc/livekit/ -run 'TestCorpusReplay$' -args -update`. `testdata/corpus-fence.json` pins each seed's recording bytes and keyframe requests, so any change to them fails `TestCorpusReplay`. Run it again with `-update` only when a change to the output is intended, and say why in the commit.
 
 ## Seeds
 

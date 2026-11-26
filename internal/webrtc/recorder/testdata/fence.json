@@ -1,0 +1,89 @@
+{
+  "av-custom": {
+    "file": "698f3f23aba07ef1881e39a780479d766866dd01f7ffa7dfbfc17b5bafbf2b4a",
+    "stats": "a770734dc5a457720b3ceecd3475e0d989677638bd8351b2e8763755bd2fc81a",
+    "requestsUs": []
+  },
+  "av-custom-loss": {
+    "file": "27937d5116145f40037f2bcad0ca25101201a8c6d8c3697250c4530660c4eaba",
+    "stats": "832b1b42ae70b81e1e80c67cacc5836a42b112bdf145688f3c5b83251ddde08d",
+    "requestsUs": [
+      433333
+    ]
+  },
+  "opus": {
+    "file": "d61f387ec71a6184c5e2f52a5359f73b544d692f521d2929b1c3342e465da85b",
+    "stats": "c065bb99bd515688ee110f42a1b7909784bf86636afbf8370bd997aba91f6ef7",
+    "requestsUs": []
+  },
+  "vp8-builtin": {
+    "file": "3f5d768339d3bbd1bfa805e99231c3ad835a516f669487e1999b464859d9f5e4",
+    "stats": "e2ed414608c7f24c094a18c847a3f0584ce03bce0f0bac7bf78c77c49b9ff6dd",
+    "requestsUs": []
+  },
+  "vp8-builtin-ivf": {
+    "file": "3f5d768339d3bbd1bfa805e99231c3ad835a516f669487e1999b464859d9f5e4",
+    "ivf": "2bc7ad845239536401884e5ec9b4b0b60e2ae085e01dce1c78ae41a47a55a56a",
+    "stats": "e2ed414608c7f24c094a18c847a3f0584ce03bce0f0bac7bf78c77c49b9ff6dd",
+    "requestsUs": []
+  },
+  "vp8-builtin-loss": {
+    "file": "4e39061d98ca9858e9da13db4325781cb41f9bfe76064e4d94acc3944b4c76f6",
+    "stats": "f6c8d65f384c2462e78b5805d7da2992b830404e2004c9ee114c071bf17b099f",
+    "requestsUs": []
+  },
+  "vp8-builtin-reorder": {
+    "file": "52c96ae82b2e13f5385fbc2b95280a2bb89ad1658d8c7b191c91fdde844e05d3",
+    "stats": "46ee524b3a5d5df9e469cc7cad190ded91ec2657e6e7575e063d31e0431bcd46",
+    "requestsUs": []
+  },
+  "vp8-builtin-resize": {
+    "file": "87e0093ea09ca750b141293c7945f57ac89678709671c7bbdde36e090960a15a",
+    "stats": "e2ed414608c7f24c094a18c847a3f0584ce03bce0f0bac7bf78c77c49b9ff6dd",
+    "requestsUs": []
+  },
+  "vp8-custom": {
+    "file": "33b51086d4180a70a01c4fe680ef961c04d2f76dc9a57a87bea8fe74b2fdd2ba",
+    "stats": "d40e734bd919948cc37de2b7247e1b84dd810b6f01adfea16565aa547bd9f4ad",
+    "requestsUs": []
+  },
+  "vp8-custom-ivf": {
+    "file": "33b51086d4180a70a01c4fe680ef961c04d2f76dc9a57a87bea8fe74b2fdd2ba",
+    "ivf": "14b296eeb8d67222e414e21eb68b328bf068fb60706d94f6f9f3d76ac7da9eef",
+    "stats": "d40e734bd919948cc37de2b7247e1b84dd810b6f01adfea16565aa547bd9f4ad",
+    "requestsUs": []
+  },
+  "vp8-custom-loss": {
+    "file": "dc45caa53e9a08c2e8246ee834b378371ff5150c87d697e210d54737f7c0968e",
+    "stats": "da697fc5cc2301f070bd3c6e2ecc5a78d83959c5ffbefe1b0936730292d42f54",
+    "requestsUs": [
+      333333
+    ]
+  },
+  "vp8-custom-pause": {
+    "file": "4e03be2ff6d4e204fa8824c71b7c0628fbbfe9d66e89539d4d70b37e88c11dbe",
+    "stats": "b00826cf08442c2d660ecf51247c924422d176783863e6726e142996c4dace7d",
+    "requestsUs": []
+  },
+  "vp8-custom-reorder": {
+    "file": "b5fb59d90b5667848a1cdc3c81cb351bd86f3bfd54523ade185c74e9877b9a00",
+    "stats": "4c05fbbcbb33864ea230e23dc9589b61d9758cb1a9d3040da3df52d7768e11ec",
+    "requestsUs": [
+      433333,
+      1466667,
+      2572667
+    ]
+  },
+  "vp8-custom-resize": {
+    "file": "4c03c7793123cd6a827acf70c8c32cd4af7e6dd5fa629e5625890039a85264ce",
+    "stats": "d40e734bd919948cc37de2b7247e1b84dd810b6f01adfea16565aa547bd9f4ad",
+    "requestsUs": []
+  },
+  "vp8-custom-skip": {
+    "file": "3e0c6e9712d21e385f3b3efe066e9e319987cd672a1d106ddafacc1564663230",
+    "stats": "c8aba8e4142fd78ca6f9dd0083eebc2e865835d2e407a0ac5c4e8b123219fd19",
+    "requestsUs": [
+      1366667
+    ]
+  }
+}
