@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -26,7 +28,7 @@ func NewStatsFileWriter(basePath string, fileMode os.FileMode) *StatsFileWriter 
 }
 
 func (w *StatsFileWriter) WriteStats(webmFilePath string, stats *StatsFileOutput) error {
-	statsFilePath := fmt.Sprintf("%s-stats.json", webmFilePath[:len(webmFilePath)-5])
+	statsFilePath := strings.TrimSuffix(webmFilePath, filepath.Ext(webmFilePath)) + "-stats.json"
 
 	jsonData, err := json.MarshalIndent(stats, "", "  ")
 
