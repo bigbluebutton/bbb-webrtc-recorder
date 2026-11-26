@@ -4,7 +4,7 @@ How to build, test and verify changes to bbb-webrtc-recorder, and the pitfalls t
 
 ## Project Overview
 
-bbb-webrtc-recorder is a Go service for BigBlueButton that records WebRTC media streams (audio/video) to WebM files. It supports two WebRTC adapters: **mediasoup** (direct pion/webrtc peer connection) and **LiveKit** (via LiveKit server-sdk-go). The service communicates via Redis pub/sub for session control (start/stop recording, status queries).
+bbb-webrtc-recorder is a Go service for BigBlueButton that records WebRTC media streams (audio/video) to WebM or Matroska files. It supports two WebRTC adapters: **mediasoup** (direct pion/webrtc peer connection) and **LiveKit** (via LiveKit server-sdk-go). The service communicates via Redis pub/sub for session control (start/stop recording, status queries).
 
 ## Build & Run
 
@@ -71,7 +71,7 @@ golangci-lint runs from `tools/go.mod` through `go tool`, so no global install i
 4. **WebRTC Adapters** - Two paths:
    - **Mediasoup** (`internal/webrtc/webrtc.go`) - Direct pion/webrtc peer connection with SDP offer/answer, NACK handling, and PLI requests
    - **LiveKit** (`internal/webrtc/livekit/livekit.go`) - Connects to LiveKit room via server-sdk-go, subscribes to specific tracks by ID (track mute/unmute is only logged)
-5. **Recorder** (`internal/webrtc/recorder/`) - `Recorder` interface with `WebmRecorder` implementation. Receives RTP packets via `PushVideo`/`PushAudio`, muxes VP8+Opus into WebM using ebml-go
+5. **Recorder** (`internal/webrtc/recorder/`) - `Recorder` interface with `WebmRecorder` implementation, writing WebM or Matroska with ebml-go. VP8 and Opus arrive per RTP packet (`PushVideoAt`/`PushAudioAt`)
 
 ### Key Components
 
@@ -80,9 +80,10 @@ golangci-lint runs from `tools/go.mod` through `go tool`, so no global install i
 - **`internal/pubsub/events/`** - Event types for the pub/sub protocol (see README for full JSON5 schemas)
 - **`internal/webrtc/utils/`** - Jitter buffer, send buffer, NACK pair generation, receive log, sequence unwrapper, connection state normalization
 - **`packaging/`** - nfpm deb (`nfpm.yml`, systemd unit, env file); ships `config/bbb-webrtc-recorder.yml` as `/etc/bbb-webrtc-recorder/bbb-webrtc-recorder.yml` (also copied by the Dockerfile), so new config defaults go in `SetDefaults()` (`internal/config/config.go`) and are mirrored in that file
-- **`internal/webrtc/recorder/webm.go`** - WebM muxer: VP8 frames through a custom assembler (`recorder.useCustomSampler`, default on) or jech/samplebuilder, Opus through jech/samplebuilder
+- **`internal/webrtc/recorder/webm.go`** - writer state, Opus through jech/samplebuilder, keyframe requests, stats. `vp8.go` holds both VP8 assemblers: the custom one (`recorder.useCustomSampler`, default on) and jech/samplebuilder
+- **`internal/webrtc/recorder/codec.go`** - codec registry (`CodecFor`), one `Codec` per codec the recorder writes, with whether WebM may hold it; the track buffer reads its depacketizer and key-frame test. A codec with a `frames` function takes samples. `frames.go` is the writer they share: key-frame gating, PTS from RTP ticks, opening the file once. `container.go` writes the file header and picks the DocType
 - **`internal/webrtc/utils/mediaclock.go`** - per-track `MediaClock`: moves a LiveKit microphone's RTP timestamps forward by the media time its sender loses, by arrival times capped by the sender reports (`livekit.audioClockSync`), so the WebM keeps the wall clock. The read loop applies it before the jitter buffer; trace and RTP dump keep the sender's timestamps
-- **`internal/webrtc/livekit/trackbuffer.go`** - per-track jitter buffer around media-sdk's `jitter`: early keyframe request when a gap stays open, duplicate filtering, padding handling. `capture.go` is the opt-in `livekit.traceCapture`
+- **`internal/webrtc/livekit/trackbuffer.go`** - per-track jitter buffer around media-sdk's `jitter`: early keyframe request when a gap stays open, duplicate filtering, padding handling. A sample is marked `follows` when every packet between it and the previous sample arrived and was padding or empty. `capture.go` is the opt-in `livekit.traceCapture`
 - **`third_party/media-sdk/`** - vendored media-sdk `jitter` with local fixes (`go.mod` `replace`; changes listed in `third_party/README.md`)
 - **`internal/corpus/`** - trace format, generators and mutations, WebM oracle (`oracle/`), and `seedgen` for the replay corpus
 - **`internal/appstats/`** - Prometheus metrics and per-session stats file writing
@@ -99,7 +100,13 @@ golangci-lint runs from `tools/go.mod` through `go tool`, so no global install i
 
 ### Supported Codecs
 
-VP8 (video) and Opus (audio) only. Output format is WebM (with optional IVF copy for video).
+Opus (audio) and VP8 (video). The IVF copy is VP8 only.
+
+The recorder adds the file extension, and ignores a trailing `.webm`/`.mkv` in `startRecording.fileName`. A LiveKit session is Matroska (`.mkv`) when a requested publication lists a registered codec whose `Codec.WebM` is false, primary or backup. A RED microphone counts as Opus. Other sessions, mediasoup ones included, are WebM (`.webm`).
+
+`TestCorpusReplay` and `TestWebmRecorderFence` pin the bytes and keyframe requests of the files they write. Re-pin them with `-update` only for an intended change.
+
+To add a LiveKit video codec: a registry entry in `codec.go` with its depacketizer, key-frame test and `frames` function, then a corpus generator, seeds, oracle support and trace capture (`capture.go`). Video without `frames` goes to the VP8 assemblers. An audio codec needs more than a registry entry: `PushAudioAt` and the file header assume Opus. The mediasoup adapter negotiates only VP8 and Opus (`webrtc.go`).
 
 ## Key Conventions
 

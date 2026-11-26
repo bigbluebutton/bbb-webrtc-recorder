@@ -32,7 +32,7 @@ recorder:
   fileMode: 0700
   # Whether to write to /dev/null instead of a file (for testing)
   writeToDevNull: false
-  # Whether an IVF copy of WebM recordings should be generated
+  # Whether an IVF copy of VP8 recordings should be generated
   writeIVFCopy: false
   # Write a stats file for each recording
   writeStatsFile: false
@@ -124,6 +124,18 @@ systemctl enable --now redis
 systemctl status redis
 ```
 
+### Codecs and file formats
+
+| Track | Codec | Adapters | File format |
+|---|---|---|---|
+| Audio | Opus | mediasoup, LiveKit | WebM (`.webm`) |
+| Video | VP8 | mediasoup, LiveKit | WebM (`.webm`) |
+
+The recorder picks the file format, and so the extension, when the session starts. A LiveKit session is Matroska
+when a requested publication lists a codec that the recorder writes and WebM cannot hold, as primary or backup,
+and WebM otherwise (see `startRecordingResponse` below). WebM holds both codecs above. A microphone published with
+RED, as BBB's client does, is recorded as Opus in WebM: LiveKit sends the recorder the Opus inside it.
+
 ### Debugging
 
 Examples of how to print out config values:
@@ -188,8 +200,9 @@ where to look and its known limits.
 }
 ```
 
-The recorder picks the container when the session starts, before any media flows. The `fileName` in the response is
-final, and its extension, not `codecs`, tells the container.
+The recorder picks the container when the session starts, before any media flows (see
+[Codecs and file formats](#codecs-and-file-formats)). The `fileName` in the response is final, and its extension,
+not `codecs`, tells the container.
 
 For LiveKit, `codecs` lists each publication's primary codec, in the order of `trackIds`, even one the recorder
 cannot write, such as VP9. A track that LiveKit sends in such a codec fails the session, which stops as `failed`.
