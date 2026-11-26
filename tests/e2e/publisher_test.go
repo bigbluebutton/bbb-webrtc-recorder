@@ -214,6 +214,19 @@ func (p *Publisher) publish(c webrtc.RTPCodecCapability, kind corpus.Kind, o Tra
 // replace the entry's. The layers start together: frame i of each is due
 // at the same time, as an encoder sends one captured frame on every layer.
 func (p *Publisher) PublishVP8Simulcast(name string, layers ...TrackOptions) []*PubTrack {
+	p.t.Helper()
+
+	return p.publishSimulcast(vp8Capability, name, layers)
+}
+
+// PublishH264Simulcast is PublishVP8Simulcast for H.264 layers.
+func (p *Publisher) PublishH264Simulcast(name string, layers ...TrackOptions) []*PubTrack {
+	p.t.Helper()
+
+	return p.publishSimulcast(h264Capability, name, layers)
+}
+
+func (p *Publisher) publishSimulcast(c webrtc.RTPCodecCapability, name string, layers []TrackOptions) []*PubTrack {
 	t := p.t
 	t.Helper()
 
@@ -227,7 +240,7 @@ func (p *Publisher) PublishVP8Simulcast(name string, layers ...TrackOptions) []*
 		o.Source = livekit.TrackSource_CAMERA
 		o.Width, o.Height = int(o.Layer.Width), int(o.Layer.Height)
 
-		tr := newPubTrack(t, vp8Capability, corpus.KindVideo, o)
+		tr := newPubTrack(t, c, corpus.KindVideo, o)
 		tracks = append(tracks, tr)
 		locals = append(locals, tr.Local)
 	}
