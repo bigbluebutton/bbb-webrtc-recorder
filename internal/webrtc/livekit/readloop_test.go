@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
+	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
@@ -433,9 +435,25 @@ func TestReadErrorReadsFlowStateUnderLock(t *testing.T) {
 }
 
 // Run with -race: a stopping session replaces the connection state callback
-// while the adapter reports a failed subscription or a track's end.
+// while the adapter reports a refused codec, a failed subscription or a
+// track's end.
 func TestConnectionStateCallbackReadUnderLock(t *testing.T) {
-	h := newLoopHarness(newPushRecorder(), audioInfo.id)
+	// A WebM file cannot hold H.264, so acceptCodec fails the connection.
+	rec := recorder.NewWebmRecorder(filepath.Join(t.TempDir(), "camera.webm"), 0o600, 256, 32, true, false)
+	rec.SetHasVideo(true)
+	h := newLoopHarness(rec, audioInfo.id)
+	// onTrackSubscribed fails the connection for a codec the registry does
+	// not know, before it calls acceptCodec.
+	rp := publisherRoom().GetParticipantByIdentity("publisher")
+	require.NotNil(t, rp)
+	pub, ok := rp.GetTrackPublication(livekit.TrackSource_CAMERA).(*lksdk.RemoteTrackPublication)
+	require.True(t, ok)
+	unsupported := &negotiatedTrack{
+		fakeTrack: newFakeTrack(),
+		codec:     webrtc.RTPCodecParameters{RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: "video/x-unsupported", ClockRate: 90000}},
+	}
+	_, known := recorder.CodecFor(unsupported.codec.MimeType)
+	require.False(t, known)
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -449,7 +467,9 @@ func TestConnectionStateCallbackReadUnderLock(t *testing.T) {
 			}
 		}
 	})
-	for range 100 {
+	for i := range 100 {
+		h.w.acceptCodec(fmt.Sprintf("track-%d", i), TrackKindVideo, recorder.CodecH264)
+		h.w.onTrackSubscribed(unsupported, pub, rp)
 		h.w.onTrackSubscriptionFailed(audioInfo.id, nil)
 		h.w.readTrack(newFakeTrack(), audioInfo, h.newBuffer(audioInfo, nil))
 	}
