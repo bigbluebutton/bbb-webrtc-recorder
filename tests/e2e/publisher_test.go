@@ -69,6 +69,10 @@ type TrackOptions struct {
 	// FIFO: frames due meanwhile queue behind it. 0 keeps the schedule's own
 	// packet offsets.
 	KeyframeSpread time.Duration
+	// KeyframeFromSchedule answers a PLI with the schedule's next key frame,
+	// then sends the frames after it. A real clip needs this: its delta
+	// frames refer to the frames before them.
+	KeyframeFromSchedule bool
 	// Drop withholds a packet when it returns true. Its sequence number is
 	// still used and it never reaches the NACK responder, so the loss is
 	// unrepaired.
@@ -271,6 +275,11 @@ func newPubTrack(t *testing.T, c webrtc.RTPCodecCapability, kind corpus.Kind, o 
 
 	if kind == corpus.KindVideo {
 		tr.keyFrame = templateKeyFrame(t, codec, tr.frames, o.Width, o.Height)
+	}
+
+	if o.KeyframeFromSchedule {
+		require.True(t, slices.ContainsFunc(tr.frames, func(f schedFrame) bool { return f.key }),
+			"schedule %s has no key frame", o.Name)
 	}
 
 	opts := []lksdk.LocalTrackOptions{lksdk.WithRTCPHandler(tr.onRTCP)}
@@ -526,12 +535,16 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 	}
 
 	var prevSend time.Duration
+	// With KeyframeFromSchedule, frame i of a pass sends the schedule's
+	// frame i+shift. Its timestamp and send time stay frame i's.
+	shift := 0
 
 	for loop := 0; ; loop++ {
 		for i, f := range frames {
 			frameAt := time.Duration(int64(loop)*spanUs+f.atUs-first.atUs) * time.Microsecond
 			ts := f.ts + uint32(loop)*spanTS
 			frame := loop*len(frames) + i
+			at := (i + shift) % len(frames)
 
 			if !sleepUntil(ctx, start.Add(frameAt)) {
 				return
@@ -543,14 +556,24 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 				continue
 			}
 
-			pliKey := tr.pending && frameAt >= tr.pendingDue && !f.key
-			if pliKey || f.key {
+			src := f
+			if tr.opts.KeyframeFromSchedule {
+				src = frames[at]
+			}
+
+			pliKey := tr.pending && frameAt >= tr.pendingDue && !src.key
+			if pliKey || src.key {
 				tr.pending = false
 			}
 			tr.mu.Unlock()
 
-			recs, offsets := f.recs, packetOffsets(f.recs, 0)
-			if pliKey {
+			recs, offsets := src.recs, packetOffsets(src.recs, 0)
+			switch {
+			case pliKey && tr.opts.KeyframeFromSchedule:
+				next := nextKeyFrame(frames, at)
+				shift = (shift + next - at + len(frames)) % len(frames)
+				recs, offsets = frames[next].recs, packetOffsets(frames[next].recs, tr.opts.KeyframeSpread)
+			case pliKey:
 				recs, offsets = tr.keyFrame, packetOffsets(tr.keyFrame, tr.opts.KeyframeSpread)
 			}
 
@@ -572,7 +595,7 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 				}
 
 				if tr.opts.TagFrames {
-					tr.tag(pkt.Payload, j, f.key || pliKey, uint32(tr.opts.TagOffset+frame))
+					tr.tag(pkt.Payload, j, src.key || pliKey, uint32(tr.opts.TagOffset+frame))
 				}
 
 				s := SentPacket{
@@ -582,7 +605,7 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 					TS:     ts,
 					Frame:  frame,
 					Index:  j,
-					Key:    f.key || pliKey,
+					Key:    src.key || pliKey,
 					PLIKey: pliKey,
 					Marker: pkt.Marker,
 					PLen:   len(pkt.Payload),
@@ -609,6 +632,18 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 			picID = (picID + 1) & 0x7FFF
 		}
 	}
+}
+
+// nextKeyFrame returns the index of the first key frame of frames at or
+// after i, wrapping around.
+func nextKeyFrame(frames []schedFrame, i int) int {
+	for d := range len(frames) {
+		if k := (i + d) % len(frames); frames[k].key {
+			return k
+		}
+	}
+
+	return i
 }
 
 // tag writes the frame tag v into payload, packet j of its frame. An H.264

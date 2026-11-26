@@ -195,6 +195,61 @@ func TestPublisherSendLoopH264(t *testing.T) {
 	assert.Equal(t, 1, pliKeys, "key frames sent for the PLI")
 }
 
+// TestPublisherSendLoopKeyframeFromSchedule answers a PLI from the
+// schedule, as a real clip needs. The frame due after the PLI must be the
+// schedule's next key frame. The frames after it must follow it in the
+// schedule, while timestamps keep their pace.
+func TestPublisherSendLoopKeyframeFromSchedule(t *testing.T) {
+	const (
+		fps         = 50
+		frames      = 20
+		keyInterval = 5
+		ticks       = 90000 / fps
+		pliAt       = 30 * time.Millisecond
+		stopAt      = 300 * time.Millisecond
+	)
+
+	sched, err := corpus.GenerateH264(corpus.H264Options{FPS: fps, Frames: frames, KeyInterval: keyInterval})
+	require.NoError(t, err)
+	want := scheduleFrames(sched.Records, keyFrameStart(corpus.CodecH264))
+
+	tr := newPubTrack(t, h264Capability, corpus.KindVideo, TrackOptions{Schedule: sched, KeyframeFromSchedule: true})
+
+	var (
+		mu      sync.Mutex
+		written = map[uint16][]byte{}
+	)
+	tr.tap = func(p *rtp.Packet) {
+		mu.Lock()
+		written[p.SequenceNumber] = slices.Clone(p.Payload)
+		mu.Unlock()
+	}
+
+	tr.startSending(time.Now())
+	time.Sleep(time.Until(tr.Start().Add(pliAt)))
+	tr.onRTCP(&rtcp.PictureLossIndication{})
+	time.Sleep(time.Until(tr.Start().Add(stopAt)))
+	tr.Stop()
+
+	sent := tr.Sent()
+	i := slices.IndexFunc(sent, func(s SentPacket) bool { return s.PLIKey })
+	require.GreaterOrEqual(t, i, 0, "no key frame sent for the PLI")
+	pliFrame := sent[i].Frame
+	next := (pliFrame/keyInterval + 1) * keyInterval
+	require.Greater(t, sent[len(sent)-1].Frame, pliFrame+1, "frames sent after the PLI's")
+
+	for _, s := range sent {
+		at := s.Frame % frames
+		if s.Frame >= pliFrame {
+			at = (next + s.Frame - pliFrame) % frames
+		}
+
+		assert.Equal(t, uint32(s.Frame*ticks), s.TS, "frame %d: timestamp", s.Frame)
+		assert.Equal(t, want[at].recs[s.Index].Packet().Payload, written[s.Seq],
+			"frame %d packet %d: the schedule's frame %d", s.Frame, s.Index, at)
+	}
+}
+
 // depacketizeH264 returns the NAL units of one frame's packets, in order.
 func depacketizeH264(t *testing.T, packets []*rtp.Packet) [][]byte {
 	t.Helper()
