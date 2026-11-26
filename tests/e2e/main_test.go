@@ -23,6 +23,9 @@
 //	                    to 1; E2E_BROWSER_REQUIRED=1 fails them instead of
 //	                    skipping when they cannot run
 //	E2E_BROWSER_BIN     Chrome binary for them (default: Playwright's Chromium)
+//	E2E_FFMPEG_REQUIRED when set to 1, a missing ffmpeg or ffprobe fails
+//	                    the H.264 scenarios' ffmpeg checks instead of
+//	                    skipping them
 package e2e
 
 import (

@@ -23,13 +23,13 @@ For each test, the harness:
 - starts the recorder, built once per run from `./cmd/bbb-webrtc-recorder`.
   Its generated config turns on Prometheus, trace capture (header mode) and
   the stats file, and gives it its own recordings directory;
-- publishes VP8 and Opus tracks from `internal/corpus` generator schedules
-  in real time. The publisher answers each PLI with a key frame after a set
+- publishes VP8, H.264 and Opus tracks from `internal/corpus` generator
+  schedules, or a real H.264 clip, in real time. The publisher answers each PLI with a key frame after a set
   delay, paced over a set spread, and can withhold packets (loss nothing
   repairs) or pause whole frames.
 
-Each test checks the WebM through `internal/corpus/oracle`, along with the
-recorder's trace, the `recordingStopped` events and the `/metrics` deltas.
+Each test checks the recording through `internal/corpus/oracle`, along with
+the recorder's trace, the `recordingStopped` events and the `/metrics` deltas.
 
 When a row says when a frame was sent, it means when its first packet was
 due, so a late wake of the publisher's send loop does not move it.
@@ -204,6 +204,24 @@ the generated configs. Each child runs in its own process group and is
 killed when its test ends, and also when the test binary dies on a panic or
 a `-timeout`.
 
+### H.264 runs
+
+The H.264 scenarios have `H264` in their names. Their decode checks need
+`ffmpeg` and `ffprobe`, 4.2 or later. An H.264 recording is Matroska,
+`.mkv`, and the oracle reads it as it reads a WebM.
+
+Run them on LiveKit 1.13.7 as well as on a newer one. Only 1.13.5 to 1.13.9
+give the padding a payload, so only there can `TestH264FlowingFollowsFirstMedia`
+catch padding that starts the flowing state.
+
+```sh
+LIVEKIT_SERVER_BIN=/path/to/livekit-server-1.13.7 E2E_FFMPEG_REQUIRED=1 \
+  go test -tags e2e -run 'H264|TestStartResponseNamesTheCodec' -count=3 -v ./tests/e2e/...
+
+# Chromium's OpenH264, in browser mode
+E2E_BROWSER=1 E2E_FFMPEG_REQUIRED=1 go test -tags e2e -run '^TestBrowserH264' -v ./tests/e2e/...
+```
+
 ### Artifacts
 
 Each test writes to `<run>/<Test>-<n>/`. With `E2E_ARTIFACTS` set, `<run>`
@@ -220,6 +238,7 @@ recorder/recordings/<room>/<trackSID>-<session>.{webm,mkv}      # .mkv holds H.2
                           /<trackSID>-<session>.<trackSID>.trace.ndjson.gz
                           /<trackSID>-<session>-stats.json
                           /<trackSID>-<session>.summary.json
+                          /<trackSID>-<session>.archive.mkv              # the ffmpeg checks' remux
 ```
 
 A test run takes a few hundred KB.
