@@ -1,6 +1,7 @@
 package livekit
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -35,6 +36,8 @@ import (
 const (
 	MimeTypeVP8  MimeType = "video/vp8"
 	MimeTypeOpus MimeType = "audio/opus"
+
+	mimeTypeRED = "audio/red"
 )
 
 const (
@@ -173,12 +176,19 @@ type LiveKitWebRTC struct {
 
 	pendingSubscriptions map[string]time.Time
 
+	// The MIME types of the requested publications' primary codecs, set by
+	// Init. Guarded by m.
+	codecs []string
+
 	// constraintMu is held from computing a track's quality until it is
 	// sent via sendVideoQuality. Taken before m; constraints itself is guarded by m.
 	constraintMu sync.Mutex
 	constraints  *constraintBook
 	// sendVideoQuality sends a track's subscribed quality to LiveKit
 	sendVideoQuality func(trackID string, pub *lksdk.RemoteTrackPublication, quality livekit.VideoQuality)
+	// setSubscribed asks LiveKit for a publication's track. Unit tests have
+	// no signal connection, so they replace it.
+	setSubscribed func(pub *lksdk.RemoteTrackPublication) error
 }
 
 func NewLiveKitWebRTC(
@@ -214,6 +224,7 @@ func NewLiveKitWebRTC(
 		pendingSubscriptions:  make(map[string]time.Time),
 		constraints:           newConstraintBook(cfg.PreferredVideoQuality),
 		sendVideoQuality:      sendPubVideoQuality,
+		setSubscribed:         subscribePub,
 	}
 
 	w.initTrackStats()
@@ -527,6 +538,57 @@ func (w *LiveKitWebRTC) HasTrack(trackID string) bool {
 	return slices.Contains(w.trackIds, trackID)
 }
 
+func (w *LiveKitWebRTC) Codecs() []string {
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	return slices.Clone(w.codecs)
+}
+
+// trackCodecs returns the lowercase MIME types a publication lists, its
+// primary codec first, each once. RED is listed as Opus, which LiveKit
+// sends to a subscriber that does not negotiate RED.
+func trackCodecs(info *livekit.TrackInfo) []string {
+	if info == nil {
+		return nil
+	}
+
+	var codecs []string
+	add := func(mimeType string) {
+		mimeType = strings.ToLower(mimeType)
+		if mimeType == mimeTypeRED {
+			mimeType = string(MimeTypeOpus)
+		}
+		if mimeType != "" && !slices.Contains(codecs, mimeType) {
+			codecs = append(codecs, mimeType)
+		}
+	}
+
+	add(info.GetMimeType())
+	for _, c := range info.GetCodecs() {
+		add(c.GetMimeType())
+	}
+
+	return codecs
+}
+
+// recordingCodecs returns the format and the codecs the start response
+// names. The format must hold every codec the publications list that the
+// recorder writes, since LiveKit may send a backup. The response names each
+// one's primary.
+func recordingCodecs(infos []*livekit.TrackInfo) (recorder.Format, []string) {
+	var listed, primaries []string
+	for _, info := range infos {
+		codecs := trackCodecs(info)
+		listed = append(listed, codecs...)
+		if len(codecs) > 0 {
+			primaries = append(primaries, codecs[0])
+		}
+	}
+
+	return recorder.FormatFor(listed), primaries
+}
+
 // ApplyConstraint caps the video quality of the capture tracks whose
 // source c lists, including tracks subscribed later. Idempotent per
 // reason: an active reason must be lifted before it can be changed. It
@@ -709,6 +771,7 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 	subscribedTrackPubs = make(map[string]*lksdk.RemoteTrackPublication)
 	remoteParticipants := make(map[string]*lksdk.RemoteParticipant)
 	pendingSubscriptions := make(map[string]time.Time)
+	var toSubscribe []*lksdk.RemoteTrackPublication
 
 	for _, remoteParticipant := range w.room.GetRemoteParticipants() {
 		for _, remoteTrackPublication := range remoteParticipant.TrackPublications() {
@@ -729,12 +792,7 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 					w.participantIDs[trackSID] = remoteParticipant.Identity()
 					remoteParticipants[remoteParticipant.Identity()] = remoteParticipant
 					pendingSubscriptions[trackSID] = time.Now()
-
-					if err := w.subscribe(remoteTrackPub); err != nil {
-						log.WithField("session", w.ctx.Value("session")).
-							Errorf("Failed to subscribe to track %s: %v", trackSID, err)
-						return nil, err
-					}
+					toSubscribe = append(toSubscribe, remoteTrackPub)
 				}
 			}
 		}
@@ -746,9 +804,36 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 		return nil, fmt.Errorf("no tracks available")
 	}
 
+	// lksdk lists participants and publications from maps. The request's
+	// order is the one the start response's codecs follow.
+	slices.SortStableFunc(toSubscribe, func(a, b *lksdk.RemoteTrackPublication) int {
+		return cmp.Compare(slices.Index(trackIds, a.SID()), slices.Index(trackIds, b.SID()))
+	})
+
+	// Before subscribing: the start response reports the file name, and a
+	// track's first packets can open the file.
+	infos := make([]*livekit.TrackInfo, 0, len(toSubscribe))
+	for _, pub := range toSubscribe {
+		infos = append(infos, pub.TrackInfo())
+	}
+
+	format, codecs := recordingCodecs(infos)
+	if err := w.rec.SetFormat(format); err != nil {
+		return nil, err
+	}
+
+	for _, pub := range toSubscribe {
+		if err := w.subscribe(pub); err != nil {
+			log.WithField("session", w.ctx.Value("session")).
+				Errorf("Failed to subscribe to track %s: %v", pub.SID(), err)
+			return nil, err
+		}
+	}
+
 	w.m.Lock()
 	maps.Copy(w.remoteTrackPubs, subscribedTrackPubs)
 	w.pendingSubscriptions = pendingSubscriptions
+	w.codecs = codecs
 	w.m.Unlock()
 
 	return subscribedTrackPubs, nil
@@ -770,10 +855,14 @@ func (w *LiveKitWebRTC) subscribe(track lksdk.TrackPublication) error {
 		// Before subscribing, or the first sender reports go unread.
 		pub.OnRTCP(w.onRTCP)
 
-		return pub.SetSubscribed(true)
+		return w.setSubscribed(pub)
 	}
 
 	return fmt.Errorf("unsupported track publication type: %T", track)
+}
+
+func subscribePub(pub *lksdk.RemoteTrackPublication) error {
+	return pub.SetSubscribed(true)
 }
 
 func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, recvTs time.Time) bool {

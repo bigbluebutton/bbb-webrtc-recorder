@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +41,7 @@ type WebRTC struct {
 	videoTrackSSRCs     []uint32
 	pliStats            map[uint32]PLITracker
 	sdpOffer            webrtc.SessionDescription
+	codecs              []string
 	m                   sync.Mutex
 }
 
@@ -529,8 +531,54 @@ func (w *WebRTC) Init() (webrtc.SessionDescription, error) {
 	// in a production application you should exchange ICE Candidates via OnICECandidate
 	<-gatherComplete
 
+	w.m.Lock()
+	w.codecs = answeredCodecs(answer)
+	w.m.Unlock()
+
 	// Output the answer in base64
 	return *peerConnection.LocalDescription(), nil
+}
+
+// Codecs returns the lowercase MIME types of the codecs Init answered. The
+// recorder learns its tracks only from their first packets, which come later.
+func (w *WebRTC) Codecs() []string {
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	return slices.Clone(w.codecs)
+}
+
+// answeredCodecs returns the codecs the recorder writes that answer accepts,
+// each once, in the order of its media sections. pion rejects a section it
+// has no codec for with port 0.
+func answeredCodecs(answer webrtc.SessionDescription) []string {
+	parsed, err := answer.Unmarshal()
+	if err != nil {
+		return nil
+	}
+
+	var codecs []string
+	for _, md := range parsed.MediaDescriptions {
+		if md.MediaName.Port.Value == 0 {
+			continue
+		}
+
+		for _, a := range md.Attributes {
+			if a.Key != "rtpmap" {
+				continue
+			}
+
+			// "<payload type> <encoding name>/<clock rate>[/<channels>]"
+			_, encoding, _ := strings.Cut(a.Value, " ")
+			name, _, _ := strings.Cut(encoding, "/")
+			mimeType := strings.ToLower(md.MediaName.Media + "/" + name)
+			if _, known := recorder.CodecFor(mimeType); known && !slices.Contains(codecs, mimeType) {
+				codecs = append(codecs, mimeType)
+			}
+		}
+	}
+
+	return codecs
 }
 
 // The PLI ticker, the recorder and OnTrack reach the SSRCs and pliStats from

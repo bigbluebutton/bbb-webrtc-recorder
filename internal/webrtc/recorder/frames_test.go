@@ -596,7 +596,8 @@ func TestSetFormatPicksTheExtension(t *testing.T) {
 	assert.Equal(t, os.DevNull, devNull.GetFilePath())
 }
 
-// GetFilePath can run on another goroutine while SetFormat changes the path.
+// The server reads the path for getRecordings while the LiveKit adapter's
+// Init sets the format.
 func TestGetFilePathWhileSetFormatRuns(t *testing.T) {
 	dir := t.TempDir()
 	rec := NewWebmRecorder(filepath.Join(dir, "x.webm"), 0o600, 256, 32, true, false)
