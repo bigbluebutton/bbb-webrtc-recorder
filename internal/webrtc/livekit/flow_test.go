@@ -8,9 +8,9 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +44,7 @@ func TestFirstFlowingFollowsArrival(t *testing.T) {
 						firstFlowing = time.Now()
 					}
 				}
-				b := newTrackBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval, func() {})
+				b := newTrackBuffer(recorder.CodecVP8, videoJitterLatency, lossKeyframeInterval, func() {})
 				defer b.close()
 				push := w.packetPusher("video", b)
 

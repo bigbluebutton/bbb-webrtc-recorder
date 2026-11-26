@@ -28,7 +28,6 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	log "github.com/sirupsen/logrus"
 )
@@ -961,13 +960,8 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		Infof("Subscribed to track %s source=%s kind=%s mime=%s clockRate=%d participant=%s ssrc=%d",
 			trackID, pub.Source(), trackKind, mimeType, clockRate, rp.Identity(), track.SSRC())
 
-	var depacketizer rtp.Depacketizer
-	switch mimeType {
-	case MimeTypeVP8:
-		depacketizer = &codecs.VP8Packet{}
-	case MimeTypeOpus:
-		depacketizer = &codecs.OpusPacket{}
-	default:
+	codec, ok := recorder.CodecFor(string(mimeType))
+	if !ok {
 		log.WithField("session", w.ctx.Value("session")).
 			Errorf("Unsupported codec: %s", mimeType)
 		w.connStateCallback(utils.ConnectionStateFailed)
@@ -997,7 +991,7 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		ssrcForHandler = uint32(track.SSRC())
 	}
 
-	buffer := w.addJitterBuffer(trackID, depacketizer, jitterLatencyFor(trackKind), ssrcForHandler, isVideo && track != nil)
+	buffer := w.addJitterBuffer(trackID, codec, jitterLatencyFor(trackKind), ssrcForHandler, isVideo && track != nil)
 
 	info := trackInfo{
 		id:      trackID,
@@ -1431,12 +1425,12 @@ func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*
 // loop's recover, so the handler only queues the keyframe request.
 func (w *LiveKitWebRTC) addJitterBuffer(
 	trackID string,
-	depacketizer rtp.Depacketizer,
+	codec *recorder.Codec,
 	latency time.Duration,
 	ssrc uint32,
 	requestKeyframes bool,
 ) *trackBuffer {
-	buffer := newTrackBuffer(depacketizer, latency, lossKeyframeInterval, func() {
+	buffer := newTrackBuffer(codec, latency, lossKeyframeInterval, func() {
 		if requestKeyframes {
 			w.queueKeyframeRequest(ssrc, "packet_drop")
 		}

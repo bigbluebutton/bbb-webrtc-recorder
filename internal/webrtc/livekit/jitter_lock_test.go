@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -55,7 +55,7 @@ func TestJitterLossHandlerDoesNotTakeAdapterLock(t *testing.T) {
 	lk, _ := setupMockLK()
 	defer lk.Close()
 
-	buffer := lk.addJitterBuffer("test-track", &codecs.VP8Packet{}, jitterLatency, 1234, true)
+	buffer := lk.addJitterBuffer("test-track", recorder.CodecVP8, jitterLatency, 1234, true)
 	defer buffer.close()
 
 	lk.m.Lock()
@@ -86,7 +86,7 @@ func TestGetStatsReadsJitterStatsWithoutAdapterLock(t *testing.T) {
 	// A loss handler that blocks keeps the buffer's lock held.
 	inHandler := make(chan struct{})
 	release := make(chan struct{})
-	buffer := newTrackBuffer(&codecs.VP8Packet{}, jitterLatency, 0, func() {
+	buffer := newTrackBuffer(recorder.CodecVP8, jitterLatency, 0, func() {
 		close(inHandler)
 		<-release
 	})

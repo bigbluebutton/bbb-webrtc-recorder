@@ -47,6 +47,8 @@ type trackBuffer struct {
 	lossInterval time.Duration
 	onLoss       func()
 
+	keyFrameStart func(*rtp.Packet) bool
+
 	// Only the pushing goroutine uses these.
 	keyframe    uint16 // the newest key frame's first packet
 	hasKeyframe bool
@@ -64,14 +66,14 @@ type trackBuffer struct {
 // buffer gives up on packets, or earlier, once a sequence gap outlives both
 // gapKeyframeDelay and its first NACK's round trip, and again while no key
 // frame follows that gap.
-func newTrackBuffer(depacketizer rtp.Depacketizer, latency, lossInterval time.Duration, onLoss func()) *trackBuffer {
-	b := &trackBuffer{latency: latency, lossInterval: lossInterval, onLoss: onLoss}
+func newTrackBuffer(codec *recorder.Codec, latency, lossInterval time.Duration, onLoss func()) *trackBuffer {
+	b := &trackBuffer{keyFrameStart: codec.KeyFrameStart, latency: latency, lossInterval: lossInterval, onLoss: onLoss}
 	if gapKeyframeDelay < latency {
 		b.gaps = &seqGaps{}
 	}
 
 	b.jb = jitter.NewBuffer(
-		paddingDepacketizer{depacketizer},
+		paddingDepacketizer{codec.NewDepacketizer()},
 		latency,
 		b.enqueue,
 		jitter.WithPacketLossHandler(func(_, _ uint64) {
@@ -105,7 +107,7 @@ func (b *trackBuffer) pushExt(pkt *rtp.Packet, now time.Time) []jitter.ExtPacket
 
 			// The first packet: a paced key frame can still be arriving when
 			// a request would be due again.
-			if recorder.IsVP8KeyFrame(pkt) && (!b.hasKeyframe || seqNewer(pkt.SequenceNumber, b.keyframe)) {
+			if b.keyFrameStart(pkt) && (!b.hasKeyframe || seqNewer(pkt.SequenceNumber, b.keyframe)) {
 				b.keyframe, b.hasKeyframe = pkt.SequenceNumber, true
 			}
 		}

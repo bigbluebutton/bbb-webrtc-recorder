@@ -9,8 +9,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -59,15 +59,15 @@ func pushAll(b *trackBuffer, packets ...*rtp.Packet) []*rtp.Packet {
 	return ready
 }
 
-func newCountingBuffer(depacketizer rtp.Depacketizer, latency, lossInterval time.Duration) (*trackBuffer, *atomic.Int32) {
+func newCountingBuffer(codec *recorder.Codec, latency, lossInterval time.Duration) (*trackBuffer, *atomic.Int32) {
 	losses := &atomic.Int32{}
 
-	return newTrackBuffer(depacketizer, latency, lossInterval, func() { losses.Add(1) }), losses
+	return newTrackBuffer(codec, latency, lossInterval, func() { losses.Add(1) }), losses
 }
 
 func TestTrackBufferPaddingDoesNotHoldFrames(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, losses := newCountingBuffer(&codecs.VP8Packet{}, testLatency, 0)
+		b, losses := newCountingBuffer(recorder.CodecVP8, testLatency, 0)
 		defer b.close()
 
 		assert.Empty(t, b.push(vp8Packet(1, 3000, true, false)))
@@ -87,7 +87,7 @@ func TestTrackBufferPaddingDoesNotHoldFrames(t *testing.T) {
 
 func TestTrackBufferReleasesAfterLatencyInOrder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, losses := newCountingBuffer(&codecs.OpusPacket{}, testLatency, 0)
+		b, losses := newCountingBuffer(recorder.CodecOpus, testLatency, 0)
 		defer b.close()
 
 		assert.Equal(t, []uint16{1}, seqNums(b.push(opusPacket(1))))
@@ -114,7 +114,7 @@ func TestTrackBufferReleasesAfterLatencyInOrder(t *testing.T) {
 // A publisher's pacer spreads a key frame over hundreds of ms.
 func TestTrackBufferPacedKeyframe(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, losses := newCountingBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval)
+		b, losses := newCountingBuffer(recorder.CodecVP8, videoJitterLatency, lossKeyframeInterval)
 		defer b.close()
 
 		var ready []*rtp.Packet
@@ -177,7 +177,7 @@ func TestTrackBufferLossKeyframeInterval(t *testing.T) {
 
 func TestTrackBufferVideoRetransmitInsideWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, losses := newCountingBuffer(&codecs.VP8Packet{}, testLatency, 0)
+		b, losses := newCountingBuffer(recorder.CodecVP8, testLatency, 0)
 		defer b.close()
 
 		assert.Equal(t, []uint16{1, 2}, seqNums(pushAll(b,
@@ -196,7 +196,7 @@ func TestTrackBufferVideoRetransmitInsideWindow(t *testing.T) {
 
 func TestTrackBufferVideoRetransmitOutsideWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, losses := newCountingBuffer(&codecs.VP8Packet{}, videoJitterLatency, time.Hour)
+		b, losses := newCountingBuffer(recorder.CodecVP8, videoJitterLatency, time.Hour)
 		defer b.close()
 
 		assert.Equal(t, []uint16{1, 2}, seqNums(pushAll(b,
@@ -219,7 +219,7 @@ func TestTrackBufferVideoRetransmitOutsideWindow(t *testing.T) {
 
 func TestTrackBufferRetransmitIntoRecycledEntry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, losses := newCountingBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval)
+		b, losses := newCountingBuffer(recorder.CodecVP8, videoJitterLatency, lossKeyframeInterval)
 		defer b.close()
 
 		frame := func(seq uint16) *rtp.Packet { return vp8Packet(seq, 3000*uint32(seq), true, true) }
@@ -244,7 +244,7 @@ func TestTrackBufferRetransmitIntoRecycledEntry(t *testing.T) {
 
 func TestTrackBufferDropsDuplicates(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, losses := newCountingBuffer(&codecs.VP8Packet{}, testLatency, 0)
+		b, losses := newCountingBuffer(recorder.CodecVP8, testLatency, 0)
 		defer b.close()
 
 		assert.Equal(t, []uint16{1, 2}, seqNums(pushAll(b,
@@ -269,7 +269,7 @@ func TestTrackBufferDropsDuplicates(t *testing.T) {
 // sequence numbers behind the newest.
 func TestTrackBufferDropsDuplicateOfHeldPacketAtHighRate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, _ := newCountingBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval)
+		b, _ := newCountingBuffer(recorder.CodecVP8, videoJitterLatency, lossKeyframeInterval)
 		defer b.close()
 
 		var ready []*rtp.Packet
@@ -304,7 +304,7 @@ func TestTrackBufferDropsDuplicateOfHeldPacketAtHighRate(t *testing.T) {
 
 func TestTrackBufferMidFrameStart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, losses := newCountingBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval)
+		b, losses := newCountingBuffer(recorder.CodecVP8, videoJitterLatency, lossKeyframeInterval)
 		defer b.close()
 
 		// The tail of a frame whose start was never received, then a key frame.
@@ -331,7 +331,7 @@ func TestTrackBufferCoalescesLossReports(t *testing.T) {
 		{interval: time.Hour, losses: 1},
 	} {
 		synctest.Test(t, func(t *testing.T) {
-			b, losses := newCountingBuffer(&codecs.VP8Packet{}, videoJitterLatency, tc.interval)
+			b, losses := newCountingBuffer(recorder.CodecVP8, videoJitterLatency, tc.interval)
 			defer b.close()
 
 			// Two frame tails, dropped on separate timer passes.
@@ -354,7 +354,7 @@ func TestTrackBufferCloseWithPendingGaps(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		buffers := make([]*trackBuffer, 0, 16)
 		for range 16 {
-			b, _ := newCountingBuffer(&codecs.VP8Packet{}, videoJitterLatency, 0)
+			b, _ := newCountingBuffer(recorder.CodecVP8, videoJitterLatency, 0)
 			// An incomplete frame and a frame behind a gap, both waiting on the timer.
 			pushAll(b, vp8Packet(1, 3000, true, false), vp8Packet(3, 6000, true, true))
 			buffers = append(buffers, b)
@@ -372,7 +372,7 @@ func TestTrackBufferCloseWithPendingGaps(t *testing.T) {
 
 func TestTrackBufferFlush(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b, losses := newCountingBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval)
+		b, losses := newCountingBuffer(recorder.CodecVP8, videoJitterLatency, lossKeyframeInterval)
 		defer b.close()
 
 		assert.Equal(t, []uint16{1, 2}, seqNums(pushAll(b,
@@ -386,7 +386,7 @@ func TestTrackBufferFlush(t *testing.T) {
 		assert.Equal(t, int32(0), losses.Load())
 
 		// Packets the timer released after the last push come out too.
-		a, _ := newCountingBuffer(&codecs.OpusPacket{}, audioJitterLatency, 0)
+		a, _ := newCountingBuffer(recorder.CodecOpus, audioJitterLatency, 0)
 		defer a.close()
 
 		assert.Equal(t, []uint16{1}, seqNums(a.push(opusPacket(1))))
@@ -456,7 +456,7 @@ func replay(b *trackBuffer, start time.Time, arrivals []arrival) []uint16 {
 }
 
 func newVideoBuffer(log *lossLog) *trackBuffer {
-	return newTrackBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval, log.add)
+	return newTrackBuffer(recorder.CodecVP8, videoJitterLatency, lossKeyframeInterval, log.add)
 }
 
 func assertGapRequest(t *testing.T, call, gap time.Time) {

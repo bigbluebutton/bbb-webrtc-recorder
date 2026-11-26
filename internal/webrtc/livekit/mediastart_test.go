@@ -12,7 +12,6 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +19,7 @@ import (
 // A packet the buffer holds behind a loss keeps the time it was pushed.
 func TestTrackBufferReleasesPacketsWithTheirArrival(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		b := newTrackBuffer(&codecs.OpusPacket{}, testLatency, lossKeyframeInterval, func() {})
+		b := newTrackBuffer(recorder.CodecOpus, testLatency, lossKeyframeInterval, func() {})
 		defer b.close()
 
 		t0 := time.Now()

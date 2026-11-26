@@ -16,10 +16,10 @@ import (
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
@@ -867,7 +867,7 @@ func TestJitterLossHandlerWithCaptureDoesNotTakeAdapterLock(t *testing.T) {
 	require.NoError(t, err)
 	lk.traceCaptures = map[string]*trackCapture{"test-track": c}
 
-	buffer := lk.addJitterBuffer("test-track", &codecs.VP8Packet{}, jitterLatency, 1234, true)
+	buffer := lk.addJitterBuffer("test-track", recorder.CodecVP8, jitterLatency, 1234, true)
 	defer buffer.close()
 
 	lk.m.Lock()

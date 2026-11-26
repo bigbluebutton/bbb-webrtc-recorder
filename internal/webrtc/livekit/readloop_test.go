@@ -18,7 +18,6 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -214,12 +213,12 @@ func newLoopHarness(rec recorder.Recorder, trackIDs ...string) *loopHarness {
 // onLoss, if set, sees each keyframe request a video buffer queues.
 func (h *loopHarness) newBuffer(info trackInfo, onLoss func()) *trackBuffer {
 	isVideo := info.kind == TrackKindVideo
-	var depacketizer rtp.Depacketizer = &codecs.OpusPacket{}
-	if info.mime == MimeTypeVP8 {
-		depacketizer = &codecs.VP8Packet{}
+	codec, ok := recorder.CodecFor(string(info.mime))
+	if !ok {
+		codec = recorder.CodecOpus
 	}
 
-	b := newTrackBuffer(depacketizer, jitterLatencyFor(info.kind), lossKeyframeInterval, func() {
+	b := newTrackBuffer(codec, jitterLatencyFor(info.kind), lossKeyframeInterval, func() {
 		if isVideo {
 			if onLoss != nil {
 				onLoss()
