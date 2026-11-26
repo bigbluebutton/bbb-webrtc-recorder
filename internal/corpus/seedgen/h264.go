@@ -170,6 +170,25 @@ func h264Seeds(next func() uint32) []seed {
 		out = append(out, seed{name: "h264-blank-close-midframe", class: "h264", tracks: []*corpus.Trace{t}})
 	}
 
+	// wrap-seq-ts-pic: the sequence number and the RTP timestamp wrap, with
+	// a repaired loss at seq 0. H.264 has no picture ID.
+	{
+		t := must(corpus.GenerateH264(corpus.H264Options{FPS: 30, Frames: 180, KeyInterval: 90, KeySlicePackets: 3, DeltaSlicePackets: 2,
+			SpreadUs: 2000, StartSeq: 65400, StartTS: 1<<32 - 3*90000, SSRC: next()}))
+		r := t.Records
+		var at int64
+		for _, x := range r {
+			if x.Seq == 0 {
+				at = x.AtUs
+			}
+		}
+		t.Records = must(corpus.Apply(r, corpus.Retransmit(0, at+50000), corpus.DropSeqs(0), corpus.EOFAt(endAt(r)+50000)))
+		synth(t, "corpus.GenerateH264{FPS:30,Frames:180,KeyInterval:90,KeySlicePackets:3,DeltaSlicePackets:2,SpreadUs:2000,"+
+			"StartSeq:65400,StartTS:2^32-270000}+Retransmit(0,+50ms)+DropSeqs(0)+EOFAt", nil, "h264-wrap-seq-ts/camera",
+			fmt.Sprintf("As wrap-seq-ts-pic: seq 0 is read at %.3f ms and repaired over RTX 50 ms later. The timestamp wraps at key frame 90, at 3 s.", ms(at)))
+		out = append(out, seed{name: "h264-wrap-seq-ts", class: "wrap", tracks: []*corpus.Trace{t}})
+	}
+
 	return out
 }
 

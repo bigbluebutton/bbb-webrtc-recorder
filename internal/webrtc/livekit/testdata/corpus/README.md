@@ -98,6 +98,7 @@ The class groups the seeds that guard one defect, or a few related ones, named i
 | `h264-c24-blackout-9s-seq3240` | 24 | synthetic | `c24-blackout-9s-seq3240` for H.264 | The jitter buffer's new-stream path with no picture ID: only the track buffer's follows flag shows the writer the gap |
 | `h264-c24-resume-4s` | 24 | synthetic | `c24-resume-4s` for H.264 (`PauseH264`) | Same defect: the frame writer must keep the 4 s step |
 | `h264-c24-start-stall-2500ms` | 24 | synthetic | `c24-start-stall-2500ms` for H.264 | Same defect |
+| `h264-wrap-seq-ts` | wrap | synthetic | `wrap-seq-ts-pic` for H.264 | Same defects at the sequence wrap; the frame writer must take the ticks since the previous frame across the timestamp wrap in 32 bits |
 
 ## Expect v1
 

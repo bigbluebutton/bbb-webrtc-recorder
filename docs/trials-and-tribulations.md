@@ -200,8 +200,8 @@ LiveKit adds cases of its own:
   `internal/webrtc/livekit/testdata/corpus/README.md`. `h264-layer-switch`,
   `h264-simulcast-orphan-sps`, `h264-blank-close`,
   `h264-blank-close-midframe`, `h264-lost-stapa` and `h264-padding-payload`
-  cover the cases above. The `h264-c*` seeds are twins of VP8 seeds, which
-  that README's Source column names.
+  cover the cases above. The `h264-c*` seeds and `h264-wrap-seq-ts` are
+  twins of VP8 seeds, which that README's Source column names.
 - **E2E:** `TestH264UnrepairedLossRequestsKeyframe`, `TestH264ClipDecodes`
   (an x264 clip decoded by ffmpeg) and `TestBrowserH264Camera` in
   `tests/e2e`.
