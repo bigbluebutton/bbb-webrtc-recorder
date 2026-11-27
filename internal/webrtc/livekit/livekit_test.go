@@ -18,7 +18,6 @@ import (
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -58,6 +57,10 @@ func (m *mockRecorder) Close() time.Duration                                    
 func (m *mockRecorder) PushVideoAt(packet *rtp.Packet, at time.Time) {}
 func (m *mockRecorder) PushAudioAt(packet *rtp.Packet, at time.Time) {}
 func (m *mockRecorder) MediaSpan() (types.MediaSpan, bool)           { return types.MediaSpan{}, false }
+
+func (m *mockRecorder) PushVideoSample(recorder.VideoSample) {}
+func (m *mockRecorder) SetVideoCodec(*recorder.Codec) error  { return nil }
+func (m *mockRecorder) SetFormat(recorder.Format) error      { return nil }
 
 func TestProcessPacketStats_SequenceNumberWraparound(t *testing.T) {
 	lk, _ := setupMockLK()
@@ -268,7 +271,7 @@ func (s writerStream) run(t *testing.T) (requests []time.Duration, written int) 
 			keyframeRequestChan: make(chan uint32, 100),
 			requestKeyframeCtx:  context.Background(),
 		}
-		b := newTrackBuffer(&codecs.VP8Packet{}, videoJitterLatency, lossKeyframeInterval, func() {
+		b := newTrackBuffer(recorder.CodecVP8, videoJitterLatency, lossKeyframeInterval, func() {
 			w.queueKeyframeRequest(ssrc, "packet_drop")
 		})
 		defer b.close()

@@ -19,6 +19,11 @@ type LiveKitWebRTCInterface interface {
 	RequestKeyframe()
 	RequestKeyframeForSSRC(ssrc uint32)
 	HasTrack(trackID string) bool
+	// Codecs returns the lowercase MIME type of each requested publication's
+	// primary codec, RED as Opus, in trackIds order. It skips a track missing
+	// at start or listing no codec. It keeps a codec the recorder cannot
+	// write: a track LiveKit sends in that codec fails the session.
+	Codecs() []string
 	ApplyConstraint(c types.CaptureConstraint) bool
 	LiftConstraint(reason string) bool
 	StopConstraints()

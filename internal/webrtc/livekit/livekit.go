@@ -1,6 +1,7 @@
 package livekit
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -28,7 +29,6 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	log "github.com/sirupsen/logrus"
 )
@@ -36,6 +36,8 @@ import (
 const (
 	MimeTypeVP8  MimeType = "video/vp8"
 	MimeTypeOpus MimeType = "audio/opus"
+
+	mimeTypeRED = "audio/red"
 )
 
 const (
@@ -174,12 +176,20 @@ type LiveKitWebRTC struct {
 
 	pendingSubscriptions map[string]time.Time
 
+	// The MIME types of the requested publications' primary codecs, set by
+	// Init, and the codec each track was first subscribed with. Guarded by m.
+	codecs      []string
+	trackCodecs map[string]*recorder.Codec
+
 	// constraintMu is held from computing a track's quality until it is
 	// sent via sendVideoQuality. Taken before m; constraints itself is guarded by m.
 	constraintMu sync.Mutex
 	constraints  *constraintBook
 	// sendVideoQuality sends a track's subscribed quality to LiveKit
 	sendVideoQuality func(trackID string, pub *lksdk.RemoteTrackPublication, quality livekit.VideoQuality)
+	// setSubscribed asks LiveKit for a publication's track. Unit tests have
+	// no signal connection, so they replace it.
+	setSubscribed func(pub *lksdk.RemoteTrackPublication) error
 }
 
 func NewLiveKitWebRTC(
@@ -215,6 +225,7 @@ func NewLiveKitWebRTC(
 		pendingSubscriptions:  make(map[string]time.Time),
 		constraints:           newConstraintBook(cfg.PreferredVideoQuality),
 		sendVideoQuality:      sendPubVideoQuality,
+		setSubscribed:         subscribePub,
 	}
 
 	w.initTrackStats()
@@ -231,6 +242,18 @@ func (w *LiveKitWebRTC) SetConnectionStateCallback(callback func(state utils.Con
 	defer w.m.Unlock()
 
 	w.connStateCallback = callback
+}
+
+// notifyConnState calls the connection state callback, which a stopping
+// session replaces from its own goroutine.
+func (w *LiveKitWebRTC) notifyConnState(state utils.ConnectionState) {
+	w.m.Lock()
+	callback := w.connStateCallback
+	w.m.Unlock()
+
+	if callback != nil {
+		callback(state)
+	}
 }
 
 func (w *LiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
@@ -528,6 +551,57 @@ func (w *LiveKitWebRTC) HasTrack(trackID string) bool {
 	return slices.Contains(w.trackIds, trackID)
 }
 
+func (w *LiveKitWebRTC) Codecs() []string {
+	w.m.Lock()
+	defer w.m.Unlock()
+
+	return slices.Clone(w.codecs)
+}
+
+// trackCodecs returns the lowercase MIME types a publication lists, its
+// primary codec first, each once. RED is listed as Opus, which LiveKit
+// sends to a subscriber that does not negotiate RED.
+func trackCodecs(info *livekit.TrackInfo) []string {
+	if info == nil {
+		return nil
+	}
+
+	var codecs []string
+	add := func(mimeType string) {
+		mimeType = strings.ToLower(mimeType)
+		if mimeType == mimeTypeRED {
+			mimeType = string(MimeTypeOpus)
+		}
+		if mimeType != "" && !slices.Contains(codecs, mimeType) {
+			codecs = append(codecs, mimeType)
+		}
+	}
+
+	add(info.GetMimeType())
+	for _, c := range info.GetCodecs() {
+		add(c.GetMimeType())
+	}
+
+	return codecs
+}
+
+// recordingCodecs returns the format and the codecs the start response
+// names. The format must hold every codec the publications list that the
+// recorder writes, since LiveKit may send a backup. The response names each
+// one's primary.
+func recordingCodecs(infos []*livekit.TrackInfo) (recorder.Format, []string) {
+	var listed, primaries []string
+	for _, info := range infos {
+		codecs := trackCodecs(info)
+		listed = append(listed, codecs...)
+		if len(codecs) > 0 {
+			primaries = append(primaries, codecs[0])
+		}
+	}
+
+	return recorder.FormatFor(listed), primaries
+}
+
 // ApplyConstraint caps the video quality of the capture tracks whose
 // source c lists, including tracks subscribed later. Idempotent per
 // reason: an active reason must be lifted before it can be changed. It
@@ -710,6 +784,7 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 	subscribedTrackPubs = make(map[string]*lksdk.RemoteTrackPublication)
 	remoteParticipants := make(map[string]*lksdk.RemoteParticipant)
 	pendingSubscriptions := make(map[string]time.Time)
+	var toSubscribe []*lksdk.RemoteTrackPublication
 
 	for _, remoteParticipant := range w.room.GetRemoteParticipants() {
 		for _, remoteTrackPublication := range remoteParticipant.TrackPublications() {
@@ -730,12 +805,7 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 					w.participantIDs[trackSID] = remoteParticipant.Identity()
 					remoteParticipants[remoteParticipant.Identity()] = remoteParticipant
 					pendingSubscriptions[trackSID] = time.Now()
-
-					if err := w.subscribe(remoteTrackPub); err != nil {
-						log.WithField("session", w.ctx.Value("session")).
-							Errorf("Failed to subscribe to track %s: %v", trackSID, err)
-						return nil, err
-					}
+					toSubscribe = append(toSubscribe, remoteTrackPub)
 				}
 			}
 		}
@@ -747,9 +817,36 @@ func (w *LiveKitWebRTC) subscribeToTracks(trackIds []string) (subscribedTrackPub
 		return nil, fmt.Errorf("no tracks available")
 	}
 
+	// lksdk lists participants and publications from maps. The request's
+	// order is the one the start response's codecs follow.
+	slices.SortStableFunc(toSubscribe, func(a, b *lksdk.RemoteTrackPublication) int {
+		return cmp.Compare(slices.Index(trackIds, a.SID()), slices.Index(trackIds, b.SID()))
+	})
+
+	// Before subscribing: the start response reports the file name, and a
+	// subscription can set the codec.
+	infos := make([]*livekit.TrackInfo, 0, len(toSubscribe))
+	for _, pub := range toSubscribe {
+		infos = append(infos, pub.TrackInfo())
+	}
+
+	format, codecs := recordingCodecs(infos)
+	if err := w.rec.SetFormat(format); err != nil {
+		return nil, err
+	}
+
+	for _, pub := range toSubscribe {
+		if err := w.subscribe(pub); err != nil {
+			log.WithField("session", w.ctx.Value("session")).
+				Errorf("Failed to subscribe to track %s: %v", pub.SID(), err)
+			return nil, err
+		}
+	}
+
 	w.m.Lock()
 	maps.Copy(w.remoteTrackPubs, subscribedTrackPubs)
 	w.pendingSubscriptions = pendingSubscriptions
+	w.codecs = codecs
 	w.m.Unlock()
 
 	return subscribedTrackPubs, nil
@@ -771,10 +868,14 @@ func (w *LiveKitWebRTC) subscribe(track lksdk.TrackPublication) error {
 		// Before subscribing, or the first sender reports go unread.
 		pub.OnRTCP(w.onRTCP)
 
-		return pub.SetSubscribed(true)
+		return w.setSubscribed(pub)
 	}
 
 	return fmt.Errorf("unsupported track publication type: %T", track)
+}
+
+func subscribePub(pub *lksdk.RemoteTrackPublication) error {
+	return pub.SetSubscribed(true)
 }
 
 func (w *LiveKitWebRTC) updateFlowState(trackID string, seqNum uint16, recvTs time.Time) bool {
@@ -961,17 +1062,16 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		Infof("Subscribed to track %s source=%s kind=%s mime=%s clockRate=%d participant=%s ssrc=%d",
 			trackID, pub.Source(), trackKind, mimeType, clockRate, rp.Identity(), track.SSRC())
 
-	var depacketizer rtp.Depacketizer
-	switch mimeType {
-	case MimeTypeVP8:
-		depacketizer = &codecs.VP8Packet{}
-	case MimeTypeOpus:
-		depacketizer = &codecs.OpusPacket{}
-	default:
+	codec, ok := recorder.CodecFor(string(mimeType))
+	if !ok {
 		log.WithField("session", w.ctx.Value("session")).
 			Errorf("Unsupported codec: %s", mimeType)
-		w.connStateCallback(utils.ConnectionStateFailed)
+		w.notifyConnState(utils.ConnectionStateFailed)
 
+		return
+	}
+
+	if !w.acceptCodec(trackID, trackKind, codec) {
 		return
 	}
 
@@ -997,12 +1097,13 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 		ssrcForHandler = uint32(track.SSRC())
 	}
 
-	buffer := w.addJitterBuffer(trackID, depacketizer, jitterLatencyFor(trackKind), ssrcForHandler, isVideo && track != nil)
+	buffer := w.addJitterBuffer(trackID, codec, jitterLatencyFor(trackKind), ssrcForHandler, isVideo && track != nil)
 
 	info := trackInfo{
 		id:      trackID,
 		kind:    trackKind,
 		mime:    mimeType,
+		codec:   codec,
 		source:  pub.Source().String(),
 		ssrc:    ssrcForHandler,
 		pubMime: pub.MimeType(),
@@ -1012,6 +1113,47 @@ func (w *LiveKitWebRTC) onTrackSubscribed(
 	appstats.OnTrackRecordingStarted(string(trackKind), string(mimeType), pub.Source().String())
 
 	w.startReader(track, info, buffer)
+}
+
+// acceptCodec reports whether the packets of trackID, subscribed with codec,
+// may go to the recorder, and sets a video codec there. A codec regression
+// subscribes a track again with another codec, which is refused. The refusal
+// reports no connection state: EOF on the first reader already ends the
+// session, and the requester retries with a new file. A codec the
+// recording's format cannot hold fails the connection.
+func (w *LiveKitWebRTC) acceptCodec(trackID string, kind TrackKind, codec *recorder.Codec) bool {
+	logger := log.WithField("session", w.ctx.Value("session")).WithField("trackID", trackID)
+
+	w.m.Lock()
+	if w.trackCodecs == nil {
+		w.trackCodecs = map[string]*recorder.Codec{}
+	}
+	first, seen := w.trackCodecs[trackID]
+	if !seen {
+		w.trackCodecs[trackID] = codec
+	}
+	w.m.Unlock()
+
+	if seen && first != codec {
+		logger.Warnf("Not recording track %s subscribed again with %s: it started with %s",
+			trackID, codec.MimeType, first.MimeType)
+
+		return false
+	}
+
+	if kind != TrackKindVideo {
+		return true
+	}
+
+	// With m released: the recorder takes its own lock first.
+	if err := w.rec.SetVideoCodec(codec); err != nil {
+		logger.Errorf("Cannot record track %s: %v", trackID, err)
+		w.notifyConnState(utils.ConnectionStateFailed)
+
+		return false
+	}
+
+	return true
 }
 
 // waitForReaders waits up to readersCloseTimeout for the track readers to end.
@@ -1282,6 +1424,7 @@ type trackInfo struct {
 	id     string
 	kind   TrackKind
 	mime   MimeType // the negotiated codec's, lowercased
+	codec  *recorder.Codec
 	source string
 	ssrc   uint32
 	// The publication's MIME type as LiveKit signals it ("video/VP8"), which
@@ -1314,9 +1457,9 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 				WithField("stack", string(debug.Stack())).
 				Error("Panic detected in LiveKit packet processing, emit failed state")
 
-			w.connStateCallback(utils.ConnectionStateFailed)
+			w.notifyConnState(utils.ConnectionStateFailed)
 		} else {
-			w.connStateCallback(utils.ConnectionStateClosed)
+			w.notifyConnState(utils.ConnectionStateClosed)
 		}
 	}()
 
@@ -1328,18 +1471,27 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 	rtpWriter, rtpWriterExists := w.rtpWriters[info.id]
 	w.m.Unlock()
 
-	writePackets := func(packets []jitter.ExtPacket) {
-		for _, p := range packets {
-			switch info.kind {
-			case TrackKindVideo:
-				w.rec.PushVideoAt(p.Packet, p.ReceivedAt)
-			case TrackKindAudio:
-				w.rec.PushAudioAt(p.Packet, p.ReceivedAt)
+	samples := info.kind == TrackKindVideo && info.codec != nil && info.codec.TakesSamples()
+	writePackets := func(released []bufferSample) {
+		for _, s := range released {
+			if samples {
+				w.rec.PushVideoSample(videoSampleOf(s))
+
+				continue
+			}
+
+			for _, p := range s.packets {
+				switch info.kind {
+				case TrackKindVideo:
+					w.rec.PushVideoAt(p.Packet, p.ReceivedAt)
+				case TrackKindAudio:
+					w.rec.PushAudioAt(p.Packet, p.ReceivedAt)
+				}
 			}
 		}
 
 		w.queueMediaStart()
-		w.processPacketStats(info.id, packetsOf(packets))
+		w.processPacketStats(info.id, packetsOf(packetsIn(released)))
 	}
 
 	push := w.packetPusher(info.id, buffer)
@@ -1362,7 +1514,7 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 						Infof("%s track=%s stopped", info.pubMime, info.id)
 
 					// No later packet hands out what the jitter buffer holds.
-					if tail := buffer.flushExt(); len(tail) > 0 {
+					if tail := buffer.flushSamples(); len(tail) > 0 {
 						writePackets(tail)
 					}
 				} else {
@@ -1407,11 +1559,11 @@ func (w *LiveKitWebRTC) readTrack(src trackSource, info trackInfo, buffer *track
 // A microphone's media clock also needs the arrival, so it moves the
 // timestamps here, after the trace and the RTP dump took the sender's. The
 // recorder gets each packet with this arrival, to time the media.
-func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*rtp.Packet) []jitter.ExtPacket {
+func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*rtp.Packet) []bufferSample {
 	var arrived seqWindow
 	clock := w.mediaClock(trackID)
 
-	return func(packet *rtp.Packet) []jitter.ExtPacket {
+	return func(packet *rtp.Packet) []bufferSample {
 		now := time.Now()
 		if !packet.Padding && len(packet.Payload) > 0 && !arrived.duplicate(packet.SequenceNumber) {
 			w.updateFlowState(trackID, packet.SequenceNumber, now)
@@ -1421,8 +1573,17 @@ func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*
 			packet.Timestamp = clock.Timestamp(packet.Timestamp, packet.SequenceNumber, now)
 		}
 
-		return buffer.pushExt(packet, now)
+		return buffer.pushSamples(packet, now)
 	}
+}
+
+func videoSampleOf(s bufferSample) recorder.VideoSample {
+	v := recorder.VideoSample{Packets: make([]recorder.ArrivedPacket, 0, len(s.packets)), Follows: s.follows}
+	for _, p := range s.packets {
+		v.Packets = append(v.Packets, recorder.ArrivedPacket{Packet: p.Packet, At: p.ReceivedAt})
+	}
+
+	return v
 }
 
 // addJitterBuffer creates and registers the jitter buffer of trackID. m and
@@ -1431,12 +1592,12 @@ func (w *LiveKitWebRTC) packetPusher(trackID string, buffer *trackBuffer) func(*
 // loop's recover, so the handler only queues the keyframe request.
 func (w *LiveKitWebRTC) addJitterBuffer(
 	trackID string,
-	depacketizer rtp.Depacketizer,
+	codec *recorder.Codec,
 	latency time.Duration,
 	ssrc uint32,
 	requestKeyframes bool,
 ) *trackBuffer {
-	buffer := newTrackBuffer(depacketizer, latency, lossKeyframeInterval, func() {
+	buffer := newTrackBuffer(codec, latency, lossKeyframeInterval, func() {
 		if requestKeyframes {
 			w.queueKeyframeRequest(ssrc, "packet_drop")
 		}
@@ -1572,7 +1733,7 @@ func (w *LiveKitWebRTC) onTrackSubscriptionFailed(
 		return
 	}
 
-	w.connStateCallback(utils.ConnectionStateFailed)
+	w.notifyConnState(utils.ConnectionStateFailed)
 
 	log.WithField("session", w.ctx.Value("session")).
 		WithField("room", w.roomId).
@@ -1645,15 +1806,7 @@ func (w *LiveKitWebRTC) onDisconnected(reason lksdk.DisconnectionReason) {
 		Infof("Disconnected from LiveKit room reason=%v", reason)
 
 	state := utils.NormalizeLiveKitDisconnectReason(reason)
-
-	// Lock the mutex before accessing the callback as it's accessed from multiple goroutines
-	w.m.Lock()
-	callback := w.connStateCallback
-	w.m.Unlock()
-
-	if callback != nil {
-		callback(state)
-	}
+	w.notifyConnState(state)
 
 	// If this is a terminal state, also notify via flow callback, after the
 	// transitions already queued.

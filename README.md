@@ -32,7 +32,7 @@ recorder:
   fileMode: 0700
   # Whether to write to /dev/null instead of a file (for testing)
   writeToDevNull: false
-  # Whether an IVF copy of WebM recordings should be generated
+  # Whether an IVF copy of VP8 recordings should be generated
   writeIVFCopy: false
   # Write a stats file for each recording
   writeStatsFile: false
@@ -124,6 +124,18 @@ systemctl enable --now redis
 systemctl status redis
 ```
 
+### Codecs and file formats
+
+| Track | Codec | Adapters | File format |
+|---|---|---|---|
+| Audio | Opus | mediasoup, LiveKit | WebM (`.webm`) |
+| Video | VP8 | mediasoup, LiveKit | WebM (`.webm`) |
+
+The recorder picks the file format, and so the extension, when the session starts. A LiveKit session is Matroska
+when a requested publication lists a codec that the recorder writes and WebM cannot hold, as primary or backup,
+and WebM otherwise (see `startRecordingResponse` below). WebM holds both codecs above. A microphone published with
+RED, as BBB's client does, is recorded as Opus in WebM: LiveKit sends the recorder the Opus inside it.
+
 ### Debugging
 
 Examples of how to print out config values:
@@ -154,7 +166,7 @@ where to look and its known limits.
 {
     id: 'startRecording',
     recordingSessionId: <String>, // requester-defined - error out if collision
-    fileName: <String>, // file name INCLUDING format (.webm)
+    fileName: <String>, // file name WITHOUT extension: the recorder adds .webm or .mkv (a trailing .webm or .mkv is ignored)
     adapter: <String>, // "mediasoup" or "livekit" - defaults to "mediasoup" if not specified
     adapterOptions: {
         // mediasoup-specific options
@@ -182,10 +194,24 @@ where to look and its known limits.
     status: "ok" | "failed",
     error: undefined | <String>,
     sdp: <String | undefined>, // answer
-    fileName: <String | undefined>, // full path to recording
+    fileName: <String | undefined>, // full path to recording, with the extension the recorder picked
+    codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/vp8"]; see below
     metadata: <Object | undefined>, // Opaque metadata from the original startRecording request
 }
 ```
+
+The recorder picks the container when the session starts, before any media flows (see
+[Codecs and file formats](#codecs-and-file-formats)). The `fileName` in the response is final, and its extension,
+not `codecs`, tells the container.
+
+For LiveKit, `codecs` lists each publication's primary codec, in the order of `trackIds`, even one the recorder
+cannot write, such as VP9. A track that LiveKit sends in such a codec fails the session, which stops as `failed`.
+A requested track that the room does not have when the session starts, or whose publication lists no codec, gets
+no entry. The list is then shorter than `trackIds`.
+
+For mediasoup, `codecs` lists the codecs the SDP answer accepts: `video/vp8`, `audio/opus` or both.
+
+A session whose answer accepts no section records nothing. Its response has status `ok` but no `codecs`.
 
 `recordingRtpStatusChanged` (Recorder -> SFU)
 
@@ -274,6 +300,7 @@ See [Media timestamps](#media-timestamps).
         {
             "recordingSessionId": "<String>",
             "fileName": "<String>",
+            "codecs": ["<String>"], // as in startRecordingResponse
             "adapter": "<String>", // "mediasoup" or "livekit"
             "metadata": { ... }, // Opaque metadata from the original startRecording request
             "adapterOptions": {
@@ -295,6 +322,10 @@ See [Media timestamps](#media-timestamps).
     ]
 }
 ```
+
+A session is listed as soon as the recorder takes its `startRecording`. Its `fileName` and `codecs` are final
+once its `startRecordingResponse` is sent. Before that, `codecs` is absent, and a LiveKit session that writes
+Matroska can be listed with a `.webm` name.
 
 #### Media timestamps
 

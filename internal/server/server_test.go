@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -18,9 +19,11 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/interfaces"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/livekit"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/signal"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
 	livekitproto "github.com/livekit/protocol/livekit"
 	"github.com/pion/rtp"
+	pwebrtc "github.com/pion/webrtc/v4"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
@@ -79,6 +82,10 @@ func (r *mockRecorder) MediaSpan() (types.MediaSpan, bool) {
 	return *r.span, true
 }
 
+func (r *mockRecorder) PushVideoSample(recorder.VideoSample) {}
+func (r *mockRecorder) SetVideoCodec(*recorder.Codec) error  { return nil }
+func (r *mockRecorder) SetFormat(recorder.Format) error      { return nil }
+
 var _ recorder.Recorder = (*mockRecorder)(nil)
 
 // Mock LiveKitWebRTC
@@ -94,6 +101,8 @@ type mockLiveKitWebRTC struct {
 	// noChange makes the capture ignore constraints, as one whose source
 	// is not listed does.
 	noChange bool
+
+	codecs []string
 
 	mu         sync.Mutex
 	applied    []types.CaptureConstraint
@@ -205,6 +214,8 @@ func (lk *mockLiveKitWebRTC) stopCalls() []string {
 
 	return append([]string(nil), lk.calls...)
 }
+
+func (lk *mockLiveKitWebRTC) Codecs() []string { return lk.codecs }
 
 var _ interfaces.LiveKitWebRTCInterface = (*mockLiveKitWebRTC)(nil)
 
@@ -884,4 +895,81 @@ func TestStopRecordingStopsConstraintsBeforeStats(t *testing.T) {
 	// closing.
 	assert.Equal(t, []string{"StopConstraints", "Close", "GetStats"}, lk.stopCalls())
 	assert.NoError(t, server.Close())
+}
+
+func TestStartResponseReportsTheFileNameAndCodecs(t *testing.T) {
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+	lk := &mockLiveKitWebRTC{closed: make(chan struct{}), codecs: []string{"video/vp8"}}
+	sess := NewSession("test-codecs", server, (*webrtc.WebRTC)(nil), lk, &mockRecorder{path: "/var/rec/camera.webm"})
+	server.runSession(sess)
+	require.NoError(t, sess.StartRecording(&events.StartRecording{SessionId: "test-codecs", Adapter: "livekit"}, time.Time{}))
+
+	select {
+	case msg := <-ps.publishChan:
+		var response events.StartRecordingResponse
+		require.NoError(t, json.Unmarshal(msg, &response))
+		assert.Equal(t, "ok", response.Status)
+		require.NotNil(t, response.FileName)
+		assert.Equal(t, "/var/rec/camera.webm", *response.FileName)
+		assert.Equal(t, []string{"video/vp8"}, response.Codecs)
+	case <-time.After(time.Second):
+		require.Fail(t, "no startRecordingResponse")
+	}
+
+	info := sess.GetRecordingInfo()
+	require.NotNil(t, info)
+	assert.Equal(t, "/var/rec/camera.webm", info.FileName)
+	assert.Equal(t, []string{"video/vp8"}, info.Codecs)
+
+	require.NoError(t, sess.StopRecording(nil, events.StopReasonNormal, time.Time{}))
+	assert.True(t, within(time.Second, server.shutdownWg.Wait))
+}
+
+// A mediasoup session reports the codecs it answered, before any media
+// reaches the recorder.
+func TestMediasoupStartResponseReportsTheNegotiatedCodecs(t *testing.T) {
+	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+	server := NewServer(&config.Config{}, ps)
+
+	offerer, err := pwebrtc.NewPeerConnection(pwebrtc.Configuration{})
+	require.NoError(t, err)
+	defer func() { _ = offerer.Close() }()
+	for _, c := range []pwebrtc.RTPCodecCapability{
+		{MimeType: pwebrtc.MimeTypeVP8, ClockRate: 90000},
+		{MimeType: pwebrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
+	} {
+		track, err := pwebrtc.NewTrackLocalStaticRTP(c, c.MimeType, "stream")
+		require.NoError(t, err)
+		_, err = offerer.AddTrack(track)
+		require.NoError(t, err)
+	}
+	offer, err := offerer.CreateOffer(nil)
+	require.NoError(t, err)
+	require.NoError(t, offerer.SetLocalDescription(offer))
+
+	ctx := context.WithValue(context.Background(), "session", "test-mediasoup-codecs") //nolint:staticcheck // SA1029: the key webrtc.go reads
+	rec := recorder.NewWebmRecorder(filepath.Join(t.TempDir(), "camera.webm"), 0o600, 256, 32, true, false)
+	sess := NewSession("test-mediasoup-codecs", server, webrtc.NewWebRTC(ctx, config.WebRTC{}, rec), (*livekit.LiveKitWebRTC)(nil), rec)
+	server.runSession(sess)
+	require.NoError(t, sess.StartRecording(&events.StartRecording{
+		SessionId: "test-mediasoup-codecs", Adapter: "mediasoup", SDP: signal.Encode(offer),
+	}, time.Time{}))
+
+	select {
+	case msg := <-ps.publishChan:
+		var response events.StartRecordingResponse
+		require.NoError(t, json.Unmarshal(msg, &response))
+		assert.Equal(t, "ok", response.Status)
+		assert.Equal(t, []string{"video/vp8", "audio/opus"}, response.Codecs)
+	case <-time.After(10 * time.Second):
+		require.Fail(t, "no startRecordingResponse")
+	}
+
+	info := sess.GetRecordingInfo()
+	require.NotNil(t, info)
+	assert.Equal(t, []string{"video/vp8", "audio/opus"}, info.Codecs)
+
+	require.NoError(t, sess.StopRecording(nil, events.StopReasonNormal, time.Time{}))
+	assert.True(t, within(time.Second, server.shutdownWg.Wait))
 }

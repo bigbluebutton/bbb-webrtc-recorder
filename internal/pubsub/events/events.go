@@ -89,7 +89,7 @@ startRecording (SFU -> Recorder)
 		id: 'startRecording',
 		recordingSessionId: <String> // requester-defined - error out if collision.
 		sdp?: <String>, // offer
-		fileName: <String>, // file name INCLUDING format (.webm)
+		fileName: <String>, // file name without extension; a trailing .webm or .mkv is ignored
 		adapter: <String>, // "mediasoup" or "livekit"
 		adapterOptions: <Object>, // adapter-specific configuration
 	}
@@ -165,7 +165,7 @@ func (e *StartRecording) Fail(err error) *StartRecordingResponse {
 	return &r
 }
 
-func (e *StartRecording) Success(sdp, fileName string, metadata map[string]any) *StartRecordingResponse {
+func (e *StartRecording) Success(sdp, fileName string, codecs []string, metadata map[string]any) *StartRecordingResponse {
 	r := StartRecordingResponse{
 		Id:        StartRecordingResponseKey,
 		SessionId: e.SessionId,
@@ -173,6 +173,7 @@ func (e *StartRecording) Success(sdp, fileName string, metadata map[string]any) 
 		Error:     nil,
 		SDP:       pointer.ToString(sdp),
 		FileName:  pointer.ToString(fileName),
+		Codecs:    codecs,
 		Metadata:  metadata,
 	}
 	return &r
@@ -187,7 +188,8 @@ startRecordingResponse (Recorder -> SFU)
 	status: 'ok' | 'failed',
 	error: undefined | <String>,
 	sdp: <String | undefined>, // answer
-	fileName: <String | undefined>, // full path to recording
+	fileName: <String | undefined>, // full path to recording, with the extension the recorder picked
+	codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/vp8"]; see the README
 }
 ```
 */
@@ -199,6 +201,7 @@ type StartRecordingResponse struct {
 	Error     *string        `json:"error,omitempty"`
 	SDP       *string        `json:"sdp,omitempty"`
 	FileName  *string        `json:"fileName,omitempty"`
+	Codecs    []string       `json:"codecs,omitempty"`
 	Adapter   *string        `json:"adapter,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
@@ -441,6 +444,7 @@ type GetRecordings struct {
 type RecordingInfo struct {
 	SessionId      string          `json:"recordingSessionId,omitempty"`
 	FileName       string          `json:"fileName,omitempty"`
+	Codecs         []string        `json:"codecs,omitempty"`
 	Adapter        AdapterType     `json:"adapter,omitempty"`
 	AdapterOptions *AdapterOptions `json:"adapterOptions,omitempty"`
 	Metadata       map[string]any  `json:"metadata,omitempty"`
@@ -467,6 +471,7 @@ getRecordingsResponse (Recorder -> *)
 	        {
 	            "recordingSessionId": "<String>",
 	            "fileName": "<String>",
+	            "codecs": ["<String>"], // as in startRecordingResponse
 	            "adapter": "<String>", // "mediasoup" or "livekit"
 	            "metadata": { ... }, // Opaque metadata from the original startRecording request
 	            "adapterOptions": { ... },

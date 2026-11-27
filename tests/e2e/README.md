@@ -40,6 +40,7 @@ those frames had one.
 | Test | Scenario |
 |---|---|
 | `TestBaselineRecording` | **Baseline.** A camera and a microphone, one session per track, about 10 s on a clean path. It checks the frame counts against what was sent and the PTS (increasing, no duplicates, gaps bounded), that the trace and the metrics agree, and that the recorder asks for no key frames. |
+| `TestStartResponseNamesTheCodec` | **Codec in the start response.** A VP8 camera started under a `.webm` name, and a microphone under none, one session each. `startRecordingResponse` and `getRecordingsResponse` must name the file on disk and list the track's codec. A requester must write that name into the recording's events: the recorder picks its extension. |
 | `TestUnrepairedLossRequestsKeyframe` | **Unrepaired loss.** One packet is withheld from the middle of a tagged camera frame, at 15 and at 5 fps. The trace must show exactly one unrepaired gap, at that packet. The recorder must request a key frame early, from the sequence gap (trace PLI reason `packet_drop`), within a bound that depends on the fps. The WebM must skip the lossy frame and at least one more, and go on from the key frame the publisher sends for the PLI. Every block must still land within 15 ms of when its frame was sent, so the PTS keep the gap where the skipped frames were. `recordingStopped` must repeat `mediaStart`, and its `mediaEnd` must add the file's media and its last frame. |
 | `TestPacedKeyframesNoLoop` | **Paced key frames.** A 3.4 fps camera whose key frames are paced over 664 ms, plus one lost packet. Key-frame requests must stay bounded (no keyframe loop) and frames must keep being written. |
 | `TestFlowingFollowsFirstMedia` | **Flowing at start.** A camera answers the recorder's key-frame request 400 ms late, so LiveKit sends padding ahead of the first frame. The first `flowing` event, on which the SFU stamps the recording's start, must not reach the driver before the recorder reads the first media packet, and the trace must hold padding before that read. Only LiveKit 1.13.5 to 1.13.9 give that padding a payload, so only they fail it on a recorder that takes a payload for media. |
@@ -86,7 +87,8 @@ of the in-process replay corpus
 3. **Record as the SFU does,** one session per track:
    `s.Driver.StartRecording(ctx, room, track.SID)`, then
    `WaitRtpStatus(..., "flowing")`. Record for a fixed time, then `Stop`
-   and `WaitStopped`.
+   and `WaitStopped`. `rec.Path` is the file, with the extension the
+   recorder picked.
 4. **Read what came out.** `ReadOutput(t, rec, trackID)` reads the WebM
    through `internal/corpus/oracle` and summarises the recorder's trace
    (see `Output`). `ScrapeMetrics` and `Delta` give the metrics, and

@@ -62,6 +62,7 @@ type Session struct {
 	mediaHasFlowed        bool
 	mediaStart            time.Time
 	metadata              map[string]any
+	codecs                []string
 }
 
 func NewSession(
@@ -137,6 +138,13 @@ func (s *Session) isDone() bool {
 	}
 }
 
+func (s *Session) setCodecs(codecs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.codecs = codecs
+}
+
 func (s *Session) GetRecordingInfo() *events.RecordingInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -148,6 +156,7 @@ func (s *Session) GetRecordingInfo() *events.RecordingInfo {
 	info := &events.RecordingInfo{
 		SessionId:      s.id,
 		FileName:       s.recorder.GetFilePath(),
+		Codecs:         s.codecs,
 		Adapter:        s.startEvent.Adapter,
 		AdapterOptions: s.startEvent.AdapterOptions,
 		Metadata:       s.metadata,
@@ -244,7 +253,9 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 			return
 		}
 
-		s.server.PublishPubSub(e.Success(signal.Encode(answer), s.recorder.GetFilePath(), s.metadata))
+		codecs := s.webrtc.Codecs()
+		s.setCodecs(codecs)
+		s.server.PublishPubSub(e.Success(signal.Encode(answer), s.recorder.GetFilePath(), codecs, s.metadata))
 		s.startedSuccessfully = true
 
 		return
@@ -278,7 +289,9 @@ func (s *Session) handleStartRecording(c startRecordingCommand) {
 		}
 
 		// For LiveKit, we don't need to return an SDP answer
-		s.server.PublishPubSub(e.Success("", s.recorder.GetFilePath(), s.metadata))
+		codecs := s.livekit.Codecs()
+		s.setCodecs(codecs)
+		s.server.PublishPubSub(e.Success("", s.recorder.GetFilePath(), codecs, s.metadata))
 		s.startedSuccessfully = true
 	}
 }

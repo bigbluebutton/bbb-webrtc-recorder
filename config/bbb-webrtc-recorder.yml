@@ -8,8 +8,8 @@ recorder:
   writeToDevNull: false
   # Write a stats file for each recording
   writeStatsFile: false
-  # Write a copy of the recorded video in IVF format. Used for debugging and
-  # test environments.
+  # Write a copy of the recorded video in IVF format, VP8 only. Used for
+  # debugging and test environments.
   writeIVFCopy: false
   videoPacketQueueSize: 256
   audioPacketQueueSize: 32

@@ -475,6 +475,7 @@ func TestCorpusReplay(t *testing.T) {
 	traceFiles, err := filepath.Glob(filepath.Join(corpusDir, "*.ndjson.gz"))
 	require.NoError(t, err)
 	replayed := map[string]int{}
+	fence := newCorpusFence(t)
 
 	for _, path := range expects {
 		name := strings.TrimSuffix(filepath.Base(path), ".expect.json")
@@ -497,6 +498,7 @@ func TestCorpusReplay(t *testing.T) {
 				r = replayTracesWith(t, cfg, traces)
 			})
 			t.Logf("measured: %s", r)
+			checkCorpusFence(t, fence, name, r)
 
 			for _, v := range e.violations(r) {
 				assert.Fail(t, v)

@@ -18,7 +18,6 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -214,12 +213,12 @@ func newLoopHarness(rec recorder.Recorder, trackIDs ...string) *loopHarness {
 // onLoss, if set, sees each keyframe request a video buffer queues.
 func (h *loopHarness) newBuffer(info trackInfo, onLoss func()) *trackBuffer {
 	isVideo := info.kind == TrackKindVideo
-	var depacketizer rtp.Depacketizer = &codecs.OpusPacket{}
-	if info.mime == MimeTypeVP8 {
-		depacketizer = &codecs.VP8Packet{}
+	codec, ok := recorder.CodecFor(string(info.mime))
+	if !ok {
+		codec = recorder.CodecOpus
 	}
 
-	b := newTrackBuffer(depacketizer, jitterLatencyFor(info.kind), lossKeyframeInterval, func() {
+	b := newTrackBuffer(codec, jitterLatencyFor(info.kind), lossKeyframeInterval, func() {
 		if isVideo {
 			if onLoss != nil {
 				onLoss()
@@ -387,6 +386,31 @@ func TestReadErrorReadsFlowStateUnderLock(t *testing.T) {
 	for range 200 {
 		assert.NoError(t, h.w.handleReadRTPError(readTimeout{}, audioInfo))
 	}
+	wg.Wait()
+}
+
+// Run with -race: a stopping session replaces the connection state callback
+// while the adapter reports a failed subscription or a track's end.
+func TestConnectionStateCallbackReadUnderLock(t *testing.T) {
+	h := newLoopHarness(newPushRecorder(), audioInfo.id)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				h.w.SetConnectionStateCallback(func(utils.ConnectionState) {})
+			}
+		}
+	})
+	for range 100 {
+		h.w.onTrackSubscriptionFailed(audioInfo.id, nil)
+		h.w.readTrack(newFakeTrack(), audioInfo, h.newBuffer(audioInfo, nil))
+	}
+	close(stop)
 	wg.Wait()
 }
 

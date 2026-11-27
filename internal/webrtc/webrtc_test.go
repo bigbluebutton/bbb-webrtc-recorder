@@ -12,6 +12,7 @@ import (
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 	log "github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -78,6 +79,14 @@ func TestTrackPanicFailsSession(t *testing.T) {
 			require.FailNow(t, "the session never reported failed")
 		}
 	}
+}
+
+func TestAnsweredCodecsSkipARejectedSection(t *testing.T) {
+	answer := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n" +
+		"m=video 0 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:96 VP8/90000\r\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:111 opus/48000/2\r\n"}
+
+	assert.Equal(t, []string{"audio/opus"}, answeredCodecs(answer))
 }
 
 // The PLI ticker, the recorder's keyframe requests and a second video track's

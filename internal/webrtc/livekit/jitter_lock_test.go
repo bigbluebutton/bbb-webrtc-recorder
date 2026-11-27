@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -55,7 +55,7 @@ func TestJitterLossHandlerDoesNotTakeAdapterLock(t *testing.T) {
 	lk, _ := setupMockLK()
 	defer lk.Close()
 
-	buffer := lk.addJitterBuffer("test-track", &codecs.VP8Packet{}, jitterLatency, 1234, true)
+	buffer := lk.addJitterBuffer("test-track", recorder.CodecVP8, jitterLatency, 1234, true)
 	defer buffer.close()
 
 	lk.m.Lock()
@@ -79,6 +79,29 @@ func TestJitterLossHandlerDoesNotTakeAdapterLock(t *testing.T) {
 	<-lost
 }
 
+// lockCheckRecorder notes whether the adapter's lock was held when the
+// adapter set the video codec.
+type lockCheckRecorder struct {
+	*mockRecorder
+	adapter *LiveKitWebRTC
+	held    bool
+}
+
+func (r *lockCheckRecorder) SetVideoCodec(*recorder.Codec) error {
+	r.held = r.held || !adapterLockFree(r.adapter)()
+
+	return nil
+}
+
+func TestAcceptCodecSetsTheVideoCodecWithoutAdapterLock(t *testing.T) {
+	rec := &lockCheckRecorder{mockRecorder: &mockRecorder{}}
+	h := newLoopHarness(rec, videoInfo.id)
+	rec.adapter = h.w
+
+	assert.True(t, h.w.acceptCodec(videoInfo.id, TrackKindVideo, recorder.CodecVP8))
+	assert.False(t, rec.held, "SetVideoCodec was called with the adapter lock held")
+}
+
 func TestGetStatsReadsJitterStatsWithoutAdapterLock(t *testing.T) {
 	lk, _ := setupMockLK()
 	defer lk.Close()
@@ -86,7 +109,7 @@ func TestGetStatsReadsJitterStatsWithoutAdapterLock(t *testing.T) {
 	// A loss handler that blocks keeps the buffer's lock held.
 	inHandler := make(chan struct{})
 	release := make(chan struct{})
-	buffer := newTrackBuffer(&codecs.VP8Packet{}, jitterLatency, 0, func() {
+	buffer := newTrackBuffer(recorder.CodecVP8, jitterLatency, 0, func() {
 		close(inHandler)
 		<-release
 	})

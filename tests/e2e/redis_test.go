@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -293,7 +294,9 @@ type StartSpec struct {
 	// SessionID defaults to a new UUID, as the SFU uses.
 	SessionID string
 	// FileName, relative to recorder.directory, defaults to
-	// recordings/<room>/<first track ID>-<session ID>.webm.
+	// recordings/<room>/<first track ID>-<session ID>.webm, as
+	// bbb-webrtc-sfu names a LiveKit recording. The recorder ignores a .webm
+	// or .mkv extension.
 	FileName string
 	Metadata map[string]any
 }
@@ -302,8 +305,10 @@ type StartSpec struct {
 type Recording struct {
 	SessionID string
 	FileName  string // as requested
-	Path      string // the response's fileName: the recording's absolute path
-	Response  events.StartRecordingResponse
+	Path      string // the response's fileName: the absolute path, with the recorder's extension
+	// Codecs are the response's codecs: the MIME types the recording holds.
+	Codecs   []string
+	Response events.StartRecordingResponse
 	// From is the index of the first message received after the
 	// startRecording: where this start's events begin, for the waits.
 	From int
@@ -388,9 +393,52 @@ func (d *Driver) StartRecordingWith(ctx context.Context, s StartSpec) (*Recordin
 		return rec, fmt.Errorf("startRecording failed: %s", deref(rec.Response.Error))
 	}
 
-	rec.Path = deref(rec.Response.FileName)
+	rec.Path, rec.Codecs = deref(rec.Response.FileName), rec.Response.Codecs
+
+	// WebM holds every codec the recorder writes.
+	ext := filepath.Ext(rec.Path)
+	if want := ".webm"; ext != want {
+		return rec, fmt.Errorf("recording %s of %v: extension %q, want %q", rec.Path, rec.Codecs, ext, want)
+	}
+
+	base := s.FileName
+	if e := filepath.Ext(base); e == ".webm" || e == ".mkv" {
+		base = strings.TrimSuffix(base, e)
+	}
+
+	if !strings.HasSuffix(strings.TrimSuffix(rec.Path, ext), base) {
+		return rec, fmt.Errorf("recording %s: not the requested %s", rec.Path, s.FileName)
+	}
 
 	return rec, nil
+}
+
+// GetRecordings sends getRecordings and returns the recordings its response
+// lists.
+func (d *Driver) GetRecordings(ctx context.Context) ([]*events.RecordingInfo, error) {
+	reqID := uuid.NewString()
+	from := len(d.Messages())
+	if err := d.Publish(events.GetRecordings{Id: events.GetRecordingsKey, RequestId: reqID}); err != nil {
+		return nil, err
+	}
+
+	m, _, err := d.WaitMessage(ctx, from, func(m Message) bool {
+		var head struct {
+			RequestID string `json:"requestId"`
+		}
+
+		return m.ID == events.GetRecordingsResponseKey && json.Unmarshal(m.Raw, &head) == nil && head.RequestID == reqID
+	})
+	if err != nil {
+		return nil, fmt.Errorf("waiting for %s: %w", events.GetRecordingsResponseKey, err)
+	}
+
+	var resp events.GetRecordingsResponse
+	if err := json.Unmarshal(m.Raw, &resp); err != nil {
+		return nil, err
+	}
+
+	return resp.Recordings, nil
 }
 
 // Stop sends stopRecording for sessionID.

@@ -59,7 +59,7 @@ func (s *HTTPServer) Serve() {
 		e := events.StartRecording{
 			Id:        "startRecording",
 			SessionId: sessId,
-			FileName:  fmt.Sprintf("%s.webm", t.Format("20060102150405")),
+			FileName:  t.Format("20060102150405"),
 			Adapter:   "mediasoup",
 			AdapterOptions: &events.AdapterOptions{
 				Mediasoup: &events.MediasoupConfig{

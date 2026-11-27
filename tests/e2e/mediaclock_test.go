@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -164,10 +165,10 @@ func testSlowMicClock(t *testing.T, muteAt, muteFor time.Duration) {
 	assert.InDelta(t, 1, delta.Sum("recorder_media_clock_rate_ratio_count", labels), 0, "one track's rate ratio observed")
 }
 
-func readStatsFile(t *testing.T, webmPath string) *appstats.StatsFileOutput {
+func readStatsFile(t *testing.T, path string) *appstats.StatsFileOutput {
 	t.Helper()
 
-	raw, err := os.ReadFile(strings.TrimSuffix(webmPath, ".webm") + "-stats.json")
+	raw, err := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + "-stats.json")
 	require.NoError(t, err)
 
 	out := &appstats.StatsFileOutput{}
