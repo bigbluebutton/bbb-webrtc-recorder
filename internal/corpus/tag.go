@@ -131,6 +131,40 @@ func TagFrame(payload []byte, kind Kind, key bool, v uint32) bool {
 	return true
 }
 
+// h264TagSkip is how far past its NAL unit or FU-A header TagH264Frame
+// writes. The slice header prefix that GenerateH264 writes, and that a
+// header-mode capture keeps, fits in it.
+const h264TagSkip = 8
+
+// TagH264Frame is TagFrame for an H.264 packet that starts a frame's first
+// slice (H264PictureStart). The tag goes h264TagSkip bytes past the NAL unit
+// or FU-A header. The recorder copies the bytes after that header into the
+// block's NAL unit as they are, so the tag reaches the block.
+//
+// A slice in a STAP-A takes the tag in place, so the STAP-A sizes still
+// match. A later slice is never tagged, so a frame written without its first
+// slice names no frame.
+func TagH264Frame(payload []byte, v uint32) bool {
+	nal, ok := h264PictureSlice(payload)
+	if !ok {
+		return false
+	}
+
+	at := 1 + h264TagSkip
+	if nal[0]&0x1f == h264FUA {
+		at++
+	}
+
+	if len(nal) < at+len(frameTag)+4 {
+		return false
+	}
+
+	copy(nal[at:], frameTag)
+	binary.BigEndian.PutUint32(nal[at+len(frameTag):], v)
+
+	return true
+}
+
 // TaggedFrame returns the value TagFrame wrote into a recorded frame's
 // data, false if it has none.
 func TaggedFrame(data []byte) (uint32, bool) {

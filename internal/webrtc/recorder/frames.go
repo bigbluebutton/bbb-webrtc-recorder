@@ -1,6 +1,7 @@
 package recorder
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,6 +41,43 @@ type videoFrame struct {
 	// container's track entry needs.
 	width, height int
 	codecPrivate  []byte
+}
+
+// errUnusableKeyFrame is a key frame that cannot start decoding. Its
+// parameter sets are missing, or its picture is as small as LiveKit's blank
+// frames at a downtrack's close.
+var errUnusableKeyFrame = errors.New("key frame that cannot start decoding")
+
+// Key frames that cannot start decoding: the picture is too large, its size
+// cannot be read, or avcC cannot hold the parameter sets. Unlike LiveKit's
+// blank frames, they are not routine.
+var (
+	errOversizedKeyFrame  = errors.New("invalid dimensions")
+	errUnreadableKeyFrame = errors.New("unknown dimensions")
+	errAvcCKeyFrame       = errors.New("parameter sets avcC cannot hold")
+)
+
+// errCutFrame is a frame cut before it is whole, with no packet lost: the
+// next frame or the end of the sample comes first. It is routine: LiveKit
+// cuts frames this way at a simulcast layer switch, and when it pauses a
+// downtrack.
+var errCutFrame = errors.New("cut short")
+
+// routineFrameError reports whether err is a loss LiveKit causes in normal
+// operation, which PushVideoSample logs at Debug.
+func routineFrameError(err error) bool {
+	return errors.Is(err, errUnusableKeyFrame) || errors.Is(err, errCutFrame)
+}
+
+// refusedKeyFrame returns the kind of refused key frame err wraps, or nil.
+func refusedKeyFrame(err error) error {
+	for _, kind := range []error{errOversizedKeyFrame, errUnreadableKeyFrame, errAvcCKeyFrame} {
+		if errors.Is(err, kind) {
+			return kind
+		}
+	}
+
+	return nil
 }
 
 // FormatFor returns Matroska if the recorder writes one of mimeTypes and
@@ -195,9 +233,16 @@ func (r *WebmRecorder) PushVideoSample(s VideoSample) {
 	}
 
 	if err != nil {
-		log.WithField("session", r.ctx.Value("session")).
-			WithField("seq", fmt.Sprintf("%d-%d", first, last)).
-			Logf(r.logLevel("malformed"), "Discarding malformed %s frame: %v", r.videoCodec.MimeType, err)
+		logger := log.WithField("session", r.ctx.Value("session")).
+			WithField("seq", fmt.Sprintf("%d-%d", first, last))
+		switch refused := refusedKeyFrame(err); {
+		case refused != nil:
+			logger.Logf(r.logLevel(refused), "Discarding invalid %s frame: %v", r.videoCodec.MimeType, err)
+		case routineFrameError(err):
+			logger.Debugf("Discarding %s frame: %v", r.videoCodec.MimeType, err)
+		default:
+			logger.Logf(r.logLevel("malformed"), "Discarding malformed %s frame: %v", r.videoCodec.MimeType, err)
+		}
 	}
 
 	// No request when a key frame followed the frames lost in this sample.

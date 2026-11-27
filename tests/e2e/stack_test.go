@@ -102,7 +102,7 @@ func NewStack(t *testing.T, o StackOptions) *Stack {
 		to, from = to+suffix, from+suffix
 	}
 
-	s.Driver = NewDriver(t, s.Redis.Addr, to, from, filepath.Join(s.Artifacts, "pubsub.ndjson"))
+	s.Driver = NewDriver(t, s.Redis.Addr, to, from, filepath.Join(s.Artifacts, "pubsub.ndjson"), s.LiveKit)
 
 	cfg := RecorderConfig(t, s.Artifacts, s.Redis, to, from, s.LiveKit)
 	if o.RecorderConfig != nil {

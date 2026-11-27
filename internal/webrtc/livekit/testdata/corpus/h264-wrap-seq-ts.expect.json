@@ -1,0 +1,35 @@
+{
+  "v": 1,
+  "class": "wrap",
+  "intent": "wrap-seq-ts-pic through the H.264 frames path. The sequence number wraps at 2.2 s, and seq 0 is repaired over RTX 50 ms later. The RTP timestamp wraps at key frame 90, at 3 s. No requests, no loss, every frame written. RED when the frame writer takes the ticks since the previous frame in 64 bits rather than 32: every PTS from the wrap on is wrong. The timeline bound catches it. RED as well on a stats or gap underflow at the sequence wrap, as for wrap-seq-ts-pic.",
+  "traces": [
+    "h264-wrap-seq-ts.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 180,
+    "max": 180
+  },
+  "packetsWritten": {
+    "min": 364,
+    "max": 364
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minVideoFrames": 180,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 0,
+      "max": 0
+    }
+  }
+}

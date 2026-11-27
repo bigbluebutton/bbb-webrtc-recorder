@@ -18,6 +18,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -55,10 +56,10 @@ type TrackOptions struct {
 	Name string
 	// Source defaults to CAMERA for video and MICROPHONE for audio.
 	Source livekit.TrackSource
-	// Schedule is the sent schedule (corpus.GenerateVP8/GenerateOpus): each
-	// record's packet is written at its atUs from the track's start. It
-	// loops until the track stops, continuing sequence numbers, timestamps
-	// and VP8 picture IDs.
+	// Schedule is the sent schedule (corpus.GenerateVP8, GenerateH264 or
+	// GenerateOpus): each record's packet is written at its atUs from the
+	// track's start. It loops until the track stops, continuing sequence
+	// numbers, timestamps and VP8 picture IDs.
 	Schedule *corpus.Trace
 	// KeyframeDelay is the encoder's PLI response time: the first frame due
 	// at least this long after a PLI goes out as a key frame. PLIs while one
@@ -68,6 +69,10 @@ type TrackOptions struct {
 	// FIFO: frames due meanwhile queue behind it. 0 keeps the schedule's own
 	// packet offsets.
 	KeyframeSpread time.Duration
+	// KeyframeFromSchedule answers a PLI with the schedule's next key frame,
+	// then sends the frames after it. A real clip needs this: its delta
+	// frames refer to the frames before them.
+	KeyframeFromSchedule bool
 	// Drop withholds a packet when it returns true. Its sequence number is
 	// still used and it never reaches the NACK responder, so the loss is
 	// unrepaired.
@@ -75,7 +80,8 @@ type TrackOptions struct {
 	// Width and Height are the signalled video dimensions (default 640x480).
 	Width, Height int
 	// TagFrames writes each frame's index into its first packet, after the
-	// codec's header, for corpus.TaggedFrame to read from the recording.
+	// codec's header, for corpus.TaggedFrame to read from the recording. An
+	// H.264 frame takes it in its first slice (corpus.TagH264Frame).
 	TagFrames bool
 	// TagOffset is added to each frame index TagFrames writes. Simulcast
 	// layers use different offsets, so a tag read from the recording shows
@@ -108,11 +114,14 @@ type PubTrack struct {
 	Pub   *lksdk.LocalTrackPublication
 
 	opts     TrackOptions
+	codec    corpus.Codec
 	frames   []schedFrame
 	keyFrame []corpus.Record
 	cancel   context.CancelFunc
 	done     chan struct{}
 	start    time.Time
+	// tap, if set before the loop starts, sees each packet it writes.
+	tap func(*rtp.Packet)
 
 	mu         sync.Mutex
 	plis       []time.Duration
@@ -133,18 +142,34 @@ type schedFrame struct {
 var (
 	vp8Capability  = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000}
 	opusCapability = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}
+	// Constrained baseline in packetization mode 1, as Chromium offers it.
+	h264Capability = webrtc.RTPCodecCapability{
+		MimeType:    webrtc.MimeTypeH264,
+		ClockRate:   90000,
+		SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+	}
 )
 
 // PublishVP8 publishes a VP8 track sending o.Schedule.
 func (p *Publisher) PublishVP8(o TrackOptions) *PubTrack {
+	return p.publishCamera(vp8Capability, o, 640, 480)
+}
+
+// PublishH264 publishes an H.264 track sending o.Schedule. The signalled
+// size defaults to GenerateH264's.
+func (p *Publisher) PublishH264(o TrackOptions) *PubTrack {
+	return p.publishCamera(h264Capability, o, 640, 360)
+}
+
+func (p *Publisher) publishCamera(c webrtc.RTPCodecCapability, o TrackOptions, width, height int) *PubTrack {
 	if o.Source == livekit.TrackSource_UNKNOWN {
 		o.Source = livekit.TrackSource_CAMERA
 	}
 
-	o.Width = withDefault(o.Width, 640)
-	o.Height = withDefault(o.Height, 480)
+	o.Width = withDefault(o.Width, width)
+	o.Height = withDefault(o.Height, height)
 
-	return p.publish(vp8Capability, corpus.KindVideo, o)
+	return p.publish(c, corpus.KindVideo, o)
 }
 
 // PublishOpus publishes an Opus track sending o.Schedule.
@@ -189,6 +214,19 @@ func (p *Publisher) publish(c webrtc.RTPCodecCapability, kind corpus.Kind, o Tra
 // replace the entry's. The layers start together: frame i of each is due
 // at the same time, as an encoder sends one captured frame on every layer.
 func (p *Publisher) PublishVP8Simulcast(name string, layers ...TrackOptions) []*PubTrack {
+	p.t.Helper()
+
+	return p.publishSimulcast(vp8Capability, name, layers)
+}
+
+// PublishH264Simulcast is PublishVP8Simulcast for H.264 layers.
+func (p *Publisher) PublishH264Simulcast(name string, layers ...TrackOptions) []*PubTrack {
+	p.t.Helper()
+
+	return p.publishSimulcast(h264Capability, name, layers)
+}
+
+func (p *Publisher) publishSimulcast(c webrtc.RTPCodecCapability, name string, layers []TrackOptions) []*PubTrack {
 	t := p.t
 	t.Helper()
 
@@ -202,7 +240,7 @@ func (p *Publisher) PublishVP8Simulcast(name string, layers ...TrackOptions) []*
 		o.Source = livekit.TrackSource_CAMERA
 		o.Width, o.Height = int(o.Layer.Width), int(o.Layer.Height)
 
-		tr := newPubTrack(t, vp8Capability, corpus.KindVideo, o)
+		tr := newPubTrack(t, c, corpus.KindVideo, o)
 		tracks = append(tracks, tr)
 		locals = append(locals, tr.Local)
 	}
@@ -236,16 +274,25 @@ func newPubTrack(t *testing.T, c webrtc.RTPCodecCapability, kind corpus.Kind, o 
 	require.NotNil(t, o.Schedule, "TrackOptions.Schedule")
 	require.Equal(t, kind, o.Schedule.Header.Kind, "schedule kind")
 
+	codec := o.Schedule.Header.Codec
+	require.True(t, strings.EqualFold(c.MimeType, string(kind)+"/"+string(codec)),
+		"a %s schedule on a %s track", codec, c.MimeType)
+
 	if o.Name == "" {
 		o.Name = string(kind)
 	}
 
-	tr := &PubTrack{Kind: kind, opts: o, done: make(chan struct{})}
-	tr.frames = scheduleFrames(o.Schedule.Records, kind == corpus.KindVideo)
+	tr := &PubTrack{Kind: kind, opts: o, codec: codec, done: make(chan struct{})}
+	tr.frames = scheduleFrames(o.Schedule.Records, keyFrameStart(codec))
 	require.NotEmpty(t, tr.frames, "schedule %s has no packets", o.Name)
 
 	if kind == corpus.KindVideo {
-		tr.keyFrame = templateKeyFrame(t, tr.frames, o.Width, o.Height)
+		tr.keyFrame = templateKeyFrame(t, codec, tr.frames, o.Width, o.Height)
+	}
+
+	if o.KeyframeFromSchedule {
+		require.True(t, slices.ContainsFunc(tr.frames, func(f schedFrame) bool { return f.key }),
+			"schedule %s has no key frame", o.Name)
 	}
 
 	opts := []lksdk.LocalTrackOptions{lksdk.WithRTCPHandler(tr.onRTCP)}
@@ -316,6 +363,13 @@ func waitTracksListed(ctx context.Context, lk *LiveKit, room, identity string, s
 func listedVP8Layers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid string) []*livekit.VideoLayer {
 	t.Helper()
 
+	return listedLayers(ctx, t, lk, room, sid, webrtc.MimeTypeVP8)
+}
+
+// listedLayers is listedVP8Layers for the codec mime.
+func listedLayers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid, mime string) []*livekit.VideoLayer {
+	t.Helper()
+
 	var layers []*livekit.VideoLayer
 	require.Eventually(t, func() bool {
 		listed, err := lk.listedTracks(ctx, room, "")
@@ -324,14 +378,14 @@ func listedVP8Layers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid s
 		}
 
 		for _, c := range listed[sid].Codecs {
-			if strings.EqualFold(c.MimeType, webrtc.MimeTypeVP8) && len(c.Layers) > 0 {
+			if strings.EqualFold(c.MimeType, mime) && len(c.Layers) > 0 {
 				layers = c.Layers
 				return true
 			}
 		}
 
 		return false
-	}, 10*time.Second, 50*time.Millisecond, "LiveKit does not list the VP8 layers of %s", sid)
+	}, 10*time.Second, 50*time.Millisecond, "LiveKit does not list the %s layers of %s", mime, sid)
 
 	return layers
 }
@@ -356,6 +410,24 @@ func (lk *LiveKit) listedTracks(ctx context.Context, room, identity string) (map
 	}
 
 	return tracks, nil
+}
+
+// publicationCodecs returns the MIME types LiveKit lists for a track,
+// lowercased, primary codec first.
+func publicationCodecs(info *livekit.TrackInfo) []string {
+	var codecs []string
+	add := func(m string) {
+		if m = strings.ToLower(m); m != "" && !slices.Contains(codecs, m) {
+			codecs = append(codecs, m)
+		}
+	}
+
+	add(info.GetMimeType())
+	for _, c := range info.GetCodecs() {
+		add(c.GetMimeType())
+	}
+
+	return codecs
 }
 
 func waitTracksUnlisted(ctx context.Context, lk *LiveKit, room, identity string, sids ...string) error {
@@ -494,18 +566,23 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 	spanUs, spanTS := loopSpan(frames)
 
 	seq := first.recs[0].Seq
+	vp8 := tr.codec == corpus.CodecVP8
 	var picID uint16
-	if tr.Kind == corpus.KindVideo {
+	if vp8 {
 		picID, _ = corpus.VP8PictureID(first.recs[0].Pay)
 	}
 
 	var prevSend time.Duration
+	// With KeyframeFromSchedule, frame i of a pass sends the schedule's
+	// frame i+shift. Its timestamp and send time stay frame i's.
+	shift := 0
 
 	for loop := 0; ; loop++ {
 		for i, f := range frames {
 			frameAt := time.Duration(int64(loop)*spanUs+f.atUs-first.atUs) * time.Microsecond
 			ts := f.ts + uint32(loop)*spanTS
 			frame := loop*len(frames) + i
+			at := (i + shift) % len(frames)
 
 			if !sleepUntil(ctx, start.Add(frameAt)) {
 				return
@@ -517,14 +594,24 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 				continue
 			}
 
-			pliKey := tr.pending && frameAt >= tr.pendingDue && !f.key
-			if pliKey || f.key {
+			src := f
+			if tr.opts.KeyframeFromSchedule {
+				src = frames[at]
+			}
+
+			pliKey := tr.pending && frameAt >= tr.pendingDue && !src.key
+			if pliKey || src.key {
 				tr.pending = false
 			}
 			tr.mu.Unlock()
 
-			recs, offsets := f.recs, packetOffsets(f.recs, 0)
-			if pliKey {
+			recs, offsets := src.recs, packetOffsets(src.recs, 0)
+			switch {
+			case pliKey && tr.opts.KeyframeFromSchedule:
+				next := nextKeyFrame(frames, at)
+				shift = (shift + next - at + len(frames)) % len(frames)
+				recs, offsets = frames[next].recs, packetOffsets(frames[next].recs, tr.opts.KeyframeSpread)
+			case pliKey:
 				recs, offsets = tr.keyFrame, packetOffsets(tr.keyFrame, tr.opts.KeyframeSpread)
 			}
 
@@ -541,12 +628,12 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 				pkt.Timestamp = ts
 				pkt.Marker = r.M && (loop == 0 || tr.Kind == corpus.KindVideo)
 
-				if tr.Kind == corpus.KindVideo {
+				if vp8 {
 					corpus.SetVP8PictureID(pkt.Payload, picID)
 				}
 
-				if tr.opts.TagFrames && j == 0 {
-					corpus.TagFrame(pkt.Payload, tr.Kind, f.key || pliKey, uint32(tr.opts.TagOffset+frame))
+				if tr.opts.TagFrames {
+					tr.tag(pkt.Payload, j, src.key || pliKey, uint32(tr.opts.TagOffset+frame))
 				}
 
 				s := SentPacket{
@@ -556,7 +643,7 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 					TS:     ts,
 					Frame:  frame,
 					Index:  j,
-					Key:    f.key || pliKey,
+					Key:    src.key || pliKey,
 					PLIKey: pliKey,
 					Marker: pkt.Marker,
 					PLen:   len(pkt.Payload),
@@ -564,6 +651,10 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 				s.Dropped = tr.opts.Drop != nil && tr.opts.Drop(s)
 
 				if !s.Dropped {
+					if tr.tap != nil {
+						tr.tap(pkt)
+					}
+
 					// Fails only before the track is bound or after it is
 					// closed; the packet is lost either way, as a real one would be.
 					_ = tr.Local.WriteRTP(pkt, nil)
@@ -581,6 +672,33 @@ func (tr *PubTrack) run(ctx context.Context, start time.Time) {
 	}
 }
 
+// nextKeyFrame returns the index of the first key frame of frames at or
+// after i, wrapping around.
+func nextKeyFrame(frames []schedFrame, i int) int {
+	for d := range len(frames) {
+		if k := (i + d) % len(frames); frames[k].key {
+			return k
+		}
+	}
+
+	return i
+}
+
+// tag writes the frame tag v into payload, packet j of its frame. An H.264
+// frame takes it in the packet that starts its first slice, which need not
+// be its first packet.
+func (tr *PubTrack) tag(payload []byte, j int, key bool, v uint32) {
+	if tr.codec == corpus.CodecH264 {
+		corpus.TagH264Frame(payload, v)
+
+		return
+	}
+
+	if j == 0 {
+		corpus.TagFrame(payload, tr.Kind, key, v)
+	}
+}
+
 // writeArtifacts saves the sent schedule as a trace and a JSON summary of
 // the track's PLIs, NACKs and withheld packets.
 func (tr *PubTrack) writeArtifacts(t *testing.T, dir, identity string) {
@@ -591,6 +709,7 @@ func (tr *PubTrack) writeArtifacts(t *testing.T, dir, identity string) {
 	sent := tr.Sent()
 
 	h := corpus.NewSyntheticHeader(tr.Kind, 0, "tests/e2e publisher")
+	h.Codec, h.ClockRate = tr.codec, tr.opts.Schedule.Header.ClockRate
 	h.TrackID = tr.SID
 	h.EpochUnixUs = tr.Start().UnixMicro()
 	h.Note = "sent schedule; withheld packets omitted"
@@ -639,8 +758,9 @@ func durationsMs(ds []time.Duration) []float64 {
 	return out
 }
 
-// scheduleFrames groups a schedule's rtp records into frames by timestamp.
-func scheduleFrames(recs []corpus.Record, vp8 bool) []schedFrame {
+// scheduleFrames groups a schedule's RTP records into frames by timestamp.
+// A frame is a key frame when keyStart accepts its first packet.
+func scheduleFrames(recs []corpus.Record, keyStart func([]byte) bool) []schedFrame {
 	var frames []schedFrame
 
 	for _, r := range recs {
@@ -649,7 +769,7 @@ func scheduleFrames(recs []corpus.Record, vp8 bool) []schedFrame {
 		}
 
 		if n := len(frames); n == 0 || frames[n-1].ts != r.TS {
-			frames = append(frames, schedFrame{atUs: r.AtUs, ts: r.TS, key: vp8 && isVP8KeyFrameStart(r.Pay)})
+			frames = append(frames, schedFrame{atUs: r.AtUs, ts: r.TS, key: keyStart(r.Pay)})
 		}
 
 		f := &frames[len(frames)-1]
@@ -692,18 +812,39 @@ func packetOffsets(recs []corpus.Record, spread time.Duration) []time.Duration {
 }
 
 // templateKeyFrame is the schedule's first key frame, whose packets answer
-// PLIs, or a generated one if the schedule has none.
-func templateKeyFrame(t *testing.T, frames []schedFrame, width, height int) []corpus.Record {
+// PLIs, or a generated one of codec if the schedule has none.
+func templateKeyFrame(t *testing.T, codec corpus.Codec, frames []schedFrame, width, height int) []corpus.Record {
 	for _, f := range frames {
 		if f.key {
 			return f.recs
 		}
 	}
 
-	g, err := corpus.GenerateVP8(corpus.VP8Options{FPS: 1, Frames: 1, Width: width, Height: height})
+	var (
+		g   *corpus.Trace
+		err error
+	)
+	if codec == corpus.CodecH264 {
+		g, err = corpus.GenerateH264(corpus.H264Options{FPS: 1, Frames: 1, Width: width, Height: height})
+	} else {
+		g, err = corpus.GenerateVP8(corpus.VP8Options{FPS: 1, Frames: 1, Width: width, Height: height})
+	}
 	require.NoError(t, err)
 
 	return g.Records
+}
+
+// keyFrameStart returns the test for a packet of codec that starts a key
+// frame. As in LiveKit, an H.264 packet starts one when it carries an SPS.
+func keyFrameStart(codec corpus.Codec) func([]byte) bool {
+	switch codec {
+	case corpus.CodecVP8:
+		return isVP8KeyFrameStart
+	case corpus.CodecH264:
+		return corpus.H264KeyFrameStart
+	default:
+		return func([]byte) bool { return false }
+	}
 }
 
 // isVP8KeyFrameStart reports whether p starts a VP8 key frame.

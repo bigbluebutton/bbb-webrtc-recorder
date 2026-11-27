@@ -3,11 +3,16 @@
 package e2e
 
 import (
+	"encoding/binary"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -105,12 +110,186 @@ func TestPublisherSendLoop(t *testing.T) {
 	assert.Equal(t, 3, keys, "the schedule's key frame on each pass, and the PLI's")
 }
 
+// TestPublisherSendLoopH264 runs an H.264 send loop as TestPublisherSendLoop
+// does, and depacketizes what it wrote. The PLI's key frame must be the
+// schedule's, parameter sets first. Each frame's first slice must carry the
+// frame's tag, and the parameter sets must reach the receiver unchanged.
+func TestPublisherSendLoopH264(t *testing.T) {
+	const (
+		fps    = 50
+		frames = 10
+		pliAt  = 50 * time.Millisecond
+		stopAt = 300 * time.Millisecond
+	)
+
+	sched, err := corpus.GenerateH264(corpus.H264Options{
+		FPS: fps, Frames: frames, Slices: 2, KeySlicePackets: 3, DeltaSlicePackets: 2,
+	})
+	require.NoError(t, err)
+
+	tr := newPubTrack(t, h264Capability, corpus.KindVideo, TrackOptions{Schedule: sched, TagFrames: true})
+
+	var (
+		mu      sync.Mutex
+		written []*rtp.Packet
+	)
+	tr.tap = func(p *rtp.Packet) {
+		mu.Lock()
+		written = append(written, p.Clone())
+		mu.Unlock()
+	}
+
+	tr.startSending(time.Now())
+	time.Sleep(time.Until(tr.Start().Add(pliAt)))
+	tr.onRTCP(&rtcp.PictureLossIndication{})
+	time.Sleep(time.Until(tr.Start().Add(stopAt)))
+	tr.Stop()
+
+	sent := map[uint16]SentPacket{}
+	for _, s := range tr.Sent() {
+		sent[s.Seq] = s
+	}
+
+	byFrame := map[int][]*rtp.Packet{}
+	var order []int
+	for _, p := range written {
+		f := sent[p.SequenceNumber].Frame
+		byFrame[f] = append(byFrame[f], p)
+		// The stop can cut the last frame short: only whole frames count.
+		if p.Marker {
+			order = append(order, f)
+		}
+	}
+	require.Greater(t, len(order), frames, "the loop wrote one pass and more")
+
+	pliKeys := 0
+	for _, f := range order {
+		first := sent[byFrame[f][0].SequenceNumber]
+		nals := depacketizeH264(t, byFrame[f])
+
+		types := make([]byte, len(nals))
+		for i, n := range nals {
+			types[i] = n[0] & 0x1f
+		}
+
+		if first.Key {
+			assert.True(t, corpus.H264KeyFrameStart(byFrame[f][0].Payload), "frame %d: LiveKit's key frame start", f)
+			require.GreaterOrEqual(t, len(nals), 3, "frame %d: NAL units", f)
+			assert.Equal(t, corpus.H264SPS(640, 360), nals[0], "frame %d: the SPS", f)
+			assert.Equal(t, []byte{8, 5}, types[1:3], "frame %d: a PPS, then the IDR slice", f)
+		} else {
+			assert.NotContains(t, types, byte(5), "frame %d: an IDR slice in a delta frame", f)
+		}
+
+		if first.PLIKey {
+			pliKeys++
+		}
+
+		slice := slices.IndexFunc(nals, func(n []byte) bool { return n[0]&0x1f == 1 || n[0]&0x1f == 5 })
+		require.GreaterOrEqual(t, slice, 0, "frame %d: no slice", f)
+		tag, ok := corpus.TaggedFrame(nals[slice])
+		assert.True(t, ok, "frame %d: no tag in its first slice", f)
+		assert.Equal(t, uint32(f), tag, "frame %d: its first slice's tag", f)
+	}
+
+	assert.Equal(t, 1, pliKeys, "key frames sent for the PLI")
+}
+
+// TestPublisherSendLoopKeyframeFromSchedule answers a PLI from the
+// schedule, as a real clip needs. The frame due after the PLI must be the
+// schedule's next key frame. The frames after it must follow it in the
+// schedule, while timestamps keep their pace.
+func TestPublisherSendLoopKeyframeFromSchedule(t *testing.T) {
+	const (
+		fps         = 50
+		frames      = 20
+		keyInterval = 5
+		ticks       = 90000 / fps
+		pliAt       = 30 * time.Millisecond
+		stopAt      = 300 * time.Millisecond
+	)
+
+	sched, err := corpus.GenerateH264(corpus.H264Options{FPS: fps, Frames: frames, KeyInterval: keyInterval})
+	require.NoError(t, err)
+	want := scheduleFrames(sched.Records, keyFrameStart(corpus.CodecH264))
+
+	tr := newPubTrack(t, h264Capability, corpus.KindVideo, TrackOptions{Schedule: sched, KeyframeFromSchedule: true})
+
+	var (
+		mu      sync.Mutex
+		written = map[uint16][]byte{}
+	)
+	tr.tap = func(p *rtp.Packet) {
+		mu.Lock()
+		written[p.SequenceNumber] = slices.Clone(p.Payload)
+		mu.Unlock()
+	}
+
+	tr.startSending(time.Now())
+	time.Sleep(time.Until(tr.Start().Add(pliAt)))
+	tr.onRTCP(&rtcp.PictureLossIndication{})
+	time.Sleep(time.Until(tr.Start().Add(stopAt)))
+	tr.Stop()
+
+	sent := tr.Sent()
+	i := slices.IndexFunc(sent, func(s SentPacket) bool { return s.PLIKey })
+	require.GreaterOrEqual(t, i, 0, "no key frame sent for the PLI")
+	pliFrame := sent[i].Frame
+	next := (pliFrame/keyInterval + 1) * keyInterval
+	require.Greater(t, sent[len(sent)-1].Frame, pliFrame+1, "frames sent after the PLI's")
+
+	for _, s := range sent {
+		at := s.Frame % frames
+		if s.Frame >= pliFrame {
+			at = (next + s.Frame - pliFrame) % frames
+		}
+
+		assert.Equal(t, uint32(s.Frame*ticks), s.TS, "frame %d: timestamp", s.Frame)
+		assert.Equal(t, want[at].recs[s.Index].Packet().Payload, written[s.Seq],
+			"frame %d packet %d: the schedule's frame %d", s.Frame, s.Index, at)
+	}
+}
+
+// depacketizeH264 returns the NAL units of one frame's packets, in order.
+func depacketizeH264(t *testing.T, packets []*rtp.Packet) [][]byte {
+	t.Helper()
+
+	d := codecs.H264Packet{IsAVC: true}
+	var avcc []byte
+	for _, p := range packets {
+		out, err := d.Unmarshal(p.Payload)
+		require.NoError(t, err, "seq %d", p.SequenceNumber)
+		avcc = append(avcc, out...)
+	}
+
+	var nals [][]byte
+	for len(avcc) > 0 {
+		require.GreaterOrEqual(t, len(avcc), 4)
+		n := int(binary.BigEndian.Uint32(avcc))
+		require.LessOrEqual(t, 4+n, len(avcc))
+		nals = append(nals, avcc[4:4+n])
+		avcc = avcc[4+n:]
+	}
+
+	return nals
+}
+
 func TestScheduleFramesFindsKeyFrames(t *testing.T) {
 	g, err := corpus.GenerateVP8(corpus.VP8Options{FPS: 1, Frames: 2})
 	require.NoError(t, err)
 
-	frames := scheduleFrames(g.Records, true)
+	frames := scheduleFrames(g.Records, keyFrameStart(corpus.CodecVP8))
 	require.Len(t, frames, 2)
 	assert.True(t, frames[0].key)
 	assert.False(t, frames[1].key)
+
+	// In mode 0 the SPS travels alone, ahead of the PPS and the IDR.
+	for _, mode0 := range []bool{false, true} {
+		h, err := corpus.GenerateH264(corpus.H264Options{FPS: 1, Frames: 3, KeyInterval: 2, Mode0: mode0})
+		require.NoError(t, err)
+
+		frames := scheduleFrames(h.Records, keyFrameStart(corpus.CodecH264))
+		require.Len(t, frames, 3)
+		assert.Equal(t, []bool{true, false, true}, []bool{frames[0].key, frames[1].key, frames[2].key}, "mode 0: %v", mode0)
+	}
 }

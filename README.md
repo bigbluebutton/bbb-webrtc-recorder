@@ -128,13 +128,44 @@ systemctl status redis
 
 | Track | Codec | Adapters | File format |
 |---|---|---|---|
-| Audio | Opus | mediasoup, LiveKit | WebM (`.webm`) |
-| Video | VP8 | mediasoup, LiveKit | WebM (`.webm`) |
+| Audio | Opus | mediasoup, LiveKit | WebM or Matroska, as the session's video |
+| Video | VP8 | mediasoup, LiveKit | WebM (`.webm`); Matroska (`.mkv`) with an H.264 backup |
+| Video | H.264 | LiveKit | Matroska (`.mkv`) |
 
 The recorder picks the file format, and so the extension, when the session starts. A LiveKit session is Matroska
-when a requested publication lists a codec that the recorder writes and WebM cannot hold, as primary or backup,
-and WebM otherwise (see `startRecordingResponse` below). WebM holds both codecs above. A microphone published with
-RED, as BBB's client does, is recorded as Opus in WebM: LiveKit sends the recorder the Opus inside it.
+when a requested publication lists H.264, as primary or backup, and WebM otherwise (see `startRecordingResponse`
+below). Matroska holds H.264 and VP8 alike. A microphone published with RED, as BBB's client does, is recorded as
+Opus: LiveKit sends the recorder the Opus inside it.
+
+An H.264 track is written as `V_MPEG4/ISO/AVC`. Its `CodecPrivate` comes from the first key frame's SPS and PPS,
+and every key frame keeps its own SPS and PPS in the file. A simulcast layer switch or an encoder resolution
+change therefore plays back, although the track header keeps the first size. The IVF copy is written for VP8
+only.
+
+To record H.264 cameras on a BBB server that uses LiveKit:
+
+- LiveKit must allow H.264. The LiveKit config that BBB packages allows only Opus, RED, VP8 and RTX, so a
+  client asked for H.264 publishes VP8, with no error. Add `video/h264` to `room.enabled_codecs` in
+  `/etc/bigbluebutton/livekit.yaml`. That list replaces the packaged one, so repeat the codecs to keep:
+
+  ```yaml
+  room:
+    enabled_codecs:
+      - mime: audio/opus
+      - mime: audio/red
+      - mime: video/vp8
+      - mime: video/h264
+      - mime: video/rtx
+  ```
+- The client must publish H.264. In `/etc/bigbluebutton/bbb-html5.yml`, set
+  `public.media.livekit.camera.publishOptions.videoCodec: 'h264'` (and `screenshare` for screen sharing).
+- The requester must write the `fileName` that `startRecordingResponse` returns into the recording events,
+  since H.264 recordings end in `.mkv`.
+- After its own restart, bbb-webrtc-sfu reads each file's start time from its name, and only from names ending in
+  `.webm`. It must read `.mkv` names too, or it can stop the file being recorded.
+
+With a bbb-webrtc-sfu that keeps the `.webm` name it sent, the `.mkv` is written, but the published recording
+lacks that camera.
 
 ### Debugging
 
@@ -195,7 +226,7 @@ where to look and its known limits.
     error: undefined | <String>,
     sdp: <String | undefined>, // answer
     fileName: <String | undefined>, // full path to recording, with the extension the recorder picked
-    codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/vp8"]; see below
+    codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/h264"]; see below
     metadata: <Object | undefined>, // Opaque metadata from the original startRecording request
 }
 ```
@@ -208,6 +239,14 @@ For LiveKit, `codecs` lists each publication's primary codec, in the order of `t
 cannot write, such as VP9. A track that LiveKit sends in such a codec fails the session, which stops as `failed`.
 A requested track that the room does not have when the session starts, or whose publication lists no codec, gets
 no entry. The list is then shorter than `trackIds`.
+
+The stats file's per-track `mimeType` names the codec the recorder writes. The metrics' `mime` label stays the
+publication's MIME type, except on `recorder_active_tracks`, which names the codec sent. So a microphone
+published with RED reads `audio/opus` in the stats file and `audio/red` in the other metrics.
+
+A codec regression can make LiveKit send the backup codec instead. A session that starts after one records the
+backup, and the stats file names it. A regression mid-session ends the session, as `recordingStopped` below
+describes.
 
 For mediasoup, `codecs` lists the codecs the SDP answer accepts: `video/vp8`, `audio/opus` or both.
 
@@ -255,7 +294,7 @@ See [Media timestamps](#media-timestamps).
     recordingSessionId: <String>, // file name
     reason: <String>,
     timestampUTC: <String>, // when the event was built, RFC 3339
-    timestampHR?: <Number>, // the WebM's video duration, ms; absent without video
+    timestampHR?: <Number>, // the file's video duration, ms; absent without video
     // LiveKit sessions that wrote a frame
     mediaStartUTC?: <Number>, // as in recordingMediaStarted, unless the start moved after it was sent
     mediaStartHR?: <Number>,
@@ -263,6 +302,10 @@ See [Media timestamps](#media-timestamps).
     mediaEndHR?: <Number>,
 }
 ```
+
+A LiveKit session stops as `closed` at a codec regression. With the Go SDK the recorder uses, LiveKit does not
+change a subscription's codec in place: it closes the subscription and subscribes again in the new codec. The
+publisher is still live, so a requester should start a new recording.
 
 `getRecorderStatus` (* -> Recorder)
 ```JSON5

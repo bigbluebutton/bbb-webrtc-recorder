@@ -109,12 +109,25 @@ type mockLiveKitWebRTC struct {
 	lifted     []string
 	active     map[string]bool
 	calls      []string
+	connState  func(state utils.ConnectionState)
 	mediaStart func(start time.Time)
 	onClose    func()
 }
 
 func (lk *mockLiveKitWebRTC) SetConnectionStateCallback(callback func(state utils.ConnectionState)) {
+	lk.mu.Lock()
+	defer lk.mu.Unlock()
+	lk.connState = callback
 }
+
+// reportState calls the connection state callback, as the adapter does.
+func (lk *mockLiveKitWebRTC) reportState(state utils.ConnectionState) {
+	lk.mu.Lock()
+	callback := lk.connState
+	lk.mu.Unlock()
+	callback(state)
+}
+
 func (lk *mockLiveKitWebRTC) SetFlowCallback(callback func(isFlowing bool, timestamp time.Duration, closed bool)) {
 }
 func (lk *mockLiveKitWebRTC) SetMediaStartCallback(callback func(start time.Time)) {
@@ -900,8 +913,8 @@ func TestStopRecordingStopsConstraintsBeforeStats(t *testing.T) {
 func TestStartResponseReportsTheFileNameAndCodecs(t *testing.T) {
 	ps := &mockPubSub{publishChan: make(chan []byte, 10)}
 	server := NewServer(&config.Config{}, ps)
-	lk := &mockLiveKitWebRTC{closed: make(chan struct{}), codecs: []string{"video/vp8"}}
-	sess := NewSession("test-codecs", server, (*webrtc.WebRTC)(nil), lk, &mockRecorder{path: "/var/rec/camera.webm"})
+	lk := &mockLiveKitWebRTC{closed: make(chan struct{}), codecs: []string{"video/h264"}}
+	sess := NewSession("test-codecs", server, (*webrtc.WebRTC)(nil), lk, &mockRecorder{path: "/var/rec/camera.mkv"})
 	server.runSession(sess)
 	require.NoError(t, sess.StartRecording(&events.StartRecording{SessionId: "test-codecs", Adapter: "livekit"}, time.Time{}))
 
@@ -911,19 +924,51 @@ func TestStartResponseReportsTheFileNameAndCodecs(t *testing.T) {
 		require.NoError(t, json.Unmarshal(msg, &response))
 		assert.Equal(t, "ok", response.Status)
 		require.NotNil(t, response.FileName)
-		assert.Equal(t, "/var/rec/camera.webm", *response.FileName)
-		assert.Equal(t, []string{"video/vp8"}, response.Codecs)
+		assert.Equal(t, "/var/rec/camera.mkv", *response.FileName)
+		assert.Equal(t, []string{"video/h264"}, response.Codecs)
 	case <-time.After(time.Second):
 		require.Fail(t, "no startRecordingResponse")
 	}
 
 	info := sess.GetRecordingInfo()
 	require.NotNil(t, info)
-	assert.Equal(t, "/var/rec/camera.webm", info.FileName)
-	assert.Equal(t, []string{"video/vp8"}, info.Codecs)
+	assert.Equal(t, "/var/rec/camera.mkv", info.FileName)
+	assert.Equal(t, []string{"video/h264"}, info.Codecs)
 
 	require.NoError(t, sess.StopRecording(nil, events.StopReasonNormal, time.Time{}))
 	assert.True(t, within(time.Second, server.shutdownWg.Wait))
+}
+
+// The terminal state a LiveKit capture reports is the session's stop reason.
+func TestLiveKitTerminalStateIsTheStopReason(t *testing.T) {
+	for _, state := range []utils.ConnectionState{utils.ConnectionStateFailed, utils.ConnectionStateClosed} {
+		t.Run(state.String(), func(t *testing.T) {
+			ps := &mockPubSub{publishChan: make(chan []byte, 10)}
+			server := NewServer(&config.Config{}, ps)
+			lk := &mockLiveKitWebRTC{closed: make(chan struct{})}
+			sess := NewSession("test-"+state.String(), server, (*webrtc.WebRTC)(nil), lk, &mockRecorder{})
+			server.runSession(sess)
+			require.NoError(t, sess.StartRecording(&events.StartRecording{SessionId: "test-" + state.String(), Adapter: "livekit"}, time.Time{}))
+			select {
+			case <-ps.publishChan: // startRecordingResponse
+			case <-time.After(time.Second):
+				require.Fail(t, "no startRecordingResponse")
+			}
+
+			lk.reportState(state)
+
+			select {
+			case msg := <-ps.publishChan:
+				var stopped events.RecordingStopped
+				require.NoError(t, json.Unmarshal(msg, &stopped))
+				assert.Equal(t, events.RecordingStoppedKey, stopped.Id)
+				assert.Equal(t, state.String(), stopped.Reason)
+			case <-time.After(time.Second):
+				require.Fail(t, "no recordingStopped")
+			}
+			assert.True(t, within(time.Second, server.shutdownWg.Wait))
+		})
+	}
 }
 
 // A mediasoup session reports the codecs it answered, before any media

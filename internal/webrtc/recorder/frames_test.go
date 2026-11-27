@@ -15,8 +15,6 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
-	log "github.com/sirupsen/logrus"
-	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -658,12 +656,6 @@ func TestSetFormatFailsOnceTheFileIsOpen(t *testing.T) {
 }
 
 func TestFormatFor(t *testing.T) {
-	// WebM holds every codec in the registry, so the test codec stands in
-	// for one it cannot hold.
-	saved := registry
-	registry = append([]*Codec{frameTestCodec}, saved...)
-	t.Cleanup(func() { registry = saved })
-
 	for _, c := range []struct {
 		mimeTypes []string
 		want      Format
@@ -674,8 +666,8 @@ func TestFormatFor(t *testing.T) {
 		{[]string{"video/vp9"}, FormatWebM},
 		{[]string{"video/av1"}, FormatWebM},
 		{[]string{"", "video/vp8"}, FormatWebM},
-		{[]string{"video/x-test"}, FormatMKV},
-		{[]string{"video/X-Test", "video/vp8"}, FormatMKV},
+		{[]string{"video/h264"}, FormatMKV},
+		{[]string{"video/H264", "video/vp8"}, FormatMKV},
 		// A codec the recorder does not write fails its track in either format.
 		{[]string{"video/vp8", "video/h265"}, FormatWebM},
 		{[]string{"video/h265"}, FormatWebM},
@@ -701,6 +693,27 @@ func TestNewRecorderIgnoresTheRequestedExtension(t *testing.T) {
 		assert.Equal(t, filepath.Join(dir, want), rec.GetFilePath(), name)
 		assert.Equal(t, FormatWebM, rec.(*WebmRecorder).Format(), name)
 	}
+}
+
+func TestNewRecorderWritesToDevNullInEitherFormat(t *testing.T) {
+	cfg := (&config.Config{}).GetDefaults().Recorder
+	cfg.Directory = t.TempDir()
+	cfg.WriteToDevNull = true
+
+	rec, err := NewRecorder(testSessionContext(), cfg, "a/camera.webm")
+	require.NoError(t, err)
+	assert.Equal(t, os.DevNull, rec.GetFilePath())
+
+	require.NoError(t, rec.SetFormat(FormatMKV))
+	require.NoError(t, rec.SetVideoCodec(CodecH264))
+	assert.Equal(t, os.DevNull, rec.GetFilePath())
+
+	rec.SetHasVideo(true)
+	assert.NotPanics(t, func() {
+		rec.PushVideoSample((&h264Stream{seq: 1}).sample(false, testAU(t, 0)))
+		rec.Close()
+	})
+	assert.Equal(t, 1, rec.GetStats().Video.WrittenSamples)
 }
 
 func TestNewRecorderRefusesANameNotUnderTheDirectory(t *testing.T) {
@@ -755,22 +768,4 @@ func TestCodecsOfARecording(t *testing.T) {
 	require.NoError(t, rec.SetFormat(FormatMKV))
 	require.NoError(t, rec.SetVideoCodec(frameTestCodec))
 	assert.Equal(t, []string{"video/x-test", "audio/opus"}, rec.Codecs())
-}
-
-// warnings returns the messages logged at Warn level or above while f runs.
-func warnings(f func()) []string {
-	std := log.StandardLogger()
-	defer std.ReplaceHooks(std.ReplaceHooks(make(log.LevelHooks)))
-	hook := logtest.NewLocal(std)
-
-	f()
-
-	var messages []string
-	for _, e := range hook.AllEntries() {
-		if e.Level <= log.WarnLevel {
-			messages = append(messages, e.Message)
-		}
-	}
-
-	return messages
 }

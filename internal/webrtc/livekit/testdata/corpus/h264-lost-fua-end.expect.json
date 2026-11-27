@@ -1,0 +1,48 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "Key frame 90 loses the FU-A fragment that ends its IDR and carries the marker, never repaired. The jitter buffer drops the frame's other 6 packets, and the writer drops frames 90-179 until key frame 180. The track buffer asks 200-240 ms after frame 91 reveals the gap, and once a second while no key frame follows it: 3 requests. Key frame 180's SPS ends the asking. RED when the track buffer's key frame hint misses H.264 key frames: it asks again 1 s after key frame 180 (4 requests).",
+  "traces": [
+    "h264-lost-fua-end.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 3,
+    "max": 3
+  },
+  "bufferRequestsMs": [
+    {
+      "min": 3233.333,
+      "max": 3273.333
+    },
+    {
+      "min": 4233.333,
+      "max": 4273.333
+    },
+    {
+      "min": 5233.333,
+      "max": 5273.333
+    }
+  ],
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 120,
+    "max": 120
+  },
+  "packetsWritten": {
+    "min": 428,
+    "max": 428
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 90,
+      "max": 90
+    }
+  }
+}

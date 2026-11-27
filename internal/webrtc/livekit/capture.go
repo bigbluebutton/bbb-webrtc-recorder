@@ -1,6 +1,7 @@
 package livekit
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -39,7 +40,7 @@ const (
 type trackCapture struct {
 	ssrc     uint32
 	full     bool
-	vp8      bool
+	codec    corpus.Codec
 	maxBytes int64
 	now      func() int64
 	logger   *log.Entry
@@ -68,7 +69,7 @@ func newTrackCapture(out io.WriteCloser, h corpus.Header, full bool, maxBytes in
 	c := &trackCapture{
 		ssrc:     h.SSRC,
 		full:     full,
-		vp8:      h.Codec == corpus.CodecVP8,
+		codec:    h.Codec,
 		maxBytes: maxBytes,
 		now:      now,
 		logger:   logger,
@@ -143,8 +144,10 @@ func (c *trackCapture) payloadPrefix(p []byte) []byte {
 	switch {
 	case c.full:
 		return p
-	case c.vp8:
+	case c.codec == corpus.CodecVP8:
 		return p[:vp8HeaderLen(p)]
+	case c.codec == corpus.CodecH264:
+		return h264HeaderPrefix(p)
 	case len(p) <= 3:
 		return p // Opus DTX frames, which carry no media
 	default:
@@ -200,6 +203,83 @@ func vp8HeaderLen(p []byte) int {
 	}
 
 	return min(n, len(p))
+}
+
+// h264SliceKept is how many bytes of a slice a capture keeps past its NAL
+// unit or FU-A header. They hold the start of its slice header.
+const h264SliceKept = 8
+
+// h264HeaderPrefix is what a header-mode capture keeps of an H.264 payload
+// (RFC 6184). It keeps the SPS and PPS whole, the STAP-A sizes and NAL unit
+// headers, and h264SliceKept bytes of each slice. Inside a STAP-A, the media
+// dropped before a later size field is zeroed, so that field keeps its
+// offset. The kept STAP-A ends at a size field that is zero or larger than
+// the rest of the packet.
+func h264HeaderPrefix(p []byte) []byte {
+	if len(p) == 0 {
+		return p
+	}
+
+	switch t := p[0] & 0x1f; {
+	case t == 24: // STAP-A
+		return h264STAPPrefix(p)
+	case t == 28: // FU-A
+		switch {
+		case len(p) < 2:
+			return p
+		case p[1]&0x1f == 7 || p[1]&0x1f == 8:
+			return p
+		case p[1]&0x80 != 0 && (p[1]&0x1f == 1 || p[1]&0x1f == 5):
+			return p[:min(len(p), 2+h264SliceKept)]
+		}
+
+		return p[:2]
+	case t >= 1 && t <= 23:
+		return p[:h264NALKept(p)]
+	}
+
+	// One byte is enough for the other packet types, which the recorder
+	// refuses by this byte, and for LiveKit's padding.
+	return p[:1]
+}
+
+// h264NALKept is how many bytes a capture keeps of a whole NAL unit.
+func h264NALKept(nal []byte) int {
+	switch nal[0] & 0x1f {
+	case 7, 8:
+		return len(nal)
+	case 1, 5:
+		return min(len(nal), 1+h264SliceKept)
+	}
+
+	return 1
+}
+
+// h264STAPPrefix is h264HeaderPrefix for a STAP-A. It returns a new slice:
+// the packet still goes to the recorder.
+func h264STAPPrefix(p []byte) []byte {
+	out := []byte{p[0]}
+	for rest := p[1:]; len(rest) > 0; {
+		if len(rest) < 2 {
+			return append(out, rest...)
+		}
+
+		n := int(binary.BigEndian.Uint16(rest))
+		out = append(out, rest[:2]...)
+		rest = rest[2:]
+		if n == 0 || n > len(rest) {
+			return out
+		}
+
+		kept := h264NALKept(rest[:n])
+		out = append(out, rest[:kept]...)
+		rest = rest[n:]
+		if len(rest) > 0 {
+			out = append(out, make([]byte, n-kept)...)
+		}
+	}
+
+	return out
 }
 
 // run writes the queued records until close, then ends the trace.
@@ -345,6 +425,8 @@ func (w *LiveKitWebRTC) openTraceCapture(info trackInfo, clockRate uint32) {
 		h.Codec = corpus.CodecVP8
 	case MimeTypeOpus:
 		h.Codec = corpus.CodecOpus
+	case MimeTypeH264:
+		h.Codec = corpus.CodecH264
 	}
 
 	// A track subscribed again reuses the path: its earlier capture must

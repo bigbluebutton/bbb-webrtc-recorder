@@ -1,0 +1,35 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "A LiveKit simulcast start: the 320x180 layer's STAP-A of SPS and PPS (no marker), then the 640x360 layer's key frame one tick later, in one jitter-buffer sample. The orphan parameter sets are no frame. The track entry is 640x360, and CodecPrivate holds the key frame's own SPS and PPS. Every frame is written. RED when the key frame takes its size and CodecPrivate from the sample's first SPS: the track entry is 320x180, and CodecPrivate is not the first key block's SPS.",
+  "traces": [
+    "h264-simulcast-orphan-sps.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 90,
+    "max": 90
+  },
+  "packetsWritten": {
+    "min": 191,
+    "max": 191
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 0,
+      "max": 0
+    },
+    "videoSize": [640, 360]
+  }
+}

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/gomodule/redigo/redis"
 	"github.com/google/uuid"
+	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -104,6 +106,7 @@ type Message struct {
 type Driver struct {
 	t            *testing.T
 	addr         string
+	lk           *LiveKit // lists the tracks a start names
 	ToRecorder   string
 	FromRecorder string
 
@@ -118,7 +121,7 @@ type Driver struct {
 
 // NewDriver subscribes to fromRecorder before it returns, so it sees the
 // recorderStatus a recorder started afterwards announces itself with.
-func NewDriver(t *testing.T, addr, toRecorder, fromRecorder, logPath string) *Driver {
+func NewDriver(t *testing.T, addr, toRecorder, fromRecorder, logPath string, lk *LiveKit) *Driver {
 	t.Helper()
 
 	conn, err := redis.Dial("tcp", addr, redis.DialConnectTimeout(5*time.Second))
@@ -130,6 +133,7 @@ func NewDriver(t *testing.T, addr, toRecorder, fromRecorder, logPath string) *Dr
 	d := &Driver{
 		t:            t,
 		addr:         addr,
+		lk:           lk,
 		ToRecorder:   toRecorder,
 		FromRecorder: fromRecorder,
 		psc:          redis.PubSubConn{Conn: conn},
@@ -375,6 +379,20 @@ func (d *Driver) StartRecordingWith(ctx context.Context, s StartSpec) (*Recordin
 		Metadata: s.Metadata,
 	}
 
+	// The response names each track's primary codec only. A backup codec
+	// picks the container too, since LiveKit may switch to it. The query
+	// runs alongside the start, so starts sent together still go out
+	// together, and a delayed link adds no round trip after the response.
+	type listing struct {
+		codecs []string
+		err    error
+	}
+	listed := make(chan listing, 1)
+	go func() {
+		codecs, err := d.listedCodecs(ctx, s.Room, s.TrackIDs)
+		listed <- listing{codecs, err}
+	}()
+
 	from := len(d.Messages())
 	if err := d.Publish(req); err != nil {
 		return nil, err
@@ -395,10 +413,14 @@ func (d *Driver) StartRecordingWith(ctx context.Context, s StartSpec) (*Recordin
 
 	rec.Path, rec.Codecs = deref(rec.Response.FileName), rec.Response.Codecs
 
-	// WebM holds every codec the recorder writes.
+	l := <-listed
+	if l.err != nil {
+		return rec, l.err
+	}
+
 	ext := filepath.Ext(rec.Path)
-	if want := ".webm"; ext != want {
-		return rec, fmt.Errorf("recording %s of %v: extension %q, want %q", rec.Path, rec.Codecs, ext, want)
+	if want := containerExt(append(l.codecs, rec.Codecs...)); ext != want {
+		return rec, fmt.Errorf("recording %s of %v, LiveKit lists %v: extension %q, want %q", rec.Path, rec.Codecs, l.codecs, ext, want)
 	}
 
 	base := s.FileName
@@ -411,6 +433,32 @@ func (d *Driver) StartRecordingWith(ctx context.Context, s StartSpec) (*Recordin
 	}
 
 	return rec, nil
+}
+
+// listedCodecs returns the codecs LiveKit lists for the tracks trackIDs of
+// room, backups included. A track LiveKit no longer lists adds none.
+func (d *Driver) listedCodecs(ctx context.Context, room string, trackIDs []string) ([]string, error) {
+	listed, err := d.lk.listedTracks(ctx, room, "")
+	if err != nil {
+		return nil, fmt.Errorf("list the tracks of room %s: %w", room, err)
+	}
+
+	var codecs []string
+	for _, id := range trackIDs {
+		if info := listed[id]; info != nil {
+			codecs = append(codecs, publicationCodecs(info)...)
+		}
+	}
+
+	return codecs, nil
+}
+
+func containerExt(codecs []string) string {
+	if slices.ContainsFunc(codecs, func(c string) bool { return strings.EqualFold(c, webrtc.MimeTypeH264) }) {
+		return ".mkv"
+	}
+
+	return ".webm"
 }
 
 // GetRecordings sends getRecordings and returns the recordings its response

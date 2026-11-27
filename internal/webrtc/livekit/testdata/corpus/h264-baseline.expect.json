@@ -1,0 +1,35 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "20 s clean H.264 camera, 640x360 at 30 fps with 1% shallow reordering, recorded to Matroska through the frames path. Each key frame, one every 2 s, is a STAP-A of SPS and PPS and 6 FU-A fragments. 0 requests, every frame written as one AVCC block, key flags on the 10 IDRs, no duplicate or backward PTS. RED when the read loop passes H.264 packets to PushVideoAt one at a time instead of whole samples: nothing H.264 is written.",
+  "traces": [
+    "h264-baseline.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 600,
+    "max": 600
+  },
+  "packetsWritten": {
+    "min": 1250,
+    "max": 1250
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 10,
+    "videoDropped": {
+      "min": 0,
+      "max": 0
+    },
+    "videoSize": [640, 360]
+  }
+}

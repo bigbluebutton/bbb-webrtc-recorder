@@ -2,6 +2,7 @@ package livekit
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/config"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus/oracle"
+	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/assert"
@@ -50,16 +52,18 @@ type webmExpect struct {
 	Monotonic      bool `json:"monotonic"`
 	MinVideoFrames int  `json:"minVideoFrames,omitempty"`
 	MinAudioFrames int  `json:"minAudioFrames,omitempty"`
-	MinKeyframes   int  `json:"minKeyframes,omitempty"` // by the VP8 payload bit
+	MinKeyframes   int  `json:"minKeyframes,omitempty"` // by the VP8 payload bit, or by an H.264 IDR
 	// MaxAudioLagMs bounds the Opus frames' lag behind their read times
 	// (oracle.TimelineLag) by magnitude, MaxFinalAudioLagMs the last frame's.
 	MaxAudioLagMs      *float64 `json:"maxAudioLagMs,omitempty"`
 	MaxFinalAudioLagMs *float64 `json:"maxFinalAudioLagMs,omitempty"`
-	// VideoDropped counts the VP8 frames read but not written
+	// VideoDropped counts the video frames read but not written
 	// (oracle.VideoPlacement).
 	VideoDropped *bound `json:"videoDropped,omitempty"`
 	// AudioMaxGapMs bounds the Opus track's largest PTS step.
 	AudioMaxGapMs *window `json:"audioMaxGapMs,omitempty"`
+	// VideoSize is the video track entry's width and height.
+	VideoSize *[2]int `json:"videoSize,omitempty"`
 }
 
 // window is an inclusive range, in ms. In BufferRequestsMs it holds times
@@ -185,12 +189,15 @@ func (e *webmExpect) violations(r replayResult) []string {
 
 	blocks := func(codec string) (n, keys int) {
 		if tr := r.webm.Track(codec); tr != nil {
-			return tr.Blocks, tr.VP8Keyframes
+			return tr.Blocks, tr.VP8Keyframes + tr.H264Keyframes
 		}
 
 		return 0, 0
 	}
 	video, keys := blocks(oracle.CodecVP8)
+	if video == 0 {
+		video, keys = blocks(oracle.CodecH264)
+	}
 	audio, _ := blocks(oracle.CodecOpus)
 
 	if video < e.MinVideoFrames {
@@ -227,12 +234,26 @@ func (e *webmExpect) violations(r replayResult) []string {
 		}
 	}
 
+	if e.VideoSize != nil {
+		tr := r.webm.Track(oracle.CodecVP8)
+		if tr == nil {
+			tr = r.webm.Track(oracle.CodecH264)
+		}
+
+		switch {
+		case tr == nil:
+			v = append(v, "webm: no video track for videoSize")
+		case [2]int{tr.Width, tr.Height} != *e.VideoSize:
+			v = append(v, fmt.Sprintf("webm video size %dx%d, want %dx%d", tr.Width, tr.Height, e.VideoSize[0], e.VideoSize[1]))
+		}
+	}
+
 	if e.VideoDropped != nil {
 		switch {
 		case r.videoPlaceErr != nil:
 			v = append(v, fmt.Sprintf("webm video placement: %v", r.videoPlaceErr))
 		case r.videoPlace == nil:
-			v = append(v, "webm video placement: needs exactly one VP8 trace")
+			v = append(v, "webm video placement: needs exactly one video trace")
 		default:
 			if s := e.VideoDropped.violation("videoDropped", r.videoPlace.Dropped); s != "" {
 				v = append(v, s)
@@ -243,18 +264,18 @@ func (e *webmExpect) violations(r replayResult) []string {
 	return v
 }
 
-// videoTimelineSpreadMs bounds the spread of the VP8 timeline errors. The
+// videoTimelineSpreadMs bounds the spread of the video timeline errors. The
 // writer floors each PTS to ms, counting from the first key frame it sees.
 // When it rejects that key frame, the first block's PTS is floored too.
 // The errors then fall either side of 0, less than 1 ms apart.
 //
-// The writer also truncates each frame duration to whole ns, so the PTS
+// The VP8 writer also truncates each frame duration to whole ns, so the PTS
 // falls up to 1 ns per block behind. The 0.01 ms covers float error.
 func videoTimelineSpreadMs(blocks int) float64 {
 	return 1.01 + float64(blocks)*1e-6
 }
 
-// videoPlaceViolations checks every block of a replayed VP8 track. Each
+// videoPlaceViolations checks every block of a replayed video track. Each
 // must name a frame read, in increasing order. Their timeline errors must
 // lie within videoTimelineSpreadMs of each other.
 func videoPlaceViolations(r replayResult) []string {
@@ -270,6 +291,49 @@ func videoPlaceViolations(r replayResult) []string {
 	}
 
 	return nil
+}
+
+// fileViolations checks what every replayed file must hold. The writer's
+// count and the file must agree, or a frame the writer counts can go missing
+// from the recording unseen. An H.264 track must pass oracle.CheckH264 and
+// oracle.CheckH264Blocks, in a Matroska file, since WebM cannot hold H.264.
+func fileViolations(r replayResult, traces []*corpus.Trace) []string {
+	if r.webm == nil {
+		return nil
+	}
+
+	var v []string
+	docType := "webm"
+	if videoCodecOf(traces) == oracle.CodecH264 {
+		docType = "matroska"
+	}
+	if r.webm.DocType != docType {
+		v = append(v, fmt.Sprintf("DocType %q, want %q", r.webm.DocType, docType))
+	}
+
+	for _, c := range []struct {
+		codec  string
+		frames int
+	}{{videoCodecOf(traces), r.videoFrames}, {oracle.CodecOpus, r.audioFrames}} {
+		blocks := 0
+		if tr := r.webm.Track(c.codec); tr != nil {
+			blocks = tr.Blocks
+		}
+		if blocks != c.frames {
+			v = append(v, fmt.Sprintf("%s: %d frames written, %d blocks in the file", c.codec, c.frames, blocks))
+		}
+	}
+
+	if tr := r.webm.Track(oracle.CodecH264); tr != nil {
+		if err := tr.CheckH264(); err != nil {
+			v = append(v, err.Error())
+		}
+	}
+	if r.h264BlocksErr != nil {
+		v = append(v, r.h264BlocksErr.Error())
+	}
+
+	return v
 }
 
 func loadExpectation(t *testing.T, path string) *expectation {
@@ -299,11 +363,87 @@ func traceInfo(t *testing.T, i int, tr *corpus.Trace) (trackInfo, uint32) {
 		info.kind, info.mime, info.source, info.pubMime = TrackKindVideo, MimeTypeVP8, "camera", "video/VP8"
 	case corpus.CodecOpus:
 		info.kind, info.mime, info.source, info.pubMime = TrackKindAudio, MimeTypeOpus, "microphone", "audio/opus"
+	case corpus.CodecH264:
+		info.kind, info.mime, info.source, info.pubMime = TrackKindVideo, MimeTypeH264, "camera", "video/H264"
 	default:
 		require.Failf(t, "unsupported codec", "%q", tr.Header.Codec)
 	}
 
+	codec, ok := recorder.CodecFor(string(info.mime))
+	require.True(t, ok, info.mime)
+	info.codec = codec
+
 	return info, tr.Header.ClockRate
+}
+
+// videoCodecOf is the oracle codec ID of the video traces replayed together:
+// VP8 unless one is H.264.
+func videoCodecOf(traces []*corpus.Trace) string {
+	for _, tr := range traces {
+		if tr.Header.Codec == corpus.CodecH264 {
+			return oracle.CodecH264
+		}
+	}
+
+	return oracle.CodecVP8
+}
+
+// tagH264Frames tags each H.264 frame read with its RTP timestamp, in the
+// packet that starts its first slice and every copy of it
+// (corpus.TagH264Frame). A packet too short for the tag grows to fit, since
+// the writer copies it as it is. A STAP-A (type 24) cannot grow.
+func tagH264Frames(reads []trackRead) {
+	for _, read := range reads {
+		p := read.pkt
+		if p == nil || p.Padding || !corpus.H264PictureStart(p.Payload) {
+			continue
+		}
+
+		for !corpus.TagH264Frame(p.Payload, p.Timestamp) && p.Payload[0]&0x1f != 24 {
+			p.Payload = append(p.Payload, 0)
+		}
+	}
+}
+
+// fillH264Payloads fills each payload of reads past the prefix that its
+// record in tr keeps. Zeros would hide a writer that drops, repeats or zeroes
+// part of a slice. The bytes come from the sequence number and the offset,
+// so an RTX or duplicate copy gets the original's. The high bit keeps them
+// from reading as a frame tag.
+func fillH264Payloads(tr *corpus.Trace, reads []trackRead) {
+	i := 0
+	for _, rec := range tr.Records {
+		if rec.IsEvent() {
+			continue
+		}
+
+		if p := reads[i].pkt; p != nil && !p.Padding {
+			for k := len(rec.Pay); k < len(p.Payload); k++ {
+				p.Payload[k] = 0x80 | byte(int(p.SequenceNumber)*7+k)
+			}
+		}
+		i++
+	}
+}
+
+// asRead is tr with each payload as reads hold it, filled and tagged, for
+// oracle.CheckH264Blocks.
+func asRead(tr *corpus.Trace, reads []trackRead) *corpus.Trace {
+	out := &corpus.Trace{Header: tr.Header}
+	i := 0
+	for _, rec := range tr.Records {
+		if rec.IsEvent() {
+			continue
+		}
+
+		if p := reads[i].pkt; p != nil {
+			rec.Pay, rec.PLen = slices.Clone(p.Payload), len(p.Payload)
+		}
+		out.Records = append(out.Records, rec)
+		i++
+	}
+
+	return out
 }
 
 // tagVP8Frames tags the first packet of each VP8 frame in reads, and every
@@ -383,11 +523,17 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 	srcs := make([]trackSource, 0, len(traces))
 	fakes := make([]*fakeTrack, 0, len(traces))
 	var audio, video []int
+	var h264Read *corpus.Trace
 	for i, tr := range traces {
 		reads, _ := traceReads(tr)
 		switch tr.Header.Codec {
 		case corpus.CodecVP8:
 			tagVP8Frames(reads)
+			video = append(video, i)
+		case corpus.CodecH264:
+			fillH264Payloads(tr, reads)
+			tagH264Frames(reads)
+			h264Read = asRead(tr, reads)
 			video = append(video, i)
 		case corpus.CodecOpus:
 			audio = append(audio, i)
@@ -418,9 +564,12 @@ func replayTracesWith(t *testing.T, cfg config.LiveKit, traces []*corpus.Trace) 
 	}
 
 	if len(video) == 1 && r.webm != nil {
-		if tr := r.webm.Track(oracle.CodecVP8); tr != nil {
+		if tr := r.webm.Track(videoCodecOf(traces)); tr != nil {
 			p, err := oracle.VideoPlacement(tr, traces[video[0]])
 			r.videoPlace, r.videoPlaceErr = &p, err
+			if h264Read != nil {
+				r.h264BlocksErr = oracle.CheckH264Blocks(tr, h264Read)
+			}
 		}
 	}
 
@@ -445,6 +594,11 @@ func (r replayResult) String() string {
 				parts = append(parts, fmt.Sprintf("%s{blocks=%d vp8key=%d keyBlocks=%d dup=%v mono=%v maxGap=%d}",
 					c, tr.Blocks, tr.VP8Keyframes, tr.KeyBlocks, tr.DuplicatePTS, tr.Monotonic, tr.MaxGapMs))
 			}
+		}
+		if tr := r.webm.Track(oracle.CodecH264); tr != nil {
+			parts = append(parts, fmt.Sprintf("%s{%dx%d blocks=%d h264key=%d keyBlocks=%d dup=%v mono=%v maxGap=%d errors=%d}",
+				oracle.CodecH264, tr.Width, tr.Height, tr.Blocks, tr.H264Keyframes, tr.KeyBlocks, tr.DuplicatePTS, tr.Monotonic,
+				tr.MaxGapMs, len(tr.H264Errors)))
 		}
 		webm = strings.Join(parts, " ")
 	}
@@ -512,16 +666,8 @@ func TestCorpusReplay(t *testing.T) {
 				assert.Fail(t, v)
 			}
 
-			// The writer's count and the file must agree, or a frame the
-			// writer counts can go missing from the recording unseen.
-			if r.webm != nil {
-				for codec, n := range map[string]int{oracle.CodecVP8: r.videoFrames, oracle.CodecOpus: r.audioFrames} {
-					blocks := 0
-					if tr := r.webm.Track(codec); tr != nil {
-						blocks = tr.Blocks
-					}
-					assert.Equal(t, n, blocks, "%s: frames written against blocks in the file", codec)
-				}
+			for _, v := range fileViolations(r, traces) {
+				assert.Fail(t, v)
 			}
 		})
 	}
@@ -591,6 +737,91 @@ func TestReplayTagsShortFrames(t *testing.T) {
 	assert.InDelta(t, 333, r.videoPlace.IdealStartUs, 1, "frame 1, read at 33.333 ms, PTS 33")
 	assert.Empty(t, videoPlaceViolations(r))
 	assert.Empty(t, mediaSpanViolations(r, []*corpus.Trace{tr}, nil))
+}
+
+// TestReplayH264 replays an H.264 camera that loses a delta frame, through
+// the frames path into a Matroska file. The writer drops the frames up to the
+// next key frame, and every block it writes names its frame.
+func TestReplayH264(t *testing.T) {
+	tr, err := corpus.GenerateH264(corpus.H264Options{
+		FPS: 30, Frames: 90, KeyInterval: 30, Slices: 2, KeySlicePackets: 4, DeltaPLen: 12,
+		SpreadUs: 3000, StartSeq: 65000, StartTS: 90000, SSRC: 1,
+	})
+	require.NoError(t, err)
+
+	// Key frames are 9 packets, delta frames 2. Frame 40 loses its first slice.
+	first := 9 + 29*2 + 9 + 9*2
+	lost := tr.Records[first].Seq
+	require.Equal(t, tr.Records[first+1].TS, tr.Records[first].TS)
+	require.True(t, tr.Records[first+1].M)
+	tr.Records, err = corpus.Apply(tr.Records, corpus.DropSeqs(lost), corpus.EOFAt(tr.Records[len(tr.Records)-1].AtUs+50000))
+	require.NoError(t, err)
+
+	var r replayResult
+	synctest.Test(t, func(t *testing.T) {
+		r = replayTraces(t, []*corpus.Trace{tr})
+	})
+	t.Logf("measured: %s", r)
+
+	assert.True(t, bytes.Contains(r.file[:64], []byte("matroska")), "the DocType")
+	require.NoError(t, r.webmErr)
+	vt := r.webm.Track(oracle.CodecH264)
+	require.NotNil(t, vt)
+	require.NoError(t, vt.CheckH264())
+	assert.Equal(t, 3, vt.H264Keyframes)
+	assert.Empty(t, (&webmExpect{VideoSize: &[2]int{640, 360}}).violations(r))
+	assert.Equal(t, []string{"webm video size 640x360, want 320x180"}, (&webmExpect{VideoSize: &[2]int{320, 180}}).violations(r))
+	assert.Equal(t, 70, r.videoFrames, "frames 0-39, then from the key frame at 60")
+	assert.Equal(t, 3*9+87*2-1, r.packets, "every packet read reaches the writer")
+
+	require.NoError(t, r.videoPlaceErr)
+	require.NotNil(t, r.videoPlace)
+	assert.Equal(t, 70, r.videoPlace.Placed)
+	assert.Equal(t, 20, r.videoPlace.Dropped)
+	assert.Empty(t, videoPlaceViolations(r))
+	assert.Empty(t, mediaSpanViolations(r, []*corpus.Trace{tr}, nil))
+	assert.Empty(t, fileViolations(r, []*corpus.Trace{tr}))
+}
+
+// libwebrtc packs a key frame's SPS, PPS and IDR into one STAP-A when they
+// fit one packet.
+func TestReplayH264PlacesAKeyFrameInOneSTAPA(t *testing.T) {
+	tr, err := corpus.GenerateH264(corpus.H264Options{
+		FPS: 30, Frames: 60, KeyInterval: 30, KeySlicePackets: 1, KeyPLen: 300, DeltaPLen: 200,
+		SpreadUs: 1000, StartSeq: 1000, StartTS: 90000, SSRC: 9,
+	})
+	require.NoError(t, err)
+
+	// Key frame 30: a STAP-A of SPS and PPS, then the IDR in a packet of its own.
+	var recs []corpus.Record
+	for i := 0; i < len(tr.Records); i++ {
+		r := tr.Records[i]
+		if r.TS == 90000+30*3000 && r.Pay[0]&0x1f == 24 {
+			idr := tr.Records[i+1].Packet().Payload
+			r.Pay = append(binary.BigEndian.AppendUint16(r.Packet().Payload, uint16(len(idr))), idr...)
+			r.PLen, r.M = len(r.Pay), true
+			i++
+		}
+		recs = append(recs, r)
+	}
+	for k := range recs {
+		recs[k].Seq = 1000 + uint16(k)
+	}
+	tr.Records, err = corpus.Apply(recs, corpus.EOFAt(recs[len(recs)-1].AtUs+50000))
+	require.NoError(t, err)
+	require.NoError(t, tr.Validate())
+
+	var r replayResult
+	synctest.Test(t, func(t *testing.T) {
+		r = replayTraces(t, []*corpus.Trace{tr})
+	})
+
+	require.NoError(t, r.webmErr)
+	require.NoError(t, r.webm.Track(oracle.CodecH264).CheckH264())
+	assert.Equal(t, 60, r.videoFrames)
+	require.NoError(t, r.videoPlaceErr)
+	assert.Empty(t, mediaSpanViolations(r, []*corpus.Trace{tr}, nil))
+	assert.Empty(t, fileViolations(r, []*corpus.Trace{tr}))
 }
 
 // TestKeyframeLoopDoesNotPersist closes the loop the corpus cannot: the

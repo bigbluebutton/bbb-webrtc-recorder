@@ -46,7 +46,8 @@ func assertTraceEnded(t *testing.T, name string, out *Output) {
 
 // ReadOutput reads rec's WebM with the oracle and the trace the capture
 // wrote next to it for trackID, failing t if either is missing or invalid,
-// and saves a summary next to them.
+// and saves a summary next to them. The file's DocType must match its
+// extension.
 func ReadOutput(t *testing.T, rec *Recording, trackID string) *Output {
 	t.Helper()
 
@@ -54,6 +55,8 @@ func ReadOutput(t *testing.T, rec *Recording, trackID string) *Output {
 
 	sum, err := oracle.SummarizeWebM(o.FilePath)
 	require.NoError(t, err)
+	ext := filepath.Ext(o.FilePath)
+	assert.Equal(t, map[string]string{".webm": "webm", ".mkv": "matroska"}[ext], sum.DocType, "the DocType of a %s file", ext)
 	require.Len(t, sum.Tracks, 1, "a session records one track")
 
 	for _, tr := range sum.Tracks {

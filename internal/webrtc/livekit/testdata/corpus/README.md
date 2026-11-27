@@ -10,7 +10,8 @@ Read traces for the in-process replay of the LiveKit path (read loop, `trackBuff
   - **`epochUnixUs`** in the header is the wall-clock time of `atUs` 0. Each recording session has its own clock, so the traces of one meeting align only through it.
 - **No trace carries media.** Every payload is a header prefix that replay zero-pads to `plen`:
   - a VP8 descriptor and frame header in the `corpus.GenerateVP8` layout;
-  - an Opus TOC byte.
+  - an Opus TOC byte;
+  - for H.264, the SPS and PPS whole, the STAP-A sizes and NAL unit headers, and the first 8 bytes of each slice past its NAL unit or FU-A header. `corpus.GenerateH264` writes a slice header that fits in them. A capture zeroes the media between the fields it keeps in a STAP-A. Replay fills the rest of an H.264 payload with bytes from its sequence number and offset instead of zeros (`fillH264Payloads`), so a writer that drops or zeroes part of a slice changes the file.
 - **Provenance:**
   - `synthetic`: built with the `corpus` generators and mutations. The header's `generator` field records the exact call chain.
   - `pcap-extract`: per-packet read schedules taken from header-only SRTP captures of live test runs. The header `note` says what was synthesized.
@@ -22,14 +23,14 @@ Read traces for the in-process replay of the LiveKit path (read loop, `trackBuff
 A seed is one or more traces plus one expect file. `TestCorpusReplay` replays every `*.expect.json` in this directory, and fails on a trace that no expect file lists.
 
 1. **Write the trace.**
-   - **Synthetic:** add a block at the end of `seeds()` in `internal/corpus/seedgen/main.go`, then run `go run ./internal/corpus/seedgen`. Build it from the `internal/corpus` generators (`GenerateVP8`, `GenerateOpus`) and operators (`DropSeqs`, `Retransmit`, `Duplicate`, `Reorder`, `StartAt`, `EOFAt`, `MediaClock`, `SenderReports`, `Delay`, `Blackout`, `Stall`, `Pause`, `PauseOpus`, `DelayFrames`). Each seed takes the next SSRC, so a block inserted earlier changes every trace after it.
+   - **Synthetic:** add a block at the end of `seeds()` in `internal/corpus/seedgen/main.go`, or of `h264Seeds()` in `h264.go` there for an H.264 seed, then run `go run ./internal/corpus/seedgen`. Build it from the `internal/corpus` generators (`GenerateVP8`, `GenerateOpus`, `GenerateH264`) and operators (`DropSeqs`, `Retransmit`, `Duplicate`, `Reorder`, `StartAt`, `EOFAt`, `MediaClock`, `SenderReports`, `Delay`, `Blackout`, `Stall`, `Pause`, `PauseOpus`, `PauseH264`, `DelayFrames`, `Switch`, `Padding`, `H264BlankClose`). Each seed takes the next SSRC, so a block inserted earlier changes every trace after it.
    - **Live capture:** run the recorder with `livekit.traceCapture` enabled and record the session. `payload: header` keeps the media out of the trace. Copy the track's `<recording>.<trackID>.trace.ndjson.gz` here under the seed's name. `seedgen` does not write it, so `TestCorpusMatchesGenerator` only checks that its provenance is `capture`. To look at a capture before making it a seed, replay it with no expect file: `go test ./internal/webrtc/livekit/ -run 'TestReplayTraces$' -v -args -corpus.replay=<trace>[,<trace>...]`, with absolute paths, logs the same `measured:` line. It replays with the recorder's defaults, so it matches a seed with `audioClockSync: true`.
 2. **Write `<name>.expect.json`** with `v`, `class`, `intent` and `traces`, and no checks yet.
 3. **Measure:** run `go test ./internal/webrtc/livekit/ -run 'TestCorpusReplay/<name>$' -v`. It logs a `measured:` line with:
    - the requests and their times;
    - the frames and packets written;
    - `PacketsLost`;
-   - for a VP8 track, `videoPlace`: the frames read, the blocks placed, the frames dropped, and the lowest and highest timeline errors with their blocks. It also gives the ideal start in µs.
+   - for a video track, `videoPlace`: the frames read, the blocks placed, the frames dropped, and the lowest and highest timeline errors with their blocks. It also gives the ideal start in µs.
 4. **Pin the checks** that guard the defect, from the measured values. See Expect v1 below.
 5. **Prove the RED:**
    - Put the defect back, or the setting the intent names, such as `videoJitterLatency` at 200 ms.
@@ -39,7 +40,7 @@ A seed is one or more traces plus one expect file. `TestCorpusReplay` replays ev
 
 ## Seeds
 
-The class groups the seeds that guard one defect, or a few related ones, named in the Guards column. A RED on a class-9 seed, for example, means the push-lag window defect has come back. Class 24 holds three: a mid-file blackout and a pause and resume, each for a camera and a microphone, and a camera's start stall. Each seed's expect file states its RED in `intent`.
+The class groups the seeds that guard one defect, or a few related ones, named in the Guards column. A RED on a class-9 seed, for example, means the push-lag window defect has come back. Class 24 holds three: a mid-file blackout and a pause and resume, each for a camera and a microphone, and a camera's start stall. Class h264 holds the defects only H.264 has; an H.264 twin of a VP8 seed takes that seed's class. Each seed's expect file states its RED in `intent`.
 
 | Seed | Class | Provenance | Source | Guards |
 |---|---|---|---|---|
@@ -74,6 +75,31 @@ The class groups the seeds that guard one defect, or a few related ones, named i
 | `c24-mic-blackout-9s` | 24 | synthetic | generators | A 9 s mid-file blackout of a microphone, 450 seqs, and the 300 ms after it read in one burst: the PTS must keep the 9.02 s gap |
 | `c24-mic-resume-4s` | 24 | synthetic | generators | A microphone that sends nothing for 4 s: seqs follow on, and only the timestamp carries the 4.02 s. The 300 ms after it is read in one burst. LiveKit's 1 s of silence at a mute is left out; `TestBrowserMidMeetingFilesKeepLipSync` records through it |
 | `baseline-av` (`.video` + `.audio`) | baseline | synthetic | generators | The ordinary path |
+| `h264-baseline` | h264 | synthetic | generators | The ordinary H.264 path: whole samples to the frames path, AVCC blocks in Matroska |
+| `h264-layer-switch` | h264 | synthetic | LiveKit's simulcast switch (`Switch`) | A cut frame ahead of the next layer's key frame in one sample: the parse must go on past the lost unit |
+| `h264-simulcast-orphan-sps` | h264 | synthetic | LiveKit's simulcast start (`Switch`) | The low layer's orphan SPS and PPS ahead of the high layer's key frame: size and CodecPrivate come from the key frame's own SPS |
+| `h264-blank-close` | h264 | synthetic | LiveKit's downtrack close (`H264BlankClose`) | 2x2 blank key frames at the end, which the 16 px rule rejects |
+| `h264-blank-close-midframe` | h264 | synthetic | LiveKit's downtrack close inside a frame (`H264BlankClose`) | A frame cut inside its FU-A and ended by a blank STAP-A at its timestamp: one access unit, dropped whole, then the blank frames |
+| `h264-lost-stapa` | h264 | synthetic | generators | An IDR whose STAP-A of SPS and PPS is lost is no key frame |
+| `h264-lost-first-slice` | h264 | synthetic | generators | A P frame released without its first slice, in a sample that does not follow |
+| `h264-lost-fua-end` | h264 | synthetic | generators | A key frame that loses its last FU-A fragment: the requests end at the next key frame's SPS |
+| `h264-mode0-slices` | h264 | synthetic | generators, packetization mode 0 | Key frames that start with a lone SPS: the track buffer's key frame hint must see it |
+| `h264-padding-payload` | h264 | synthetic | LiveKit 1.13.5-1.13.9 (`Padding`) | Padding with a 255-byte payload between frames counts as padding by its bit, so the next frame follows |
+| `h264-padding-empty` | h264 | synthetic | LiveKit outside 1.13.5-1.13.9 (`Padding`) | Padding with no payload between frames is a sample of its own, which the jitter buffer releases, so the next frame follows |
+| `h264-c01-paced-6x45` | 1 | synthetic | `c01-paced-6x45` for H.264 | Same defect: at 200 ms, each key frame's STAP-A expires and the writer rejects its IDR |
+| `h264-c01-trickle-11x50` | 1 | synthetic | `c01-trickle-11x50` for H.264 | Same defect |
+| `h264-c03-d11-30fps` | 3 | synthetic | `c03-d11-30fps` for H.264 | Same defect, through the H.264 frames path |
+| `h264-c11-dups-30fps` | 11 | synthetic | `c11-dups-30fps` for H.264 | Same defect |
+| `h264-c12-lkprobe-rtxdup` | 12 | synthetic | `c12-lkprobe-rtxdup` for H.264 | Same defect |
+| `h264-c15-start-midframe` | 15 | synthetic | `c15-start-midframe` for H.264 | Same defect; the writer asks for no key frame the track buffer's request already covers |
+| `h264-c15-start-kfloss` | 15 | synthetic | `c15-start-kfloss` for H.264 | Same defect, with the same writer rule |
+| `h264-c15-start-blank-key` | 15 | synthetic | `c15-start-blank-key` for H.264 | A first key frame of 8x8, which the 16 px rule rejects: the file stays 640x360 |
+| `h264-c17-eof-after-gap` | 17 | synthetic | `c17-eof-after-gap` for H.264 | Same defect: the flush at EOF passes the held frames on as samples |
+| `h264-c24-blackout-9s-seq2160` | 24 | synthetic | `c24-blackout-9s-seq2160` for H.264 | Same defect: the sample after the gap does not follow, and the PTS keeps the 9.6 s gap |
+| `h264-c24-blackout-9s-seq3240` | 24 | synthetic | `c24-blackout-9s-seq3240` for H.264 | The jitter buffer's new-stream path with no picture ID: only the track buffer's follows flag shows the writer the gap |
+| `h264-c24-resume-4s` | 24 | synthetic | `c24-resume-4s` for H.264 (`PauseH264`) | Same defect: the frame writer must keep the 4 s step |
+| `h264-c24-start-stall-2500ms` | 24 | synthetic | `c24-start-stall-2500ms` for H.264 | Same defect |
+| `h264-wrap-seq-ts` | wrap | synthetic | `wrap-seq-ts-pic` for H.264 | Same defects at the sequence wrap; the frame writer must take the ticks since the previous frame across the timestamp wrap in 32 bits |
 
 ## Expect v1
 
@@ -93,13 +119,19 @@ The class groups the seeds that guard one defect, or a few related ones, named i
 - **`written`** counts the video plus audio frames the writer wrote.
 - **`packetsWritten`** counts the packets the track buffers released to the writer. Where set, it is pinned exactly.
 - **`packetsLostMax`** bounds the jitter buffers' `PacketsLost`, summed over the tracks. **`packetsLostMin`** bounds it from below, for a seed that needs a loss counted.
-- **`webm`** checks the file read back with `oracle.SummarizeWebM`. Key frames are counted by the VP8 payload bit. A missing file fails every `webm` check: nothing written leaves none.
+- **`webm`** checks the file read back with `oracle.SummarizeWebM`. Key frames are counted by the VP8 payload bit, or by an H.264 IDR slice. A missing file fails every `webm` check: nothing written leaves none.
 - **`audioClockSync`**, optional, replays with `livekit.audioClockSync` on. A seed without it replays with the setting off, whatever the recorder's default.
 - **`webm.maxAudioLagMs`** and **`webm.maxFinalAudioLagMs`** bound, by magnitude, how far each Opus frame plays from where it was read, and the last frame (`oracle.TimelineLag`). A frame read late in a burst after a stall is placed by the frames after it. They need exactly one Opus trace and one block per frame read.
-- **`webm.videoDropped`** bounds the VP8 frames read but not written. A timestamp read only with padding or an empty payload is no frame. **`webm.audioMaxGapMs`** is an inclusive window on the Opus track's `MaxGapMs`.
+- **`webm.videoDropped`** bounds the video frames read but not written. A timestamp read only with padding or an empty payload is no frame, nor is an H.264 timestamp read with no slice data, such as parameter sets alone. **`webm.audioMaxGapMs`** is an inclusive window on the Opus track's `MaxGapMs`. **`webm.videoSize`** pins the video track entry's `[width, height]`.
 - **Every seed:** the file must hold as many blocks per track as the writer counted frames, so a frame the writer counts but loses fails without a check of its own.
-- **Every VP8 seed:** replay tags each frame's first packet, and its copies, with "BBBF" and the frame's RTP timestamp (`corpus.TagFrame`). A first packet needs 11 bytes past the VP8 descriptor for a delta frame's tag, and 18 for a key frame's. A shorter one grows to fit if it holds the 10 bytes the writer reads of a frame. With one VP8 trace, each block must name a frame read, in increasing order (`oracle.VideoPlacement`). A block's timeline error is its PTS since the first block, less its RTP time since that block's. The errors must lie within 1.01 ms of each other, plus 1 ns per block: the writer truncates each frame duration to whole ns before it adds them up. The writer floors each PTS to ms, counting from the first key frame it sees, and it may reject that frame (`c15-start-blank-key`). So the first block's PTS can be off its RTP time too, and the errors fall either side of 0.
-- **Every single-track seed:** the media span must last the file's media and its last frame within 2 ms, and start within 1 ms of its ideal start (`mediaspan_replay_test.go`). The last frame lasts the PTS step before it, at most 1 s for VP8 and 120 ms for Opus, as the recorder caps it. For VP8 the ideal start is the latest start that plays no written frame after its read: the least delayed frame's read, less its PTS since the first block. For Opus it is the first frame's read, less the lag oracle's backlog.
+- **Every VP8 seed:** replay tags each frame's first packet, and its copies, with "BBBF" and the frame's RTP timestamp (`corpus.TagFrame`). A first packet needs 11 bytes past the VP8 descriptor for a delta frame's tag, and 18 for a key frame's. A shorter one grows to fit if it holds the 10 bytes the writer reads of a frame. With one VP8 trace, each block must name a frame read, in increasing order (`oracle.VideoPlacement`). A delta block must name the frame read right after the previous block's, with every sequence number between them read: a delta frame after a frame lost whole cannot be decoded, and a lost padding packet counts as one. A block's timeline error is its PTS since the first block, less its RTP time since that block's. The errors must lie within 1.01 ms of each other, plus 1 ns per block: the writer truncates each frame duration to whole ns before it adds them up. The writer floors each PTS to ms, counting from the first key frame it sees, and it may reject that frame (`c15-start-blank-key`). So the first block's PTS can be off its RTP time too, and the errors fall either side of 0.
+- **Every H.264 seed:**
+  - Replay records it into Matroska, `replay.mkv`, and sets the codec through `acceptCodec`, as `onTrackSubscribed` does. The read loop passes whole jitter-buffer samples to the writer.
+  - The file must pass `oracle.CheckH264`. Its CodecPrivate is an avcC record, and its blocks are 4-byte length-prefixed NAL units. The key flag marks exactly the blocks with an IDR, each key block carries an SPS and a PPS, and the first block is a key block. The first key block's SPS and PPS are the ones CodecPrivate holds.
+  - Replay tags the packet that starts each frame's first slice, the one with `first_mb_in_slice` 0, and its copies. The tag goes 8 bytes past its NAL unit or FU-A header (`corpus.TagH264Frame`), and a shorter packet grows to fit. A slice in a STAP-A takes the tag in place, since a STAP-A cannot grow. A later slice, or a STAP-A slice too short for the tag, is never tagged. So a written frame that lost its first slice, or a blank frame, fails the placement.
+  - Its blocks are placed, and its timeline errors bounded, as a VP8 seed's.
+  - Each tagged block must hold the NAL units of its frame, rebuilt from the payloads as read, filled and tagged: 4-byte lengths, no AUD or filler (`oracle.CheckH264Blocks`). A block fails too when its frame was not read whole: a sequence number missing, an FU-A not ended, or no marker.
+- **Every single-track seed:** the media span must last the file's media and its last frame within 2 ms, and start within 1 ms of its ideal start (`mediaspan_replay_test.go`). The last frame lasts the PTS step before it, at most 1 s for video and 120 ms for Opus, as the recorder caps it. For video the ideal start is the latest start that plays no written frame after its read: the least delayed frame's read, less its PTS since the first block. For Opus it is the first frame's read, less the lag oracle's backlog.
 - **`mediaStartUs`**, in µs on the trace's `atUs` timeline, replaces either for a seed whose start is not there, or whose oracle cannot place it.
 - **`residuals`** is a list of notes, one per check pinned away from its ideal value: what the ideal is, and why the pin differs.
 

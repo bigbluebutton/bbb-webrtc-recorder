@@ -41,6 +41,11 @@ type TrackStats struct {
 	MimeType           string                    `json:"mimeType"`
 	// MediaClock is a microphone's media clock against the wall clock.
 	MediaClock *types.MediaClockStats `json:"mediaClock,omitempty"`
+	// PubMimeType is the publication's MIME type, such as audio/red where
+	// MimeType is audio/opus. It labels the metrics UpdateCaptureMetrics
+	// sets, so that a track's series do not change with the codec LiveKit
+	// sends.
+	PubMimeType string `json:"-"`
 }
 
 const (

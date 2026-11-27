@@ -1,0 +1,40 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "Key frame 30 loses its STAP-A of SPS and PPS, never repaired; its IDR arrives whole. The track buffer asks once, 200-240 ms after the IDR reveals the gap. The IDR cannot start decoding without its own parameter sets, so the writer drops frames 30-59 and resumes at key frame 60. RED when an IDR without in-band SPS and PPS counts as a key frame: frames 30-59 are written (90), and key block 30 carries no SPS or PPS.",
+  "traces": [
+    "h264-lost-stapa.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "bufferRequestsMs": [
+    {
+      "min": 1200.5,
+      "max": 1240.5
+    }
+  ],
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 60,
+    "max": 60
+  },
+  "packetsWritten": {
+    "min": 194,
+    "max": 194
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 30,
+      "max": 30
+    }
+  }
+}

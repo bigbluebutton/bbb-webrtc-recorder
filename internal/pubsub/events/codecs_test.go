@@ -10,7 +10,7 @@ import (
 
 func TestStartRecordingSuccessReportsTheCodecs(t *testing.T) {
 	e := &StartRecording{SessionId: "s1"}
-	r := e.Success("", "/rec/x.webm", []string{"video/vp8"}, nil)
+	r := e.Success("", "/rec/x.mkv", []string{"video/h264"}, nil)
 	require.NoError(t, r.Validate())
 
 	data, err := json.Marshal(r)
@@ -18,8 +18,8 @@ func TestStartRecordingSuccessReportsTheCodecs(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(data, &got))
-	assert.Equal(t, "/rec/x.webm", got["fileName"])
-	assert.Equal(t, []any{"video/vp8"}, got["codecs"])
+	assert.Equal(t, "/rec/x.mkv", got["fileName"])
+	assert.Equal(t, []any{"video/h264"}, got["codecs"])
 }
 
 func TestRecordingInfoReportsTheCodecs(t *testing.T) {

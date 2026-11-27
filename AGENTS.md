@@ -26,6 +26,8 @@ go build -o bbb-webrtc-recorder -gcflags=all="-N -l" ./cmd/bbb-webrtc-recorder
 ```bash
 # Unit tests with -race, plus the vendored media-sdk jitter copy, which is its own
 # module (go.mod `replace`) that ./... skips. CI runs the same, so a race fails the job.
+# The H.264 decode test needs ffmpeg and ffprobe on PATH. It skips without them
+# unless FFMPEG_REQUIRED=1, which CI sets.
 make test
 
 # A single test
@@ -38,10 +40,11 @@ go test -v -run TestName ./internal/path/to/package/
 
 Write new tests with testify (`assert`, `require`), not `testing.T.Error/Fatal/Fail`; lint (`forbidigo`) flags those in new code. Older tests (appstats, pubsub/events, server, webrtc/utils) still use raw `testing.T` calls.
 
-- LiveKit adapter unit tests: `setupMockLK()` (`livekit_test.go`) builds an adapter without a room; an empty `&lksdk.RemoteTrackPublication{}` is enough for `GetStats` (lksdk has no public setter for TrackInfo).
+- LiveKit adapter unit tests: `setupMockLK()` (`livekit_test.go`) builds an adapter without a room; an empty `&lksdk.RemoteTrackPublication{}` is enough for `GetStats`. lksdk has no public setter for TrackInfo, so `remotePub` (`codecs_test.go`) makes a publication through `Room.OnParticipantUpdate`.
 - E2E suite (`tests/e2e/`, `e2e` build tag): the recorder binary against its own `livekit-server` and `redis-server` on loopback, no Docker. `tests/e2e/README.md` has "Adding a scenario".
   - Run: `LIVEKIT_SERVER_BIN=/usr/bin/livekit-server make test-e2e`
-  - `TestNACKRepairUnderLoss`, `TestMediaTimestampsTakeOffAStartDelay` and `TestBrowserNetemKeepsPlacement` need root and `E2E_NETEM=1`; the last also needs browser mode (README: "The browser netem scenario (root)"). Without sudo, run them inside `unshare --user --map-root-user --net --mount` with a tmpfs over `/run/netns` and `ip link set lo up`.
+  - The ffmpeg checks of the H.264 scenarios need ffmpeg and ffprobe on PATH. They skip without them unless `E2E_FFMPEG_REQUIRED=1`, which CI sets.
+  - The NACK scenarios (`Test*NACKRepairUnderLoss`), `TestMediaTimestampsTakeOffAStartDelay` and `TestBrowserNetemKeepsPlacement` need root and `E2E_NETEM=1`; the last also needs browser mode (README: "The browser netem scenario (root)"). Without sudo, run them inside `unshare --user --map-root-user --net --mount` with a tmpfs over `/run/netns` and `ip link set lo up`.
   - CI (`.github/workflows/e2e.yml`): PRs touching `internal/`, `cmd/`, `third_party/`, `tests/e2e/`, `go.mod`/`go.sum`, or labelled `e2e`.
   - `E2E_RECORDER_RACE=1` builds the recorder with `-race`; a race report in its log fails the test. CI runs the e2e suite with and without it.
   - Browser mode: `TestBrowser*` scenarios publish from Chromium, which Playwright drives through the Node runner in `tests/e2e/browser`. They skip unless `E2E_BROWSER=1`; setup is in the README's "Browser mode".
@@ -71,7 +74,7 @@ golangci-lint runs from `tools/go.mod` through `go tool`, so no global install i
 4. **WebRTC Adapters** - Two paths:
    - **Mediasoup** (`internal/webrtc/webrtc.go`) - Direct pion/webrtc peer connection with SDP offer/answer, NACK handling, and PLI requests
    - **LiveKit** (`internal/webrtc/livekit/livekit.go`) - Connects to LiveKit room via server-sdk-go, subscribes to specific tracks by ID (track mute/unmute is only logged)
-5. **Recorder** (`internal/webrtc/recorder/`) - `Recorder` interface with `WebmRecorder` implementation, writing WebM or Matroska with ebml-go. VP8 and Opus arrive per RTP packet (`PushVideoAt`/`PushAudioAt`)
+5. **Recorder** (`internal/webrtc/recorder/`) - `Recorder` interface with `WebmRecorder` implementation, writing WebM or Matroska with ebml-go. VP8 and Opus arrive per RTP packet (`PushVideoAt`/`PushAudioAt`), H.264 per jitter-buffer sample (`PushVideoSample`)
 
 ### Key Components
 
@@ -82,6 +85,7 @@ golangci-lint runs from `tools/go.mod` through `go tool`, so no global install i
 - **`packaging/`** - nfpm deb (`nfpm.yml`, systemd unit, env file); ships `config/bbb-webrtc-recorder.yml` as `/etc/bbb-webrtc-recorder/bbb-webrtc-recorder.yml` (also copied by the Dockerfile), so new config defaults go in `SetDefaults()` (`internal/config/config.go`) and are mirrored in that file
 - **`internal/webrtc/recorder/webm.go`** - writer state, Opus through jech/samplebuilder, keyframe requests, stats. `vp8.go` holds both VP8 assemblers: the custom one (`recorder.useCustomSampler`, default on) and jech/samplebuilder
 - **`internal/webrtc/recorder/codec.go`** - codec registry (`CodecFor`), one `Codec` per codec the recorder writes, with whether WebM may hold it; the track buffer reads its depacketizer and key-frame test. A codec with a `frames` function takes samples. `frames.go` is the writer they share: key-frame gating, PTS from RTP ticks, opening the file once. `container.go` writes the file header and picks the DocType
+- **`internal/webrtc/recorder/h264.go`**, **`h264_sps.go`** - H.264 access units from a sample (single NAL, STAP-A, FU-A), written as AVCC with SPS and PPS in band. Also the key-frame rule (an IDR with its own SPS and PPS, at least 16x16), the SPS size parser and the avcC CodecPrivate
 - **`internal/webrtc/utils/mediaclock.go`** - per-track `MediaClock`: moves a LiveKit microphone's RTP timestamps forward by the media time its sender loses, by arrival times capped by the sender reports (`livekit.audioClockSync`), so the WebM keeps the wall clock. The read loop applies it before the jitter buffer; trace and RTP dump keep the sender's timestamps
 - **`internal/webrtc/livekit/trackbuffer.go`** - per-track jitter buffer around media-sdk's `jitter`: early keyframe request when a gap stays open, duplicate filtering, padding handling. A sample is marked `follows` when every packet between it and the previous sample arrived and was padding or empty. `capture.go` is the opt-in `livekit.traceCapture`
 - **`third_party/media-sdk/`** - vendored media-sdk `jitter` with local fixes (`go.mod` `replace`; changes listed in `third_party/README.md`)
@@ -100,7 +104,7 @@ golangci-lint runs from `tools/go.mod` through `go tool`, so no global install i
 
 ### Supported Codecs
 
-Opus (audio) and VP8 (video). The IVF copy is VP8 only.
+Opus (audio); VP8 and, for LiveKit only, H.264 (video). The IVF copy is VP8 only.
 
 The recorder adds the file extension, and ignores a trailing `.webm`/`.mkv` in `startRecording.fileName`. A LiveKit session is Matroska (`.mkv`) when a requested publication lists a registered codec whose `Codec.WebM` is false, primary or backup. A RED microphone counts as Opus. Other sessions, mediasoup ones included, are WebM (`.webm`).
 

@@ -23,13 +23,13 @@ For each test, the harness:
 - starts the recorder, built once per run from `./cmd/bbb-webrtc-recorder`.
   Its generated config turns on Prometheus, trace capture (header mode) and
   the stats file, and gives it its own recordings directory;
-- publishes VP8 and Opus tracks from `internal/corpus` generator schedules
-  in real time. The publisher answers each PLI with a key frame after a set
+- publishes VP8, H.264 and Opus tracks from `internal/corpus` generator
+  schedules, or a real H.264 clip, in real time. The publisher answers each PLI with a key frame after a set
   delay, paced over a set spread, and can withhold packets (loss nothing
   repairs) or pause whole frames.
 
-Each test checks the WebM through `internal/corpus/oracle`, along with the
-recorder's trace, the `recordingStopped` events and the `/metrics` deltas.
+Each test checks the recording through `internal/corpus/oracle`, along with
+the recorder's trace, the `recordingStopped` events and the `/metrics` deltas.
 
 When a row says when a frame was sent, it means when its first packet was
 due, so a late wake of the publisher's send loop does not move it.
@@ -40,12 +40,19 @@ those frames had one.
 | Test | Scenario |
 |---|---|
 | `TestBaselineRecording` | **Baseline.** A camera and a microphone, one session per track, about 10 s on a clean path. It checks the frame counts against what was sent and the PTS (increasing, no duplicates, gaps bounded), that the trace and the metrics agree, and that the recorder asks for no key frames. |
-| `TestStartResponseNamesTheCodec` | **Codec in the start response.** A VP8 camera started under a `.webm` name, and a microphone under none, one session each. `startRecordingResponse` and `getRecordingsResponse` must name the file on disk and list the track's codec. A requester must write that name into the recording's events: the recorder picks its extension. |
+| `TestH264BaselineRecording` | **H.264 baseline.** A synthetic H.264 camera, two slices a frame sent as FU-A fragments, records for about 8 s on a clean path. The file must be `.mkv`, pass the oracle's H.264 checks and carry the SPS's size. Frame counts, PTS, trace and metrics are checked as in the baseline, and the recorder must request no key frame. Each block must land within 15 ms of when its frame was sent, and hold the frame after the previous block's. |
+| `TestStartResponseNamesTheCodec` | **Codec in the start response.** A VP8 camera and an H.264 camera started under a `.webm` name, and a microphone under none, one session each. `startRecordingResponse` and `getRecordingsResponse` must name the file on disk, `.mkv` for H.264, and list the track's codec. A requester must write that name into the recording's events, or processing looks for a `.webm` file that does not exist. |
 | `TestUnrepairedLossRequestsKeyframe` | **Unrepaired loss.** One packet is withheld from the middle of a tagged camera frame, at 15 and at 5 fps. The trace must show exactly one unrepaired gap, at that packet. The recorder must request a key frame early, from the sequence gap (trace PLI reason `packet_drop`), within a bound that depends on the fps. The WebM must skip the lossy frame and at least one more, and go on from the key frame the publisher sends for the PLI. Every block must still land within 15 ms of when its frame was sent, so the PTS keep the gap where the skipped frames were. `recordingStopped` must repeat `mediaStart`, and its `mediaEnd` must add the file's media and its last frame. |
+| `TestH264UnrepairedLossRequestsKeyframe` | **H.264 loss that nothing repairs.** `TestUnrepairedLossRequestsKeyframe`'s scenario on an H.264 camera, with its checks. Each frame is one slice of 8 FU-A fragments, and the third is withheld. The file must skip the frames from the lossy one to the PLI's key frame, and resume at that key frame. |
+| `TestH264ClipDecodes` | **H.264 decode.** A real x264 clip (see [The H.264 clip](#the-h264-clip)), packetized with pion's `H264Payloader` at a 300-byte MTU so that every slice goes as FU-A fragments, records for 6 s. The publisher answers a PLI with the clip's next key frame. The file must pass the oracle's checks and hold every frame sent from its first block to its last. `ffmpeg -v error -xerror -err_detect explode -i <file> -fps_mode vfr -f null -`, with `-vsync vfr` for ffmpeg before 5.1, must exit 0 and print nothing, so ffmpeg may not conceal a frame. ffprobe must decode one frame per block. Each picture ffmpeg decodes from the file must be the clip's next one, compared through `-f framemd5`. `ffmpeg -i <file> -c copy`, as BBB's archive step runs it, must give a Matroska file with the recording's duration. |
+| `TestH264UnpublishWritesNoBlankFrames` | **H.264 unpublish.** The H.264 clip records for 3 s, until its publisher stops sharing the camera. LiveKit sends the recorder's downtrack blank 2x2 key frames as it closes it, and the driver stops the session 500 ms later, as the SFU does on `track_unpublished`. The trace must hold blank frames. The file must pass the oracle's H.264 checks and the ffmpeg checks of `TestH264ClipDecodes`, the picture comparison included, so it holds none of them. |
 | `TestPacedKeyframesNoLoop` | **Paced key frames.** A 3.4 fps camera whose key frames are paced over 664 ms, plus one lost packet. Key-frame requests must stay bounded (no keyframe loop) and frames must keep being written. |
 | `TestFlowingFollowsFirstMedia` | **Flowing at start.** A camera answers the recorder's key-frame request 400 ms late, so LiveKit sends padding ahead of the first frame. The first `flowing` event, on which the SFU stamps the recording's start, must not reach the driver before the recorder reads the first media packet, and the trace must hold padding before that read. Only LiveKit 1.13.5 to 1.13.9 give that padding a payload, so only they fail it on a recorder that takes a payload for media. |
+| `TestH264CodecRegressionStopsAsClosed` | **H.264 codec regression.** An H.264 camera with a VP8 backup records until a subscriber that takes VP8 only joins. LiveKit then ends the recorder's subscription instead of changing its codec in place. The session must stop by itself as `closed`, having read one payload type, with an H.264 file that passes the oracle's H.264 checks. A new recording of the track must record VP8. |
+| `TestH264FlowingFollowsFirstMedia` | **H.264 flowing at start.** The flowing scenario on a tagged H.264 camera. The oracle and placement checks hold, and the recorder asks for no key frame. Here LiveKit pads only ahead of the first key frame, so the H.264 handling of padding is tested in process instead. |
 | `TestAudioAfterTrailingLossIsWritten` | **Audio after a trailing loss.** One microphone packet is withheld shortly before the recording stops, in two cases. In the first the source pauses 10 frames later; in the second it keeps talking and the stop comes 3 frames later, within the adapter's 200 ms jitter latency. Both times the recorder has not moved past the loss when it stops. Every frame the recorder read after the loss must be in the WebM. The scenario checks that it read some, and fewer than 32. |
 | `TestNACKRepairUnderLoss` | **NACK/RTX repair under loss.** `livekit-server` and `redis-server` run in one network namespace and the recorder in another, and netem drops 3% of what the servers send the recorder. The recorder's ICE pair must use the link between the namespaces. Lost packets must be read later (by sequence number, whichever SSRC carried them), nearly every frame must be written, and key-frame requests must not loop. The publisher tags each frame. At least one written frame must wait over 15 ms for its retransmission (the test says why every run has one). Every block must still land within 15 ms of when its frame was sent, and `recordingStopped` must repeat `mediaStart`, with `mediaEnd` matching the file. When the first key frame waits for a retransmission, the frames after it arrive on time and still set `mediaStart`. So this test does not show how `mediaStart` treats a late first frame; the replay corpus covers that. It needs root and `E2E_NETEM=1`, and is skipped otherwise, or fails with `E2E_NETEM_REQUIRED=1`. |
+| `TestH264NACKRepairUnderLoss` | **H.264 NACK/RTX repair under loss** (root). The NACK scenario on an H.264 camera, with its checks. Its frames take as many packets as the VP8 camera's: four for a key frame, two for a delta frame. The oracle's H.264 checks are added. |
 | `TestNACKRepairControl`, `TestNetemPlan`, `TestNetemDryPlan` | The NACK scenario's stack and checks, placement and `mediaEnd` included, without the namespaces or the loss. Loopback addresses stand in for the links. `TestNetemPlan` checks the namespace plan and config edits, and `TestNetemDryPlan` that the controls' dry plan runs no command. All three run unprivileged. The control cannot show that ICE uses the link between the namespaces; only the NACK scenario can. |
 | `TestSignalCutResumesInPlace` | **Signal cut.** A TCP proxy resets the recorder's signalling connections and lets the redial through. Each session resumes in place, in its one file. Both tracks are tagged. Each block must land within 15 ms of when its frame was sent, and the two tracks within 15 ms of each other. `recordingStopped` must repeat `mediaStart`, with `mediaEnd` matching the file. The cut is on the signal only and the media path stays up. So this guards against a resume that re-bases timestamps or re-subscribes. The test logs the largest PTS step and the frames missing in the 3 s after the cut; an unrepaired packet there does not fail it. |
 | `TestSignalRefusedSplitsFile` | **Signal refused.** The proxy also refuses redials for 5 s. The SDK falls back to a full reconnect and every session stops as `closed`. The test retries as the SFU does, so each session ends with two files. Each of the four files must pass the same placement and `mediaEnd` checks. The camera's and the microphone's first files must land within 15 ms of each other, and so must their second files. The first file's closed `recordingStopped` must carry its media span. The second file must hold only frames sent after the refusal ended. This pins today's behaviour; it is not a target. |
@@ -54,14 +61,18 @@ those frames had one.
 | `TestMediaTimestampsPlaceEachFrame` | **Media timestamps.** A camera and a microphone, as in the baseline. The first key frame the recorder gets loses a packet, so the camera's file starts at the next one, about 600 ms after the flowing event. A 3 s camera mute in the middle, BBB's away mode, must leave a gap in the camera's file. The publisher tags each frame's index into its payload. Each WebM block must land within 15 ms of when its frame was sent, at `mediaStart` plus its PTS since the first block. The two tracks must land within 15 ms of each other. `recordingStopped` must repeat `mediaStart`, and its `mediaEnd` must add the file's media and its last frame. `recorderStatus` must list `mediaTimestamps`. The test logs where a start stamped on flowing would put the first frame. |
 | `TestMediaTimestampsTakeOffAStartDelay` | **Media timestamps behind a delay at start.** On the NACK scenario's namespaces, with no loss, netem delays everything the test sends the servers by 300 ms. Both recordings start at once. 800 ms after the microphone's flowing event, the delay comes off over 400 ms, 10 ms at a time. So the delay is still on 1 s into the microphone's media, and off before 2 s into either track's. Each WebM block must land within 15 ms of when its frame was sent, and the two tracks within 15 ms of each other. The test also checks that timing, so it cannot pass without a delay to take off. It needs root and `E2E_NETEM=1`, as the NACK scenario does. |
 | `TestSimulcastMediaTimestampsPlaceEachFrame` | **Simulcast media timestamps.** A camera sends BBB's default layers (`bbbCameraLayers`): q at 451x338 and h at 640x480, each a stream with its own sequence numbers, timestamps and picture IDs. A microphone sends with it. Midway, h stops for 3 s: the recorder gets q until h has flowed again for 10 s. Each WebM block, whichever layer its frame came from, must land within 15 ms of when that frame was sent, and the two tracks within 15 ms of each other. `recordingStopped` must repeat `mediaStart`, and its `mediaEnd` must add the file's media and its last frame. The camera's file must hold both switches. |
+| `TestH264SimulcastMediaTimestampsPlaceEachFrame` | **H.264 simulcast media timestamps.** The simulcast scenario on an H.264 camera, with its checks. q is 450x338, since `GenerateH264` takes even sizes only. The camera's `.mkv` must also pass the oracle's H.264 checks across both switches. |
 | `TestBrowserSimulcastMediaTimestamps` | **Browser simulcast** (browser mode). Chromium publishes its fake camera and microphone as BBB's client does: BBB's room options (dynacast on), and the camera with the default profile's capture and VP8 simulcast layers. LiveKit must list `bbbCameraLayers`. Midway, the page stops sending h for 3 s. The camera's file must hold both switches, and repeat a PTS only for one frame sent on both layers. Both files must pass the browser lip sync scenario's checks and the simulcast scenario's `recordingStopped` checks. A second case starts recording once dynacast has paused the unwatched camera. The recorder's subscription resumes the camera, and the recorder then gets the same media as in the first case. What this case adds is a check that LiveKit and Chromium resume a paused camera. |
 | `TestBrowserMediaTimestampsKeepLipSync` | **Browser lip sync** (browser mode). Chromium publishes its fake camera and microphone as BBB's client does, one session each, once per camera. Each camera is one VP8 stream whose first frames Chromium sends late. The cameras are BBB's low profile; the hidden low-u30 profile at 30 kbps, whose first on-time frame follows a 700 ms gap; and low captured at 5 fps. The two tracks' sender reports give each block's frame a capture time on the host's wall clock. A file's delay is its `mediaStart` less its first frame's capture time, how late it plays its media. It must be from -25 ms (-5 ms for the camera) to 30 ms. `mediaStart` must also be at most 5 ms after the start that the reads in the file's start window give. The two files' delays must agree within 45 ms, and each block must play within 30 ms of its file's delay. |
 | `TestBrowserMidMeetingFilesKeepLipSync` | **Files that start mid-meeting** (browser mode). Chromium publishes a microphone and a camera as BBB's client does, the camera with the low-u30 profile, whose first frames come late. The microphone is user-provided, with RED on and no DTX, and BBB's 5 s unpublish-on-mute timer runs in the page. The test records each new track as the SFU does on `track_published`, and stops it on `track_unpublished`. A 3 s mute keeps the file and must leave a read gap over 1 s in it. The test logs how many of LiveKit's silence packets the trace holds. A mute past 5 s unpublishes the microphone, and the unmute publishes it again as a new track and file. The camera is stopped and shared again, with the low profile after a 1 s preview, as a new track and file. Four files result, and each new one starts while a file of the other kind runs. A file's delay is its `mediaStart` less its first frame's capture time from Chromium's sender reports. It must be from -25 ms (-5 ms for a camera) to 30 ms, and agree with every other file's within 45 ms. Each file must also pass the lip sync scenario's check on its start window's reads. Each block must play within 30 ms of its file's delay, and `recordingStopped` must repeat `mediaStart` and end at the last frame. |
 | `TestBrowserNetemKeepsPlacement` | **Browser behind a bad network** (root, browser mode). Chromium gets a namespace whose only link goes to the servers, and netem shapes both ends of that link. Chromium publishes a microphone and a camera as BBB's client does, and the test records each new track as the SFU does on `track_published`. (a) 3% loss and 40 ms ± 20 ms delay from before publish, on BBB's low camera. (b) A 3 s blackout, on BBB's default simulcast camera. (c) A 13.5 s blackout on that camera: the server's ICE goes disconnected and recovers. (d) A 25 s blackout on the low camera. LiveKit closes the participant, and livekit-client reconnects with new tracks, recorded in new files. Each file's delay must be from -25 ms (-5 ms for a camera) to 30 ms. In (a) the upper bound is 50 ms, for netem's least delay of 20 ms. Each file must also pass the lip sync scenario's check on its start window's reads. Each block must play within 30 ms of its file's delay, through the sender reports read on its own side of each blackout. All files of a case must agree on their delay within 45 ms. Across a blackout, the PTS step must equal the capture step. `mediaEnd` must end at the last block, the old files' included. In (d), the old files must hold no media captured after the link went dark, apart from the silence frames LiveKit sends the old microphone at the close. In (a), Chromium must get NACKs and retransmit. The microphone's reads must lag capture by 15 ms or more (median), with a p10-p90 spread of 20 ms or more, in the file and in its first second. In (b) and (c), no media that Chromium captured during a blackout may be read before it ends. The microphone's `not_flowing` must come in the blackout, within 600 ms of its last read. |
+| `TestBrowserH264Camera` | **Browser H.264 camera** (browser mode). Chromium publishes its fake camera in H.264 with BBB's low profile, once with livekit-client's backup codec off and once with its default VP8 backup. LiveKit must list those codecs and Chromium must send H.264. Either way the recorder must get H.264, in a `.mkv` file that passes the oracle's H.264 checks and the ffmpeg checks of `TestH264ClipDecodes`. |
+| `TestBrowserH264CameraDecodesAcrossALayerSwitch` | **Browser H.264 layer switch** (browser mode). Chromium publishes its fake camera in H.264 with BBB's default profile, whose two layers LiveKit must list. While it records, the page stops sending h for 3 s, as in `TestBrowserSimulcastMediaTimestamps`, and each wait for LiveKit to take h watches h's PLI count. Its file must show both switches, from h to q and back, and pass the oracle's H.264 checks and the ffmpeg checks of `TestH264ClipDecodes`. Blocks that share a PTS must be two encodings of one captured frame. |
+| `TestBrowserVP8CameraWithH264Backup` | **Browser VP8 camera with an H.264 backup** (browser mode). Chromium publishes a VP8 camera, BBB's low profile, whose livekit-client backup codec is H.264. BBB's client sets no such backup. LiveKit must list both codecs, and Chromium must send VP8. The recorder must write a VP8 track to a `.mkv` file, and its start response must name VP8 alone. The driver checks the file's extension against the codecs LiveKit lists. |
 | `TestBrowserNetemControl` | The browser netem scenario's 3 s blackout case on loopback (browser mode), where the blackout changes nothing. The checks that detect the fault must find none. The placement checks must pass, the split at the blackout included. Two checks must find the opposite of a blackout, to show they can tell one. Media captured during the blackout is read during it. The microphone's capture step across the blackout stays well under its length, and its PTS step is at most one 20 ms frame plus the 30 ms drift bound. |
 | `TestNetemBrowserPlan`, `TestSenderClockSegments` | The browser netem plan's commands, and how the oracle splits the sender reports at a blackout. After a LiveKit re-base, a report from before it maps a frame 500 ms off; one from the frame's side maps it right. Both run unprivileged, without a browser. |
 | `TestShutdownSignalClosesRecordings` | **Shutdown signal.** A camera records for 3 s, then the recorder gets SIGINT, and in a second run SIGTERM, the signal systemd sends on stop. Either way it must exit 0 by itself, having closed the WebM (every frame read is written) and ended the trace with its EOF record. |
-| `TestPublisherSendLoop`, `TestScheduleFramesFindsKeyFrames` | The publisher's send loop (PLI answers, pacing, drops, pauses) and how it finds key frames, with no servers involved. |
+| `TestPublisherSendLoop`, `TestPublisherSendLoopH264`, `TestPublisherSendLoopKeyframeFromSchedule`, `TestScheduleFramesFindsKeyFrames` | The publisher's send loop (PLI answers, pacing, drops, pauses, H.264 tags) and how it finds key frames, with no servers involved. |
 
 ## Adding a scenario
 
@@ -78,20 +89,22 @@ of the in-process replay corpus
    configs.
 2. **Publish.** `pub := s.NewPublisher(room, identity)`, with a room unique
    to the test (`"e2e-<scenario>-"` plus a short UUID), then
-   `pub.PublishVP8` or `pub.PublishOpus` with `TrackOptions`, or
-   `pub.PublishVP8Simulcast` with one `TrackOptions` per layer. A track sends
-   a `corpus.GenerateVP8` or `corpus.GenerateOpus` schedule. `TrackOptions`
+   `pub.PublishVP8`, `pub.PublishH264` or `pub.PublishOpus` with
+   `TrackOptions`, or `pub.PublishVP8Simulcast` with one `TrackOptions` per
+   layer. A track sends a `corpus.GenerateVP8`, `GenerateH264` or
+   `GenerateOpus` schedule. `TrackOptions`
    also sets how the publisher answers a keyframe request (`KeyframeDelay`,
-   `KeyframeSpread`) and which packets it never sends (`Drop`). Wait with
+   `KeyframeSpread`, `KeyframeFromSchedule`) and which packets it never sends
+   (`Drop`). Wait with
    `pub.WaitPublished`.
 3. **Record as the SFU does,** one session per track:
    `s.Driver.StartRecording(ctx, room, track.SID)`, then
    `WaitRtpStatus(..., "flowing")`. Record for a fixed time, then `Stop`
-   and `WaitStopped`. `rec.Path` is the file, with the extension the
-   recorder picked.
+   and `WaitStopped`. `rec.Path` is the file: `.mkv` when LiveKit lists
+   H.264 for the track, even as a backup codec, else `.webm`.
 4. **Read what came out.** `ReadOutput(t, rec, trackID)` reads the WebM
-   through `internal/corpus/oracle` and summarises the recorder's trace
-   (see `Output`). `ScrapeMetrics` and `Delta` give the metrics, and
+   through `internal/corpus/oracle`, checks that its DocType matches its
+   extension, and summarises the recorder's trace (see `Output`). `ScrapeMetrics` and `Delta` give the metrics, and
    `SentBetween` what the publisher sent.
 5. **Assert bounds derived from the mechanism,** not tuned to a run. Name
    each constant and say where it comes from, as the existing scenarios do
@@ -146,7 +159,8 @@ with these changes:
    `b.Join(room, identity).PublishBBBMic("microphone")`, which returns once
    LiveKit lists the track. `JoinAsBBB` and the other BBB-style methods in
    `browser_test.go` act as BBB's client does. `UnmuteMic` needs
-   `StackOptions{LiveKitConfig: bbbLiveKitRoom}`.
+   `StackOptions{LiveKitConfig: bbbLiveKitRoom}`. `PublishBBBCameraCodec`
+   sets the runner's `videoCodec` and `backupCodec`.
 3. Impair the browser through the runner, e.g. `b.FreezeCapture`, which
    stops Chromium's audio service process in bursts until `b.ThawCapture`.
 
@@ -187,12 +201,31 @@ Environment:
 | `E2E_BROWSER=1` | Run the browser scenarios. They need Node and the runner set up (see [Browser mode](#browser-mode)). |
 | `E2E_BROWSER_REQUIRED=1` | Fail the browser scenarios instead of skipping them when they cannot run. |
 | `E2E_BROWSER_BIN` | Run this Chrome or Chromium binary instead of Playwright's Chromium. |
+| `E2E_FFMPEG_REQUIRED=1` | Fail the ffmpeg checks instead of skipping them when `ffmpeg` or `ffprobe` is not on `PATH`. CI sets it. |
 
 The child processes do not inherit `BBBRECORDER_*`, `LIVEKIT_*`, `REDIS_*`,
 `NODE_IP` or `UDP_PORT`, so a shell set up for a dev recorder cannot override
 the generated configs. Each child runs in its own process group and is
 killed when its test ends, and also when the test binary dies on a panic or
 a `-timeout`.
+
+### H.264 runs
+
+The H.264 scenarios have `H264` in their names. Their decode checks need
+`ffmpeg` and `ffprobe`, 4.2 or later. An H.264 recording is Matroska,
+`.mkv`, and the oracle reads it as it reads a WebM.
+
+Run them on LiveKit 1.13.7 as well as on a newer one. Only 1.13.5 to 1.13.9
+give the padding a payload, so only there can `TestH264FlowingFollowsFirstMedia`
+catch padding that starts the flowing state.
+
+```sh
+LIVEKIT_SERVER_BIN=/path/to/livekit-server-1.13.7 E2E_FFMPEG_REQUIRED=1 \
+  go test -tags e2e -run 'H264|TestStartResponseNamesTheCodec' -count=3 -v ./tests/e2e/...
+
+# Chromium's OpenH264, in browser mode
+E2E_BROWSER=1 E2E_FFMPEG_REQUIRED=1 go test -tags e2e -run '^TestBrowserH264' -v ./tests/e2e/...
+```
 
 ### Artifacts
 
@@ -206,13 +239,31 @@ bbb-webrtc-recorder.{yml,log}  livekit-server.{yaml,log}  redis-server.log  lksd
 pubsub.ndjson                                    # every Redis message sent and received
 browser-<n>.log  browser-<n>-rpc.ndjson          # browser mode: each runner's log, its requests and replies
 publisher.<identity>.<trackSID>[.<rid>].{sent.ndjson.gz,summary.json}  # rid: a simulcast layer
-recorder/recordings/<room>/<trackSID>-<session>.webm
+recorder/recordings/<room>/<trackSID>-<session>.{webm,mkv}      # .mkv holds H.264
                           /<trackSID>-<session>.<trackSID>.trace.ndjson.gz
                           /<trackSID>-<session>-stats.json
                           /<trackSID>-<session>.summary.json
+                          /<trackSID>-<session>.archive.mkv              # the ffmpeg checks' remux
 ```
 
 A test run takes a few hundred KB.
+
+### The H.264 clip
+
+`testdata/h264-cbp-640x360-15fps.h264` is 4 s of x264 output: 640x360 at
+15 fps, constrained baseline, one slice per frame. An IDR comes every 15
+frames, with its SPS and PPS. ffmpeg 4.2.7 made it:
+
+```sh
+ffmpeg -f lavfi -i testsrc=size=640x360:rate=15 -t 4 -c:v libx264 \
+  -profile:v baseline -level 3.1 -pix_fmt yuv420p -bf 0 -g 15 \
+  -x264-params keyint=15:min-keyint=15:scenecut=0 \
+  -b:v 150k -maxrate 150k -bufsize 150k -f h264 h264-cbp-640x360-15fps.h264
+```
+
+x264 output differs from run to run, so a new clip has other bytes. The
+tests depend only on its profile, size, frame count and IDR interval, and
+on each slice being over `h264ClipMTU` bytes.
 
 ### The NACK scenario (root)
 
@@ -249,9 +300,10 @@ d=$(mktemp -d) &&
     E2E_ARTIFACTS="$d/artifacts" "$d/e2e.test" -test.run '^TestNACKRepairUnderLoss$' -test.v
 ```
 
-`TestMediaTimestampsTakeOffAStartDelay` runs the same way, with its name in
-`-test.run`. It builds the same namespaces with no loss, and adds its own
-netem delay on the host's end of the host <-> server link.
+`TestH264NACKRepairUnderLoss` and `TestMediaTimestampsTakeOffAStartDelay`
+run the same way, with their names in `-test.run`. The second builds the
+same namespaces with no loss, and adds its own netem delay on the host's end
+of the host <-> server link.
 
 `go test -tags e2e -v -run TestNetemPlan ./tests/e2e/...` logs the exact
 setup and teardown commands for a sample PID.
@@ -337,12 +389,12 @@ suite with it.
 The e2e job sets up Go from `go.mod` and downloads `livekit-server` 1.13.7 from
 the official GitHub release, checking it against a pinned sha256. The tarball
 is cached under that version and checksum, and checked again on a cache hit.
-It installs `redis-server` from apt and stops the system service, then runs
-two steps:
+It installs `redis-server` and `ffmpeg` from apt, stops Redis's system
+service, then runs two steps:
 1. `go test -tags e2e -v -timeout 15m ./tests/e2e/...`, the whole suite
    unprivileged. The netem scenarios skip here.
 2. The netem scenarios as root, as shown above, with
-   `-test.run '^(TestNACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$'`
+   `-test.run '^(TestNACKRepairUnderLoss|TestH264NACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$'`
    and `E2E_NETEM_REQUIRED=1`. A skip, or a scenario missing from what the
    pattern lists, fails the step. This step runs even if step 1 failed, but not if
    setup did, and has its own 10-minute limit. It loads `sch_netem`, and

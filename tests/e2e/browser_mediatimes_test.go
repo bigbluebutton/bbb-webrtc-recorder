@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/pubsub/events"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/google/uuid"
+	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,7 +105,8 @@ type readFrame struct {
 
 // readFrames returns the frames of tr, a trace with whole payloads, in the
 // order of their first reads. A VP8 frame is its packets' payloads, less
-// their payload descriptors, in sequence order. An Opus frame is a packet.
+// their payload descriptors, in sequence order. An H.264 frame is its NAL
+// units in AVCC. An Opus frame is a packet.
 func readFrames(t *testing.T, tr *corpus.Trace) []*readFrame {
 	t.Helper()
 
@@ -132,7 +135,7 @@ func readFrames(t *testing.T, tr *corpus.Trace) []*readFrame {
 		k := frameKey{ts: r.TS}
 		// LiveKit's first blank frame on a mute can reuse the last
 		// timestamp. The recorder skips it.
-		if tr.Header.Codec != corpus.CodecVP8 {
+		if tr.Header.Codec == corpus.CodecOpus {
 			k.seq = r.Seq
 		}
 		f := index[k]
@@ -154,6 +157,22 @@ func readFrames(t *testing.T, tr *corpus.Trace) []*readFrame {
 		ps := packets[keys[i]]
 		first := ps[0].seq
 		slices.SortFunc(ps, func(a, b packet) int { return cmp.Compare(int16(a.seq-first), int16(b.seq-first)) })
+
+		if tr.Header.Codec == corpus.CodecH264 {
+			pkts := make([]*rtp.Packet, 0, len(ps))
+			for _, p := range ps {
+				pkts = append(pkts, &rtp.Packet{Header: rtp.Header{SequenceNumber: p.seq}, Payload: p.pay})
+			}
+			for _, nal := range depacketizeH264(t, pkts) {
+				// The recorder drops AUD and filler.
+				if typ := nal[0] & 0x1f; typ != 9 && typ != 12 {
+					f.Data = binary.BigEndian.AppendUint32(f.Data, uint32(len(nal)))
+					f.Data = append(f.Data, nal...)
+				}
+			}
+
+			continue
+		}
 
 		for _, p := range ps {
 			if tr.Header.Codec != corpus.CodecVP8 {

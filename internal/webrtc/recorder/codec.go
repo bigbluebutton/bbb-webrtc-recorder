@@ -49,7 +49,17 @@ var (
 		KeyFrameStart:   func(*rtp.Packet) bool { return false },
 	}
 
-	registry = []*Codec{CodecVP8, CodecOpus}
+	CodecH264 = &Codec{
+		MimeType:        "video/h264",
+		Video:           true,
+		ClockRate:       90000,
+		MatroskaID:      "V_MPEG4/ISO/AVC",
+		NewDepacketizer: func() rtp.Depacketizer { return &codecs.H264Packet{} },
+		KeyFrameStart:   isH264KeyFrameStart,
+		frames:          h264Frames,
+	}
+
+	registry = []*Codec{CodecVP8, CodecOpus, CodecH264}
 )
 
 // TakesSamples reports whether the codec's video goes to PushVideoSample,

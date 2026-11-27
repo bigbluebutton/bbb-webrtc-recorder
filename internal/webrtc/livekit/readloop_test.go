@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -14,11 +16,15 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/types"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/recorder"
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/webrtc/utils"
+	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v4"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -65,6 +71,10 @@ type fakeTrack struct {
 	staleDeadline bool
 	// onRTCP gets the sender reports, as lksdk's RTCP callback would.
 	onRTCP func(rtcp.Packet)
+	// codecs maps a payload type to the MIME type Codec reports once a
+	// packet of that type is read: pion's track takes each packet's codec.
+	codecs      map[uint8]string
+	payloadType uint8 // the last packet's
 }
 
 func newFakeTrack(reads ...[]trackRead) *fakeTrack {
@@ -114,12 +124,23 @@ func (t *fakeTrack) ReadRTP() (*rtp.Packet, interceptor.Attributes, error) {
 		t.reads = t.reads[1:]
 
 		if next.sr == nil {
+			if next.pkt != nil {
+				t.payloadType = next.pkt.PayloadType
+			}
+
 			return next.pkt, nil, next.err
 		}
 
 		if t.onRTCP != nil {
 			t.onRTCP(next.sr)
 		}
+	}
+}
+
+func (t *fakeTrack) Codec() webrtc.RTPCodecParameters {
+	return webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: t.codecs[t.payloadType]},
+		PayloadType:        webrtc.PayloadType(t.payloadType),
 	}
 }
 
@@ -353,6 +374,30 @@ func TestReadTrackFlushesOnEOF(t *testing.T) {
 	})
 }
 
+// A camera published in H.264 that LiveKit sends in its VP8 backup logs its
+// end as VP8.
+func TestReadTrackEndLogsTheCodecTheTrackCarries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		info := videoInfo
+		info.pubMime = "video/H264"
+		h := newLoopHarness(newPushRecorder(), info.id)
+		src := newFakeTrack(readsAt(0, writerFrame(info.ssrc, 1000, 100, 0, true)...))
+
+		std := log.StandardLogger()
+		defer std.ReplaceHooks(std.ReplaceHooks(make(log.LevelHooks)))
+		hook := logtest.NewLocal(std)
+		h.run(src, info)
+
+		var stopped []string
+		for _, e := range hook.AllEntries() {
+			if strings.HasPrefix(e.Message, "video/") {
+				stopped = append(stopped, e.Message)
+			}
+		}
+		assert.Equal(t, []string{"video/VP8 track stopped", "video/VP8 track=video stopped"}, stopped)
+	})
+}
+
 func TestReadTrackPanicReportsFailed(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rec := newPushRecorder()
@@ -390,9 +435,25 @@ func TestReadErrorReadsFlowStateUnderLock(t *testing.T) {
 }
 
 // Run with -race: a stopping session replaces the connection state callback
-// while the adapter reports a failed subscription or a track's end.
+// while the adapter reports a refused codec, a failed subscription or a
+// track's end.
 func TestConnectionStateCallbackReadUnderLock(t *testing.T) {
-	h := newLoopHarness(newPushRecorder(), audioInfo.id)
+	// A WebM file cannot hold H.264, so acceptCodec fails the connection.
+	rec := recorder.NewWebmRecorder(filepath.Join(t.TempDir(), "camera.webm"), 0o600, 256, 32, true, false)
+	rec.SetHasVideo(true)
+	h := newLoopHarness(rec, audioInfo.id)
+	// onTrackSubscribed fails the connection for a codec the registry does
+	// not know, before it calls acceptCodec.
+	rp := publisherRoom().GetParticipantByIdentity("publisher")
+	require.NotNil(t, rp)
+	pub, ok := rp.GetTrackPublication(livekit.TrackSource_CAMERA).(*lksdk.RemoteTrackPublication)
+	require.True(t, ok)
+	unsupported := &negotiatedTrack{
+		fakeTrack: newFakeTrack(),
+		codec:     webrtc.RTPCodecParameters{RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: "video/x-unsupported", ClockRate: 90000}},
+	}
+	_, known := recorder.CodecFor(unsupported.codec.MimeType)
+	require.False(t, known)
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -406,7 +467,9 @@ func TestConnectionStateCallbackReadUnderLock(t *testing.T) {
 			}
 		}
 	})
-	for range 100 {
+	for i := range 100 {
+		h.w.acceptCodec(fmt.Sprintf("track-%d", i), TrackKindVideo, recorder.CodecH264)
+		h.w.onTrackSubscribed(unsupported, pub, rp)
 		h.w.onTrackSubscriptionFailed(audioInfo.id, nil)
 		h.w.readTrack(newFakeTrack(), audioInfo, h.newBuffer(audioInfo, nil))
 	}

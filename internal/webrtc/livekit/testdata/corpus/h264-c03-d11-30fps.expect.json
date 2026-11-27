@@ -1,0 +1,36 @@
+{
+  "v": 1,
+  "class": "3",
+  "intent": "H.264 twin of c03-d11-30fps: P frame 30 loses its third FU-A fragment, never repaired. The track buffer asks once, 200-240 ms after the revealing packet, not at the 2 s expiry, and the expiry's own report coalesces into it. The writer drops frames 30-47 and resumes at key frame 48. RED when the early gap request is removed: the first request comes at the 2 s expiry.",
+  "traces": [
+    "h264-c03-d11-30fps.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "firstRequestMinMs": 1203,
+  "firstRequestMaxMs": 1243,
+  "written": {
+    "min": 132,
+    "max": 132
+  },
+  "packetsWritten": {
+    "min": 1192,
+    "max": 1192
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 4,
+    "videoDropped": {
+      "min": 18,
+      "max": 18
+    }
+  }
+}

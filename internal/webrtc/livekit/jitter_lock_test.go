@@ -95,10 +95,10 @@ func (r *lockCheckRecorder) SetVideoCodec(*recorder.Codec) error {
 
 func TestAcceptCodecSetsTheVideoCodecWithoutAdapterLock(t *testing.T) {
 	rec := &lockCheckRecorder{mockRecorder: &mockRecorder{}}
-	h := newLoopHarness(rec, videoInfo.id)
+	h := newLoopHarness(rec, h264Info.id)
 	rec.adapter = h.w
 
-	assert.True(t, h.w.acceptCodec(videoInfo.id, TrackKindVideo, recorder.CodecVP8))
+	assert.True(t, h.w.acceptCodec(h264Info.id, TrackKindVideo, recorder.CodecH264))
 	assert.False(t, rec.held, "SetVideoCodec was called with the adapter lock held")
 }
 

@@ -1,0 +1,37 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "2 s of camera, cut inside the FU-A of P frame 59 as LiveKit closes an H.264 downtrack. A blank STAP-A at the cut frame's timestamp, with the marker, ends it, and 6 blank frames follow, each a STAP-A of a 2x2 SPS, PPS and IDR. The cut frame and its blank STAP-A are one access unit, which the writer drops, asking for a key frame once at 2000 ms, when that unit is released. The 59 whole camera frames are written, and the file stays 640x360. RED when the 16 px rule is disabled: the 6 blank frames are written as key blocks (65), and none names a frame read.",
+  "traces": [
+    "h264-blank-close-midframe.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "writerRequests": {
+    "min": 1,
+    "max": 1
+  },
+  "firstRequestMinMs": 2000,
+  "firstRequestMaxMs": 2000,
+  "written": {
+    "min": 59,
+    "max": 59
+  },
+  "packetsWritten": {
+    "min": 136,
+    "max": 136
+  },
+  "packetsLostMax": 0,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 2,
+    "videoDropped": {
+      "min": 7,
+      "max": 7
+    },
+    "videoSize": [640, 360]
+  }
+}

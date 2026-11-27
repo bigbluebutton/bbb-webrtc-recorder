@@ -7,10 +7,11 @@ import (
 	"github.com/bigbluebutton/bbb-webrtc-recorder/internal/corpus"
 )
 
-// Placement compares when a VP8 track's blocks play with when their
+// Placement compares when a video track's blocks play with when their
 // frames were read. Each block names its frame by the RTP timestamp
-// tagged into it with corpus.TagFrame. Matching by order instead pairs a
-// block with the wrong read once a frame before it is dropped.
+// tagged into it with corpus.TagFrame or corpus.TagH264Frame. Matching by
+// order instead pairs a block with the wrong read once a frame before it is
+// dropped.
 type Placement struct {
 	Frames  int // distinct frames read
 	Placed  int // blocks, each paired with a frame read
@@ -27,23 +28,26 @@ type Placement struct {
 	IdealStartUs float64
 }
 
-// VideoPlacement pairs the blocks of t, a VP8 track, with the frames read
-// in tr by their tags. It fails on a block with no tag, a tag no frame read
-// has, or tags that do not increase in file order.
+// VideoPlacement pairs the blocks of t, a VP8 or H.264 track, with the
+// frames read in tr by their tags. It fails on a block with no tag, a tag no
+// frame read has, or tags that do not increase in file order. A delta block
+// after a frame not written fails too.
 func VideoPlacement(t *Track, tr *corpus.Trace) (Placement, error) {
-	frames := map[uint32]readFrame{}
-	for _, f := range framesRead(tr) {
-		frames[f.ts] = f
+	read, seqs := framesRead(tr)
+	frames := map[uint32]int{}
+	for i, f := range read {
+		frames[f.ts] = i
 	}
 
 	p := Placement{Frames: len(frames), IdealStartUs: math.Inf(1)}
-	if len(t.TagOK) != t.Blocks {
-		return Placement{}, fmt.Errorf("%d blocks, %d tags read", t.Blocks, len(t.TagOK))
+	if len(t.TagOK) != t.Blocks || len(t.Keyframes) != t.Blocks {
+		return Placement{}, fmt.Errorf("%d blocks, %d tags and %d key frame flags read", t.Blocks, len(t.TagOK), len(t.Keyframes))
 	}
 
 	rate := float64(tr.Header.ClockRate)
 	var (
 		first, last readFrame
+		lastAt      int
 		firstPTS    int64
 	)
 	for k := range t.Blocks {
@@ -51,19 +55,25 @@ func VideoPlacement(t *Track, tr *corpus.Trace) (Placement, error) {
 			return Placement{}, fmt.Errorf("block %d (PTS %d ms) has no frame tag", k, t.PTS[k])
 		}
 
-		f, ok := frames[t.Tags[k]]
+		i, ok := frames[t.Tags[k]]
 		if !ok {
 			return Placement{}, fmt.Errorf("block %d (PTS %d ms): no frame read at timestamp %d", k, t.PTS[k], t.Tags[k])
 		}
+		f := read[i]
 
-		if k == 0 {
+		switch {
+		case k == 0:
 			first, firstPTS = f, t.PTS[k]
 			p.TimelineMinAt, p.TimelineMaxAt = k, k
-		} else if f.ext <= last.ext {
+		case f.ext <= last.ext:
 			return Placement{}, fmt.Errorf("block %d (PTS %d ms): tags not increasing, timestamp %d after %d",
 				k, t.PTS[k], t.Tags[k], t.Tags[k-1])
+		case !t.Keyframes[k]:
+			if err := follows(read, seqs, lastAt, i); err != nil {
+				return Placement{}, fmt.Errorf("block %d (PTS %d ms): a delta frame at timestamp %d, but %w", k, t.PTS[k], f.ts, err)
+			}
 		}
-		last = f
+		last, lastAt = f, i
 
 		tau := float64(f.ext-first.ext) * 1000 / rate
 		e := float64(t.PTS[k]-firstPTS) - tau
@@ -85,4 +95,29 @@ func VideoPlacement(t *Track, tr *corpus.Trace) (Placement, error) {
 	}
 
 	return p, nil
+}
+
+// follows returns nil when frame i of read comes right after frame prev: no
+// frame read between them, and every sequence number between them read. A
+// frame lost whole is never read, so only the missing sequence numbers show
+// it. A delta frame after it cannot be decoded.
+func follows(read []readFrame, seqs map[int64]bool, prev, i int) error {
+	if i != prev+1 {
+		return fmt.Errorf("the frame read before it, at %d, was not written", read[i-1].ts)
+	}
+
+	for s := read[prev].last + 1; s < read[i].first; s++ {
+		if seqs[s] {
+			continue
+		}
+
+		end := s
+		for end+1 < read[i].first && !seqs[end+1] {
+			end++
+		}
+
+		return fmt.Errorf("sequence numbers %d-%d before it were not read", uint16(s), uint16(end))
+	}
+
+	return nil
 }

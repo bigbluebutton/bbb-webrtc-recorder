@@ -38,42 +38,64 @@ var bbbCameraLayers = []*livekit.VideoLayer{
 // sent, as in TestMediaTimestampsPlaceEachFrame, whichever layer it came
 // from.
 func TestSimulcastMediaTimestampsPlaceEachFrame(t *testing.T) {
+	runSimulcast(t, func(pub *Publisher) []*PubTrack {
+		// Each layer is its own stream, with sequence numbers, timestamps and
+		// picture IDs of its own, as libwebrtc sends them.
+		q, err := corpus.GenerateVP8(corpus.VP8Options{
+			FPS: simulcastCameraFPS, Duration: 30 * time.Second, Width: 451, Height: 338,
+			KeyPackets: 2, DeltaPackets: 1, StartSeq: 31000, StartTS: 0x2a6b_19c4, StartPictureID: 7000,
+		})
+		require.NoError(t, err)
+		h, err := corpus.GenerateVP8(corpus.VP8Options{
+			FPS: simulcastCameraFPS, Duration: 30 * time.Second, Width: 640, Height: 480,
+			StartSeq: 4000, StartTS: 0x8d10_7e22, StartPictureID: 21000,
+		})
+		require.NoError(t, err)
+
+		return pub.PublishVP8Simulcast("camera",
+			TrackOptions{Layer: bbbCameraLayers[0], Schedule: q, KeyframeDelay: simulcastKeyframeDelay, TagFrames: true, TagOffset: simulcastQTagOffset},
+			TrackOptions{Layer: bbbCameraLayers[1], Schedule: h, KeyframeDelay: simulcastKeyframeDelay, TagFrames: true},
+		)
+	})
+}
+
+const (
+	simulcastCameraFPS     = 20
+	simulcastKeyframeDelay = 100 * time.Millisecond
+	// q's frames are tagged from here, h's from 0.
+	simulcastQTagOffset = 1_000_000
+)
+
+// simulcastRun is what runSimulcast recorded.
+type simulcastRun struct {
+	Cam *PubTrack // the h layer
+	Rec *Recording
+}
+
+// runSimulcast records the camera whose layers publish returns, q then h,
+// and a microphone. It checks what TestSimulcastMediaTimestampsPlaceEachFrame
+// says.
+func runSimulcast(t *testing.T, publish func(*Publisher) []*PubTrack) *simulcastRun {
+	t.Helper()
+
 	const (
-		cameraFPS     = 20
-		keyframeDelay = 100 * time.Millisecond
 		// Before h stops, and for how long.
 		beforePause = 3 * time.Second
 		pauseFor    = 3 * time.Second
 		// LiveKit takes h back once it has flowed for 10 s.
 		upSwitchWait = 20 * time.Second
 		afterUp      = 2 * time.Second
-		// q's frames are tagged from here, h's from 0.
-		qTagOffset = 1_000_000
 	)
 
 	s := NewStack(t, StackOptions{})
 	room := "e2e-simulcast-" + uuid.NewString()[:8]
 	pub := s.NewPublisher(room, "e2e-publisher")
 
-	// Each layer is its own stream, with sequence numbers, timestamps and
-	// picture IDs of its own, as libwebrtc sends them.
-	q, err := corpus.GenerateVP8(corpus.VP8Options{
-		FPS: cameraFPS, Duration: 30 * time.Second, Width: 451, Height: 338,
-		KeyPackets: 2, DeltaPackets: 1, StartSeq: 31000, StartTS: 0x2a6b_19c4, StartPictureID: 7000,
-	})
-	require.NoError(t, err)
-	h, err := corpus.GenerateVP8(corpus.VP8Options{
-		FPS: cameraFPS, Duration: 30 * time.Second, Width: 640, Height: 480,
-		StartSeq: 4000, StartTS: 0x8d10_7e22, StartPictureID: 21000,
-	})
-	require.NoError(t, err)
 	audio, err := corpus.GenerateOpus(corpus.OpusOptions{Duration: 30 * time.Second})
 	require.NoError(t, err)
 
-	layers := pub.PublishVP8Simulcast("camera",
-		TrackOptions{Layer: bbbCameraLayers[0], Schedule: q, KeyframeDelay: keyframeDelay, TagFrames: true, TagOffset: qTagOffset},
-		TrackOptions{Layer: bbbCameraLayers[1], Schedule: h, KeyframeDelay: keyframeDelay, TagFrames: true},
-	)
+	layers := publish(pub)
+	require.Len(t, layers, 2, "camera layers")
 	camQ, camH := layers[0], layers[1]
 	mic := pub.PublishOpus(TrackOptions{Name: "microphone", Schedule: audio, TagFrames: true})
 
@@ -114,7 +136,7 @@ func TestSimulcastMediaTimestampsPlaceEachFrame(t *testing.T) {
 	// Frames by tag, with when their first packet was due.
 	camSends := frameSends(camH)
 	for frame, at := range frameSends(camQ) {
-		camSends[qTagOffset+frame] = at
+		camSends[simulcastQTagOffset+frame] = at
 	}
 
 	places := map[string]placement{}
@@ -134,12 +156,12 @@ func TestSimulcastMediaTimestampsPlaceEachFrame(t *testing.T) {
 	prev := ""
 	for _, b := range places["camera"].Blocks {
 		layer, sentAt := "h", camSends[b.Frame].Sub(camH.Start())
-		if b.Frame >= qTagOffset {
+		if b.Frame >= simulcastQTagOffset {
 			layer = "q"
 		}
 
 		if layer != prev {
-			t.Logf("camera: from %s from frame %d, sent %v after the camera started", layer, b.Frame%qTagOffset, sentAt)
+			t.Logf("camera: from %s from frame %d, sent %v after the camera started", layer, b.Frame%simulcastQTagOffset, sentAt)
 		}
 
 		down = down || (prev == "h" && layer == "q" && sentAt > paused)
@@ -151,4 +173,6 @@ func TestSimulcastMediaTimestampsPlaceEachFrame(t *testing.T) {
 	assert.True(t, up, "camera: no switch from q back to h")
 
 	assertLipSync(t, "lip sync", places["camera"], places["microphone"])
+
+	return &simulcastRun{Cam: camH, Rec: recCam}
 }

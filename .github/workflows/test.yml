@@ -31,6 +31,15 @@ jobs:
       - name: Get dependencies
         run: go mod tidy
 
+      # The recorder's H.264 decode test needs ffmpeg. FFMPEG_REQUIRED
+      # below makes it fail, not skip, when ffmpeg is missing.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -hide_banner -version | sed -n 1p
+          ffprobe -hide_banner -version | sed -n 1p
+
       - name: Run the media-sdk copy's tests
         working-directory: third_party/media-sdk
         run: go test -v -race ./...
@@ -40,6 +49,7 @@ jobs:
           go test -v -race -covermode=atomic -coverprofile=coverage.out ./...
           go tool cover -func=coverage.out
         env:
+          FFMPEG_REQUIRED: "1"
           BBBRECORDER_LOG_LEVEL: DEBUG
           BBBRECORDER_RECORDER_DIRECTORY: /tmp/bbb-webrtc-recorder
           BBBRECORDER_RECORDER_DIRFILEMODE: "0700"

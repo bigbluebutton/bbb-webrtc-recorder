@@ -1,0 +1,48 @@
+{
+  "v": 1,
+  "class": "h264",
+  "intent": "Packetization mode 0: every NAL unit in a packet of its own, so a key frame starts with an SPS alone, and each frame has 4 slices. Slice 2 of P frame 100 is lost, never repaired; the writer drops frames 100-179 until key frame 180. The track buffer asks 200-240 ms after the reveal, and once a second while no key frame follows: 3 requests. Key frame 180's lone SPS ends the asking. RED when the key frame hint looks for the SPS only inside a STAP-A, as mode 1 sends it: it asks again 1 s after key frame 180 (4 requests).",
+  "traces": [
+    "h264-mode0-slices.ndjson.gz"
+  ],
+  "bufferRequests": {
+    "min": 3,
+    "max": 3
+  },
+  "bufferRequestsMs": [
+    {
+      "min": 3536.333,
+      "max": 3576.333
+    },
+    {
+      "min": 4536.333,
+      "max": 4576.333
+    },
+    {
+      "min": 5536.333,
+      "max": 5576.333
+    }
+  ],
+  "writerRequests": {
+    "min": 0,
+    "max": 0
+  },
+  "written": {
+    "min": 130,
+    "max": 130
+  },
+  "packetsWritten": {
+    "min": 843,
+    "max": 843
+  },
+  "packetsLostMax": 1,
+  "webm": {
+    "noDupPTS": true,
+    "monotonic": true,
+    "minKeyframes": 3,
+    "videoDropped": {
+      "min": 80,
+      "max": 80
+    }
+  }
+}

@@ -189,7 +189,7 @@ startRecordingResponse (Recorder -> SFU)
 	error: undefined | <String>,
 	sdp: <String | undefined>, // answer
 	fileName: <String | undefined>, // full path to recording, with the extension the recorder picked
-	codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/vp8"]; see the README
+	codecs: <String[] | undefined>, // lowercase MIME types, e.g. ["video/h264"]; see the README
 }
 ```
 */
@@ -328,7 +328,7 @@ recordingStopped (Recorder -> SFU)
 	recordingSessionId: <String>, // file name
 	reason: <String>,
 	timestampUTC: <String>, // when the event was built, RFC 3339
-	timestampHR?: <Number>, // the WebM's video duration, ms; absent without video
+	timestampHR?: <Number>, // the file's video duration, ms; absent without video
 	// LiveKit sessions that wrote a frame; see recordingMediaStarted
 	mediaStartUTC?: <Number>,
 	mediaStartHR?: <Number>,

@@ -1,5 +1,5 @@
-// Package oracle reads a recorded WebM file back into per-track summaries
-// that corpus replay tests assert on.
+// Package oracle reads a recorded WebM or Matroska file back into per-track
+// summaries that corpus replay tests assert on.
 package oracle
 
 import (
@@ -15,30 +15,47 @@ import (
 const (
 	CodecVP8  = "V_VP8"
 	CodecOpus = "A_OPUS"
+	CodecH264 = "V_MPEG4/ISO/AVC"
 )
 
 // Summary holds one Track per codec id found in the file.
 type Summary struct {
-	Tracks map[string]*Track
+	// DocType is the EBML header's: "webm" or "matroska".
+	DocType string
+	Tracks  map[string]*Track
 }
 
 // Track summarizes the blocks of one WebM track, in file order.
 type Track struct {
 	Number uint64
 	Codec  string
-	Blocks int
+	// Width and Height are a video track entry's pixel size.
+	Width, Height int
+	Blocks        int
 	// KeyBlocks counts blocks carrying the WebM keyframe flag.
 	KeyBlocks int
 	// VP8Keyframes counts frames whose VP8 frame tag marks a key frame
 	// (byte 0, bit 0 clear). It stays 0 for other codecs.
 	VP8Keyframes int
+	// H264Keyframes counts H.264 blocks that hold an IDR slice. It stays 0
+	// for other codecs.
+	H264Keyframes int
+	// H264Errors lists the H.264 track's problems, its CodecPrivate first,
+	// then its blocks in file order (see CheckH264). It stays nil for other
+	// codecs.
+	H264Errors []string
+	// H264Data holds each H.264 block's bytes, parallel to PTS, for
+	// CheckH264Blocks. It stays nil for other codecs.
+	H264Data [][]byte
 	// PTS is cluster timecode plus block timecode, in ms.
 	PTS []int64
-	// Tags holds each VP8 block's corpus.TaggedFrame value, parallel to
-	// PTS, and TagOK whether the block has one. Both stay nil for other
-	// codecs.
+	// Tags holds each video block's corpus.TaggedFrame value, parallel to
+	// PTS, and TagOK whether the block has one. Both stay nil for audio.
 	Tags  []uint32
 	TagOK []bool
+	// Keyframes holds whether each video block is a key frame, by the same
+	// tests as VP8Keyframes and H264Keyframes, parallel to PTS.
+	Keyframes []bool
 	// DuplicatePTS lists every block whose PTS an earlier block of the track
 	// already used: three blocks at the same PTS add two entries.
 	DuplicatePTS []int64
@@ -91,9 +108,16 @@ type Block struct {
 // WebmRecorder never writes BlockGroups. One with no ReferenceBlock is a
 // keyframe.
 func ReadBlocks(path string) ([]webm.TrackEntry, []Block, error) {
+	_, entries, blocks, err := readFile(path)
+
+	return entries, blocks, err
+}
+
+// readFile is ReadBlocks that also returns the file's DocType.
+func readFile(path string) (string, []webm.TrackEntry, []Block, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 	defer f.Close() //nolint:errcheck // read-only
 
@@ -102,7 +126,7 @@ func ReadBlocks(path string) ([]webm.TrackEntry, []Block, error) {
 		Segment webm.Segment    `ebml:"Segment"`
 	}
 	if err := ebml.Unmarshal(f, &doc); err != nil {
-		return nil, nil, fmt.Errorf("parse %s: %w", path, err)
+		return "", nil, nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 
 	scale := int64(doc.Segment.Info.TimecodeScale)
@@ -127,12 +151,12 @@ func ReadBlocks(path string) ([]webm.TrackEntry, []Block, error) {
 		}
 	}
 
-	return doc.Segment.Tracks.TrackEntry, blocks, nil
+	return doc.Header.DocType, doc.Segment.Tracks.TrackEntry, blocks, nil
 }
 
-// SummarizeWebM parses the whole file, through ReadBlocks.
+// SummarizeWebM parses the whole file, as ReadBlocks does.
 func SummarizeWebM(path string) (*Summary, error) {
-	entries, blocks, err := ReadBlocks(path)
+	docType, entries, blocks, err := readFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -140,8 +164,9 @@ func SummarizeWebM(path string) (*Summary, error) {
 		return nil, fmt.Errorf("parse %s: no tracks", path)
 	}
 
-	s := &Summary{Tracks: make(map[string]*Track)}
+	s := &Summary{DocType: docType, Tracks: make(map[string]*Track)}
 	byNumber := make(map[uint64]*Track)
+	configs := make(map[uint64]*h264Config)
 	for _, e := range entries {
 		if _, ok := s.Tracks[e.CodecID]; ok {
 			return nil, fmt.Errorf("parse %s: more than one %s track", path, e.CodecID)
@@ -150,8 +175,19 @@ func SummarizeWebM(path string) (*Summary, error) {
 			return nil, fmt.Errorf("parse %s: track number %d used twice", path, e.TrackNumber)
 		}
 		t := &Track{Number: e.TrackNumber, Codec: e.CodecID}
+		if e.Video != nil {
+			t.Width, t.Height = int(e.Video.PixelWidth), int(e.Video.PixelHeight)
+		}
 		s.Tracks[e.CodecID] = t
 		byNumber[e.TrackNumber] = t
+
+		if t.Codec == CodecH264 {
+			c, err := checkAVCC(e.CodecPrivate)
+			if err != nil {
+				t.H264Errors = append(t.H264Errors, "CodecPrivate: "+err.Error())
+			}
+			configs[e.TrackNumber] = c
+		}
 	}
 
 	for _, fr := range blocks {
@@ -163,14 +199,27 @@ func SummarizeWebM(path string) (*Summary, error) {
 		if fr.Key {
 			t.KeyBlocks++
 		}
-		if t.Codec == CodecVP8 {
-			if len(fr.Data) > 0 && fr.Data[0]&0x01 == 0 {
+
+		switch t.Codec {
+		case CodecVP8:
+			key := len(fr.Data) > 0 && fr.Data[0]&0x01 == 0
+			if key {
 				t.VP8Keyframes++
 			}
 
 			tag, ok := corpus.TaggedFrame(fr.Data)
 			t.Tags = append(t.Tags, tag)
 			t.TagOK = append(t.TagOK, ok)
+			t.Keyframes = append(t.Keyframes, key)
+		case CodecH264:
+			b, err := parseH264Block(fr.Data)
+			t.checkH264Block(t.Blocks-1, fr, b, err, configs[fr.Track])
+
+			tag, ok := h264FrameTag(b)
+			t.Tags = append(t.Tags, tag)
+			t.TagOK = append(t.TagOK, ok)
+			t.Keyframes = append(t.Keyframes, b.idr)
+			t.H264Data = append(t.H264Data, fr.Data)
 		}
 		t.PTS = append(t.PTS, fr.PTS)
 	}

@@ -103,6 +103,8 @@ jobs:
     env:
       REDIS_SERVER_BIN: /usr/bin/redis-server
       E2E_RECORDER_RACE: ${{ matrix.race }}
+      # The H.264 scenarios' ffmpeg checks fail instead of skipping.
+      E2E_FFMPEG_REQUIRED: '1'
     steps:
       - name: Check out the repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -145,6 +147,14 @@ jobs:
           # The harness starts its own redis-server per test on a free port.
           sudo systemctl disable --now redis-server
           "$REDIS_SERVER_BIN" --version
+
+      # The H.264 scenarios decode and remux their recordings with ffmpeg,
+      # as BBB's processing does.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -hide_banner -version | sed -n 1p
+          ffprobe -hide_banner -version | sed -n 1p
 
       - name: Set up Node
         if: matrix.browser == '1'
@@ -210,7 +220,7 @@ jobs:
           if [ "${{ matrix.browser }}" = 1 ]; then
             run='^TestBrowserNetemKeepsPlacement$' want=1
           else
-            run='^(TestNACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$' want=2
+            run='^(TestNACKRepairUnderLoss|TestH264NACKRepairUnderLoss|TestMediaTimestampsTakeOffAStartDelay)$' want=3
           fi
           cd tests/e2e
           # A -test.run pattern that selects no test passes.
@@ -218,7 +228,7 @@ jobs:
           [ "$n" -eq "$want" ] || { echo "::error::$run lists $n tests, want $want"; exit 1; }
           sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright" \
             "E2E_ARTIFACTS=$E2E_ARTIFACTS" "LIVEKIT_SERVER_BIN=$LIVEKIT_SERVER_BIN" "REDIS_SERVER_BIN=$REDIS_SERVER_BIN" \
-            E2E_NETEM=1 E2E_NETEM_REQUIRED=1 E2E_BROWSER=1 E2E_BROWSER_REQUIRED=1 \
+            E2E_NETEM=1 E2E_NETEM_REQUIRED=1 E2E_BROWSER=1 E2E_BROWSER_REQUIRED=1 "E2E_FFMPEG_REQUIRED=$E2E_FFMPEG_REQUIRED" \
             "E2E_RECORDER_BIN=$bin/bbb-webrtc-recorder" \
             "$bin/e2e.test" -test.run "$run" -test.v -test.timeout 8m
 
