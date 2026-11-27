@@ -209,6 +209,8 @@ LiveKit adds cases of its own:
 - **E2E by case:** `TestH264SimulcastMediaTimestampsPlaceEachFrame` covers
   layer switches between frames, `TestH264UnpublishWritesNoBlankFrames`
   blank frames and `TestH264CodecRegressionStopsAsClosed` a codec regression.
+  `TestBrowserH264CameraDecodesAcrossALayerSwitch` decodes a browser's camera
+  across layer switches.
   `TestBrowserVP8CameraWithH264Backup` records a VP8 camera with an H.264
   backup.
 - **Code:** `h264.go`, `h264_sps.go` and `frames.go` in

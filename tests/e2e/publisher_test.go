@@ -363,6 +363,13 @@ func waitTracksListed(ctx context.Context, lk *LiveKit, room, identity string, s
 func listedVP8Layers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid string) []*livekit.VideoLayer {
 	t.Helper()
 
+	return listedLayers(ctx, t, lk, room, sid, webrtc.MimeTypeVP8)
+}
+
+// listedLayers is listedVP8Layers for the codec mime.
+func listedLayers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid, mime string) []*livekit.VideoLayer {
+	t.Helper()
+
 	var layers []*livekit.VideoLayer
 	require.Eventually(t, func() bool {
 		listed, err := lk.listedTracks(ctx, room, "")
@@ -371,14 +378,14 @@ func listedVP8Layers(ctx context.Context, t *testing.T, lk *LiveKit, room, sid s
 		}
 
 		for _, c := range listed[sid].Codecs {
-			if strings.EqualFold(c.MimeType, webrtc.MimeTypeVP8) && len(c.Layers) > 0 {
+			if strings.EqualFold(c.MimeType, mime) && len(c.Layers) > 0 {
 				layers = c.Layers
 				return true
 			}
 		}
 
 		return false
-	}, 10*time.Second, 50*time.Millisecond, "LiveKit does not list the VP8 layers of %s", sid)
+	}, 10*time.Second, 50*time.Millisecond, "LiveKit does not list the %s layers of %s", mime, sid)
 
 	return layers
 }
